@@ -1,0 +1,232 @@
+flowchart LR
+ subgraph AzureVM1["Azure Ubuntu VM"]
+    direction TB
+        API1["API"]
+        Model["Local Embedding Model\nall-MiniLM-L6-v2"]
+        Qdrant1[("Qdrant")]
+  end
+ subgraph AzureManaged["Azure Managed Services"]
+        Blob["Blob"]
+        DB1[("DB")]
+  end
+ subgraph Orch1["Orchestration"]
+        Temporal["Temporal"]
+  end
+ subgraph P1["Phase 1 — Ingestion and Embedding"]
+    direction TB
+        User["User"]
+        TargetApp["TargetApp"]
+        AzureVM1
+        AzureManaged
+        Orch1
+  end
+ subgraph AutonomousAgents["Autonomous Agents"]
+    direction LR
+        A1["A1"]
+        A2["A2"]
+        A3["A3"]
+  end
+ subgraph AzureVM2["Azure Ubuntu VM — Orchestrator Hub"]
+    direction TB
+        ReactUI["ReactUI"]
+        API2["FastAPI & FastMCP"]
+        LG["LangGraph Engine"]
+        AutonomousAgents
+        Recorder["Recorder"]
+  end
+ subgraph ContainerizedServices["Containerized Services"]
+        Qdrant2[("Local Qdrant")]
+  end
+ subgraph P2["Phase 2 — Scenario Discovery"]
+    direction TB
+        Human(("QA Engineer"))
+        AzureVM2
+        ContainerizedServices
+        DB2[("DB")]
+  end
+ subgraph UI_LAYER["UI Layer"]
+        UI["React UI
+            ────────────────────
+            Start Phase 3 button
+            Live run progress counters
+            Review queue panel via SSE
+            CodeMirror script editor
+            Raise JIRA modal"]
+  end
+ subgraph API_LAYER["FastAPI Layer"]
+        EP1["POST /phase3/trigger"]
+        EP2["GET /phase3/run-status"]
+        EP3["GET /phase3/review-queue/stream"]
+        EP4["GET /phase3/script/test_id"]
+        EP5["POST /phase3/review-queue/id/rerun"]
+        EP6["POST /phase3/raise-jira"]
+  end
+ subgraph ORCH_LAYER["Orchestration"]
+        ORCH["Orchestrator"]
+        INPUTA(["Input — High Level Test Cases"])
+        INPUTB(["Input — DOM Snapshot per Page"])
+  end
+ subgraph AGENT_LAYER["Agent Pipeline"]
+        PLAN["Planner Agent"]
+        CTX["Context Builder Agent"]
+        SGEN["Script Generator Agent"]
+  end
+ subgraph MCP_LAYER["MCP Tool Layer"]
+        DBTOOL["Database Tool
+            ────────────────────
+            generate_id
+            save_test_case
+            get_test_case
+            update_script_path
+            save_test_result
+            flush_to_postgres"]
+        DOM["DOM Tool
+            ────────────────────
+            list_pages
+            get_snapshot"]
+        SCR["Script Tool
+            ────────────────────
+            write_script
+            read_script
+            delete_script"]
+        STATE["State Tool
+            ────────────────────
+            update_state_local
+            check_dependencies
+            flush_state_to_db"]
+        QUEUE["Queue Tool
+            ────────────────────
+            enqueue
+            requeue
+            mark_complete"]
+        CREDS["Credentials Tool
+            ────────────────────
+            get_placeholders
+            actor-scoped access
+            zero exposure to LLM"]
+  end
+ subgraph EXEC_LAYER["Execution Infrastructure"]
+        RMQ["RabbitMQ — Test Execution Queue"]
+        CHR["Parallel Execution Layer\nMultiple Chromium Instances"]
+        STATEJSON["Real-Time State Store\nstate.json\nTracks status · retries · trace path · network logs"]
+  end
+ subgraph RESULT_LAYER["Result Processing"]
+        A5["Agent 5 — Result Classification Engine"]
+        PASS["Pass"]
+        SERR["Script Error"]
+        AERR["Application Error"]
+        RETRY["Retry Agent — Autonomous Script Repair"]
+  end
+ subgraph REVIEW_LAYER["Human Review Queue"]
+        RQP["Review Queue Panel"]
+        ACTION1["Raise JIRA"]
+        ACTION2["Edit and Re-run"]
+  end
+ subgraph STORAGE_LAYER["PostgreSQL — Permanent Audit Record"]
+        TC["test_cases
+            ─────────────────
+            id · title
+            steps
+            depends_on
+            target_page
+            script_path"]
+        TR["test_results
+            ─────────────────
+            status · retries
+            jira_ticket
+            trace_path"]
+        NL["network_logs
+            ─────────────────
+            url · method
+            status_code
+            is_failure
+            response_body"]
+        RH["retry_history
+            ─────────────────
+            attempt_number
+            llm_fix_applied
+            error_snapshot"]
+        TRN["test_runs
+            ─────────────────
+            run_id
+            total · passed
+            failed · skipped
+            duration"]
+        RQ["review_queue
+            ─────────────────
+            review_type
+            evidence
+            jira_ref
+            status"]
+  end
+ subgraph P3["Phase 3 — Code Generation and Execution"]
+    direction TB
+        UI_LAYER
+        API_LAYER
+        ORCH_LAYER
+        AGENT_LAYER
+        MCP_LAYER
+        EXEC_LAYER
+        RESULT_LAYER
+        REVIEW_LAYER
+        STORAGE_LAYER
+        P4(["Phase 4 — Automated Report Generation"])
+  end
+    User -- Uploads Docs, URLs, Credentials --> API1
+    API1 -- Synchronous Liveness Check --> TargetApp
+    API1 -- Offload Heavy Files --> Blob
+    API1 -- Store Metadata & State --> DB1
+    API1 -- Dispatch Ingestion Jobs --> Temporal
+    Temporal -. Execute Async Steps .-> API1
+    API1 -- Generate Vectors --> Model
+    Model -- Upsert Chunks --> Qdrant1
+    Human -- "1. Reviews Scenarios" --> ReactUI
+    Human -- "2. Navigates App manually" --> Recorder
+    ReactUI <-- REST --> API2
+    API2 -- Triggers --> LG
+    LG --> A1 & A2 & A3
+    A1 -. MCP: fetch_vector_context .-> API2
+    A3 -. MCP: read_api_specifications .-> API2
+    A2 -. MCP: commit_test_scenario .-> API2
+    Recorder -- POST Discovered DOM/Network --> API2
+    API2 <-- SQL Queries --> DB2
+    API2 <-- Vector Retrieval --> Qdrant2
+    UI --> EP1
+    UI --> EP2
+    UI --> EP3
+    EP1 --> ORCH
+    INPUTA --> ORCH
+    INPUTB --> ORCH
+    ORCH --> PLAN
+    PLAN --> CTX
+    CTX --> SGEN
+    PLAN --> DBTOOL
+    CTX --> DOM
+    SGEN --> SCR
+    SCR --> QUEUE
+    DBTOOL --> QUEUE
+    QUEUE --> RMQ
+    RMQ --> CHR
+    CHR --> STATEJSON
+    STATEJSON --> A5
+    A5 --> PASS
+    A5 --> SERR
+    A5 --> AERR
+    SERR --> RETRY
+    RETRY --> RMQ
+    AERR -. Human Review .-> RQP
+    RETRY -. Human Review .-> RQP
+    RQP --> ACTION1
+    RQP --> ACTION2
+    ACTION1 --> EP6
+    ACTION2 --> EP5
+    PASS --> TC
+    PASS --> TR
+    PASS --> NL
+    RETRY --> RH
+    AERR --> RQ
+    STORAGE_LAYER --> P4
+    Qdrant1 -- Vectors available for retrieval --> Qdrant2
+    DB1 -- Metadata and State passed to Phase 2 --> DB2
+    A2 -- Committed Test Scenarios --> INPUTA
+    Recorder -- Discovered DOM Snapshots --> INPUTB
