@@ -1,36 +1,90 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🚀 Software QA Testing Framework (UI)
 
-## Getting Started
+This is a **Next.js + Prisma** project.
 
-First, run the development server:
+---
+
+# 📦 Project Setup
+
+## 1️⃣ Install dependencies
+
+```bash
+npm install
+```
+
+---
+
+## 2️⃣ Setup Environment Variables
+
+Rename the example file:
+
+```bash
+cp .env.example .env
+```
+
+Now update `.env` with your database credentials.
+
+---
+
+# 🗄️ Database Setup (PostgreSQL)
+
+Run the following commands in PostgreSQL:
+
+```sql
+CREATE DATABASE authdb;
+
+CREATE USER authuser WITH PASSWORD 'password';
+
+ALTER DATABASE authdb OWNER TO authuser;
+
+ALTER ROLE authuser CREATEDB;
+
+\c authdb
+
+ALTER SCHEMA public OWNER TO authuser;
+
+GRANT ALL ON SCHEMA public TO authuser;
+
+GRANT ALL PRIVILEGES ON DATABASE authdb TO authuser;
+```
+
+---
+
+## 3️⃣ Update `.env`
+
+Example:
+
+```env
+DATABASE_URL="postgresql://authuser:password@localhost:5432/authdb"
+JWT_SECRET="your_secret_here"
+```
+
+---
+
+# ⚙️ Prisma Setup
+
+Run the following commands:
+
+```bash
+npx prisma generate
+npx prisma migrate dev
+npx prisma studio
+```
+
+* `generate` → creates Prisma client
+* `migrate dev` → creates tables in DB
+* `studio` → opens DB UI
+
+---
+
+# ▶️ Run the Project
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+👉 http://localhost:3000
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
