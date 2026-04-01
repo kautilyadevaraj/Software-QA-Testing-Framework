@@ -39,3 +39,24 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/app/generated/prisma
+
+
+# Prisma migrations (optional - depends on your workflow)
+prisma/migrations
+
+# Prisma local DB (if using SQLite)
+*.db
+*.db-journal
+
+# Logs (extra safety)
+logs
+*.log
+
+# OS / editor junk
+.vscode
+.idea
+
+# Temporary files
+*.tmp
