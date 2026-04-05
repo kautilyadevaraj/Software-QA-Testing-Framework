@@ -9,11 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
-type LoginResponse = {
-  error?: string;
-  code?: string;
-};
+import { ApiError, login } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -39,20 +35,18 @@ export default function LoginPage() {
       return;
     }
 
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-
-    const data = (await res.json()) as LoginResponse;
-
-    if (res.ok) {
+    try {
+      await login(email, password);
       router.replace("/projects");
       return;
-    }
+    } catch (error) {
+      if (error instanceof ApiError) {
+        toast.error(error.message || "Unable to login right now.");
+        return;
+      }
 
-    toast.error(data.error || "Unable to login right now.");
+      toast.error("Unable to login right now.");
+    }
   };
 
   return (
