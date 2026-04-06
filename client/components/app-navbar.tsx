@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { logout } from "@/lib/api";
 
 export function AppNavbar() {
   const pathname = usePathname();
@@ -12,7 +13,7 @@ export function AppNavbar() {
   const isWorkspacePage = pathname.startsWith("/upload") || pathname.startsWith("/projects");
 
   const handleLogout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    await logout();
     router.replace("/login");
   };
 

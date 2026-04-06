@@ -12,7 +12,23 @@ npm ci
 
 ## 2. Setup PostgreSQL locally
 
-Install PostgreSQL on your machine (version 17 or later is recommended), then make sure:
+Install PostgreSQL on your machine (version 17 or later is recommended)
+
+### Using CMD (Windows)
+
+1. Open PostgreSQL
+```bash
+psql -U postgres
+```
+
+2. Create a Database
+```sql
+CREATE DATABASE sqat_db;
+```
+
+3. No extra user/role authorization setup is required for local development.
+
+### Using pgAdmin
 
 1. Create a Server Group in pgAdmin called SQAT
 2. Register a Server called SQAT-Server inside SQAT server group
@@ -29,6 +45,48 @@ Connection key
 ```bash
 postgresql://{username}:{password}@host:port/{database_name}
 ```
+
+
+
+
+## 2. Setup PostgreSQL locally (Using pgAdmin)
+
+Install PostgreSQL (version 17 or later recommended) and open pgAdmin.
+
+### 1. Register Server (if not already)
+
+1. Open pgAdmin
+2. Right-click **Servers** → Click **Register → Server**
+3. In **General** tab:
+   * Name: `SQAT-Server`
+4. In **Connection** tab:
+   * Host: `localhost`
+   * Port: `5432`
+   * Username: `postgres`
+   * Password: (your postgres password)
+5. Click **Save**
+
+### 2. Create Database
+
+1. Expand **Servers → PostgreSQL → Databases**
+2. Right-click **Databases** → Click **Create → Database**
+3. Enter:
+   * Database name: `sqat_db`
+   * Owner: `postgres`
+4. Click **Save**
+
+### 3. Connection String
+
+```
+postgresql://postgres:{password}@localhost:5432/sqat_db
+```
+
+> <span style="color: #E9D502">Notes</span>
+
+* Use strong passwords in production
+* Store credentials in `.env` files
+* Avoid using `postgres` user in applications
+
 
 ## 4. Setup Environment Variables
 

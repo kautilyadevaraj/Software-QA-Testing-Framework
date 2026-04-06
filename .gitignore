@@ -25,6 +25,8 @@
 # misc
 .DS_Store
 *.pem
+docs
+uploads
 
 # debug
 npm-debug.log*
@@ -63,3 +65,9 @@ logs
 
 # Temporary files
 *.tmp
+
+# Python cache artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

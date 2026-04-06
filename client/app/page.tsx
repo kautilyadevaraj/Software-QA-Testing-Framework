@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 export default async function Home() {
   const cookieStore = await cookies();
-  const hasAuthToken = Boolean(cookieStore.get("token")?.value);
+  const hasAuthToken = Boolean(cookieStore.get("access_token")?.value || cookieStore.get("token")?.value);
 
   return (
     <div className="mx-auto h-[calc(100vh-4rem)] w-full max-w-6xl overflow-hidden px-4 py-8 sm:px-6">
@@ -26,9 +26,9 @@ export default async function Home() {
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <Button asChild size="lg">
-              <Link href="/upload">
+              <Link href="/projects">
                 <Play className="h-4 w-4" />
-                Run First Suite
+                Go to Projects
               </Link>
             </Button>
             <Button asChild variant="outline" size="lg">

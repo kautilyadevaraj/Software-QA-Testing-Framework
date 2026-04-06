@@ -1,0 +1,20 @@
+[project]
+name = "server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic==1.16.4",
+    "bcrypt==4.2.1",
+    "email-validator==2.2.0",
+    "fastapi==0.116.0",
+    "psycopg2-binary==2.9.10",
+    "pydantic-settings==2.10.1",
+    "python-jose[cryptography]==3.5.0",
+    "python-multipart==0.0.20",
+    "slowapi==0.1.9",
+    "sqlalchemy==2.0.42",
+    "uuid6>=2025.0.1",
+    "uvicorn[standard]==0.35.0",
+]

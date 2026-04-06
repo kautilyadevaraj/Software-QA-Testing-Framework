@@ -9,10 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
-type SignupResponse = {
-  error?: string;
-};
+import { ApiError, signup } from "@/lib/api";
 
 function getPasswordError(password: string) {
   if (password.length < 8 || password.length > 18) {
@@ -78,20 +75,18 @@ export default function SignupPage() {
       return;
     }
 
-    const res = await fetch("/api/auth/signup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-
-    const data = (await res.json()) as SignupResponse;
-
-    if (res.ok) {
+    try {
+      await signup(email, password);
       router.replace("/projects");
       return;
-    }
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setError(error.message || "Signup failed.");
+        return;
+      }
 
-    setError(data.error || "Signup failed.");
+      setError("Signup failed.");
+    }
   };
 
   return (

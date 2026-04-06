@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -8,31 +8,25 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  ProjectRecord,
-  createEmptyDocuments,
-  getDefaultProjects,
-  loadProjectsFromStorage,
-  saveProjectsToStorage,
-} from "@/lib/projects";
+import { ApiError, createProject, deleteProject, listProjects } from "@/lib/api";
+import { ProjectRecord, ProjectStatus, mapProjectFromApi } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
-type SortField = "id" | "name" | "createdAt" | "version" | "status";
+type SortField = "id" | "name" | "createdAt" | "status";
 type SortDirection = "asc" | "desc";
 type PageSizeOption = 20 | 50 | "all";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const API_MAX_PAGE_SIZE = 200;
 
 type AddProjectForm = {
   name: string;
   description: string;
-  teamMembers: string;
 };
 
 const emptyAddForm: AddProjectForm = {
   name: "",
   description: "",
-  teamMembers: "",
 };
 
 function formatDate(value: string) {
@@ -44,37 +38,20 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
-function parseTeamMembers(raw: string) {
-  return raw
-    .split(";")
-    .map((member) => member.trim())
-    .filter(Boolean);
-}
 
-function generateProjectId(existing: ProjectRecord[]) {
-  let candidate = `PRJ-${Math.floor(1000 + Math.random() * 9000)}`;
-  const existingIds = new Set(existing.map((project) => project.id));
-
-  while (existingIds.has(candidate)) {
-    candidate = `PRJ-${Math.floor(1000 + Math.random() * 9000)}`;
+function toApiSortField(field: SortField): "id" | "name" | "created_at" | "status" {
+  if (field === "createdAt") {
+    return "created_at";
   }
-
-  return candidate;
+  return field;
 }
 
 export default function ProjectsPage() {
   const router = useRouter();
 
-  const [projects, setProjects] = useState<ProjectRecord[]>(() => getDefaultProjects());
-  const hasMountedRef = useRef(false);
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      setProjects(loadProjectsFromStorage());
-    });
-
-    return () => cancelAnimationFrame(frame);
-  }, []);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [totalProjects, setTotalProjects] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Default: newest projects first based on created date.
   const [sortField, setSortField] = useState<SortField>("createdAt");
@@ -90,42 +67,48 @@ export default function ProjectsPage() {
   const [projectPendingDelete, setProjectPendingDelete] = useState<ProjectRecord | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
-  useEffect(() => {
-    if (!hasMountedRef.current) {
-      hasMountedRef.current = true;
-      return;
+  const totalPages = useMemo(() => {
+    if (pageSize === "all") {
+      return 1;
     }
+    return Math.max(1, Math.ceil(totalProjects / pageSize));
+  }, [pageSize, totalProjects]);
 
-    saveProjectsToStorage(projects);
-  }, [projects]);
-
-  const sortedProjects = useMemo(() => {
-    const list = [...projects];
-
-    list.sort((a, b) => {
-      let comparison = 0;
-
-      if (sortField === "createdAt") {
-        comparison = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-      } else {
-        comparison = a[sortField].localeCompare(b[sortField]);
-      }
-
-      return sortDirection === "asc" ? comparison : -comparison;
-    });
-
-    return list;
-  }, [projects, sortDirection, sortField]);
-
-  const effectivePageSize = pageSize === "all" ? Math.max(1, sortedProjects.length) : pageSize;
-  const totalPages = Math.max(1, Math.ceil(sortedProjects.length / effectivePageSize));
   const safeCurrentPage = Math.min(currentPage, totalPages);
 
-  const paginatedProjects = useMemo(() => {
-    const start = (safeCurrentPage - 1) * effectivePageSize;
-    const end = start + effectivePageSize;
-    return sortedProjects.slice(start, end);
-  }, [effectivePageSize, safeCurrentPage, sortedProjects]);
+  const fetchProjects = useCallback(async () => {
+    setIsLoading(true);
+
+    try {
+      const effectivePage = pageSize === "all" ? 1 : safeCurrentPage;
+      const effectivePageSize = pageSize === "all" ? API_MAX_PAGE_SIZE : pageSize;
+
+      const response = await listProjects({
+        sortBy: toApiSortField(sortField),
+        sortDir: sortDirection,
+        page: effectivePage,
+        pageSize: effectivePageSize,
+      });
+
+      setProjects(response.items.map(mapProjectFromApi));
+      setTotalProjects(response.total);
+
+      if (pageSize !== "all" && response.page > totalPages) {
+        setCurrentPage(totalPages);
+      }
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "Failed to load projects.";
+      toast.error(message);
+      setProjects([]);
+      setTotalProjects(0);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [pageSize, safeCurrentPage, sortField, sortDirection, totalPages]);
+
+  useEffect(() => {
+    void fetchProjects();
+  }, [fetchProjects]);
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -165,49 +148,33 @@ export default function ProjectsPage() {
     [sortDirection, sortField]
   );
 
-  const handleAddProject = useCallback(() => {
+  const handleAddProject = useCallback(async () => {
     const trimmedName = addForm.name.trim();
-    const members = parseTeamMembers(addForm.teamMembers);
-
     if (!trimmedName) {
       toast.error("Project Name is required.");
       return;
     }
 
-    if (members.length === 0) {
-      toast.error("At least one testing team member email is required.");
-      return;
-    }
-
-    const invalidEmail = members.find((member) => !EMAIL_REGEX.test(member));
-    if (invalidEmail) {
-      toast.error(`Invalid email in testing team members: ${invalidEmail}`);
-      return;
-    }
-
-    setProjects((currentProjects) => {
-      const newProject: ProjectRecord = {
-        id: generateProjectId(currentProjects),
+    try {
+      await createProject({
         name: trimmedName,
         description: addForm.description.trim(),
-        createdAt: new Date().toISOString(),
-        version: "v1.0.0",
-        status: "Draft",
-        testers: members,
-        url: "",
-        documents: createEmptyDocuments(),
-      };
+        status: "Draft" satisfies ProjectStatus,
+        url: null,
+      });
 
-      return [newProject, ...currentProjects];
-    });
+      setAddForm(emptyAddForm);
+      setIsAddDialogOpen(false);
+      setCurrentPage(1);
+      toast.success("Project created.");
+      await fetchProjects();
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "Unable to create project.";
+      toast.error(message);
+    }
+  }, [addForm, fetchProjects]);
 
-    setAddForm(emptyAddForm);
-    setIsAddDialogOpen(false);
-    setCurrentPage(1);
-    toast.success("Project created.");
-  }, [addForm]);
-
-  const handleDeleteProject = useCallback(() => {
+  const handleDeleteProject = useCallback(async () => {
     if (!projectPendingDelete) {
       return;
     }
@@ -217,16 +184,27 @@ export default function ProjectsPage() {
       return;
     }
 
-    setProjects((currentProjects) => currentProjects.filter((project) => project.id !== projectPendingDelete.id));
-    setExpandedProjectIds((current) => {
-      const next = { ...current };
-      delete next[projectPendingDelete.id];
-      return next;
-    });
-    setProjectPendingDelete(null);
-    setDeleteConfirmText("");
-    toast.success("Project deleted.");
-  }, [deleteConfirmText, projectPendingDelete]);
+    try {
+      await deleteProject(projectPendingDelete.id);
+      setExpandedProjectIds((current) => {
+        const next = { ...current };
+        delete next[projectPendingDelete.id];
+        return next;
+      });
+      setProjectPendingDelete(null);
+      setDeleteConfirmText("");
+      toast.success("Project deleted.");
+
+      if (projects.length === 1 && safeCurrentPage > 1 && pageSize !== "all") {
+        setCurrentPage((page) => Math.max(1, page - 1));
+      } else {
+        await fetchProjects();
+      }
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "Unable to delete project.";
+      toast.error(message);
+    }
+  }, [deleteConfirmText, fetchProjects, pageSize, projectPendingDelete, projects.length, safeCurrentPage]);
 
   return (
     <Card className="h-full rounded-none border-black/10 bg-white shadow-sm">
@@ -245,7 +223,7 @@ export default function ProjectsPage() {
             value={pageSize}
             onChange={(event) => {
               const selected = event.target.value;
-              setPageSize(selected === "all" ? "all" : Number(selected) as PageSizeOption);
+              setPageSize(selected === "all" ? "all" : (Number(selected) as PageSizeOption));
               setCurrentPage(1);
             }}
             className="h-9 rounded-md border border-black/20 bg-white px-2 text-sm text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
@@ -259,7 +237,7 @@ export default function ProjectsPage() {
             variant="outline"
             size="sm"
             onClick={() => setCurrentPage((page) => Math.max(1, Math.min(page, totalPages) - 1))}
-            disabled={safeCurrentPage === 1}
+            disabled={safeCurrentPage === 1 || pageSize === "all"}
           >
             <ChevronLeft className="h-4 w-4" />
             Previous
@@ -271,7 +249,7 @@ export default function ProjectsPage() {
             variant="outline"
             size="sm"
             onClick={() => setCurrentPage((page) => Math.min(totalPages, Math.min(page, totalPages) + 1))}
-            disabled={safeCurrentPage >= totalPages}
+            disabled={safeCurrentPage >= totalPages || pageSize === "all"}
           >
             Next
             <ChevronRight className="h-4 w-4" />
@@ -332,19 +310,6 @@ export default function ProjectsPage() {
                 <th className="px-3 py-3 font-semibold">
                   <button
                     type="button"
-                    onClick={() => handleSort("version")}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors",
-                      sortField === "version" ? "bg-white text-[#2a63f5]" : "text-black/80 hover:bg-white/70"
-                    )}
-                  >
-                    Version
-                    {getSortIndicator("version")}
-                  </button>
-                </th>
-                <th className="px-3 py-3 font-semibold">
-                  <button
-                    type="button"
                     onClick={() => handleSort("status")}
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors",
@@ -363,14 +328,21 @@ export default function ProjectsPage() {
             </thead>
 
             <tbody>
-              {paginatedProjects.length === 0 ? (
+              {isLoading ? (
+                <tr>
+                  <td colSpan={8} className="px-3 py-8 text-center text-black/60">
+                    Loading projects...
+                  </td>
+                </tr>
+              ) : projects.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-3 py-8 text-center text-black/60">
                     No projects available.
                   </td>
                 </tr>
               ) : (
-                paginatedProjects.map((project, index) => {
+                projects.map((project, index) => {
+                  const effectivePageSize = pageSize === "all" ? API_MAX_PAGE_SIZE : pageSize;
                   const serialNumber = (safeCurrentPage - 1) * effectivePageSize + index + 1;
                   const isExpanded = Boolean(expandedProjectIds[project.id]);
 
@@ -401,11 +373,11 @@ export default function ProjectsPage() {
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <p className="text-sm text-black/65">
-            {sortedProjects.length > 0
-              ? `Showing ${(safeCurrentPage - 1) * effectivePageSize + 1} to ${Math.min(
-                  safeCurrentPage * effectivePageSize,
-                  sortedProjects.length
-                )} of ${sortedProjects.length}`
+            {totalProjects > 0
+              ? `Showing ${(safeCurrentPage - 1) * (pageSize === "all" ? API_MAX_PAGE_SIZE : pageSize) + 1} to ${Math.min(
+                  (safeCurrentPage - 1) * (pageSize === "all" ? API_MAX_PAGE_SIZE : pageSize) + projects.length,
+                  totalProjects
+                )} of ${totalProjects}`
               : "Showing 0 of 0"}
           </p>
         </div>
@@ -415,7 +387,9 @@ export default function ProjectsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-xl rounded-xl border border-black/15 bg-white p-6 shadow-xl">
             <h2 className="text-xl font-semibold text-black">Add Project</h2>
-            <p className="mt-1 text-sm text-black/65">Fill required fields now. Project URL and documents can be updated in Project Configuration.</p>
+            <p className="mt-1 text-sm text-black/65">
+              Fill required fields now. Project URL and documents can be updated in Project Configuration.
+            </p>
 
             <div className="mt-5 space-y-4">
               <div className="space-y-2">
@@ -440,16 +414,6 @@ export default function ProjectsPage() {
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="new-project-team">Testing Team Members Email IDs * (semicolon separated)</Label>
-                <Input
-                  id="new-project-team"
-                  value={addForm.teamMembers}
-                  onChange={(event) => setAddForm((current) => ({ ...current, teamMembers: event.target.value }))}
-                  placeholder="tester1@company.com;tester2@company.com"
-                />
-              </div>
-
             </div>
 
             <div className="mt-6 flex justify-end gap-2">
@@ -462,7 +426,7 @@ export default function ProjectsPage() {
               >
                 Cancel
               </Button>
-              <Button onClick={handleAddProject}>Create Project</Button>
+              <Button onClick={() => void handleAddProject()}>Create Project</Button>
             </div>
           </div>
         </div>
@@ -500,7 +464,7 @@ export default function ProjectsPage() {
                 Cancel
               </Button>
               <Button
-                onClick={handleDeleteProject}
+                onClick={() => void handleDeleteProject()}
                 disabled={deleteConfirmText.trim() !== projectPendingDelete.name}
                 className="bg-red-600 text-white hover:bg-red-700 disabled:bg-red-400"
               >
@@ -532,7 +496,6 @@ function FragmentRow({ project, serialNumber, isExpanded, onOpenProject, onToggl
         <td className="px-3 py-3 font-medium text-black">{project.id}</td>
         <td className="px-3 py-3 text-black">{project.name}</td>
         <td className="px-3 py-3 text-black/70">{formatDate(project.createdAt)}</td>
-        <td className="px-3 py-3 text-black/70">{project.version}</td>
         <td className="px-3 py-3">
           <span
             className={cn(
@@ -574,10 +537,6 @@ function FragmentRow({ project, serialNumber, isExpanded, onOpenProject, onToggl
                 <p className="mt-1 text-sm text-black/80">{project.description || "No description provided."}</p>
               </div>
 
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-black/60">Testers Working On Project</p>
-                <p className="mt-1 text-sm text-black/80">{project.testers.join(", ")}</p>
-              </div>
             </div>
           </td>
         </tr>
