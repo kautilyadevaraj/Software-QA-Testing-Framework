@@ -314,6 +314,7 @@ export default function ProjectDetailsPage() {
       const launch = await launchProject(project.id, formState.url.trim());
       setIsLaunched(true);
       setIsProceedConfirmed(launch.is_verified);
+      window.open(formState.url.trim(), "_blank");
       toast.success("Project URL launched.");
     } catch (error) {
       const message = error instanceof ApiError ? error.message : "Unable to launch project URL.";
