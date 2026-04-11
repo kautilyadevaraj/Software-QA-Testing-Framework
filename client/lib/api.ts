@@ -107,6 +107,7 @@ export type ProjectResponse = {
   url: string | null;
   created_at: string;
   updated_at: string;
+  is_verified: boolean;
 };
 
 export type ProjectListResponse = {
@@ -322,5 +323,25 @@ export async function removeProjectMember(projectId: string, memberId: string) {
 export async function transferProjectOwnership(projectId: string, memberId: string) {
   return request<{ status: string }>(`/projects/${projectId}/members/${memberId}/transfer`, {
     method: "POST",
+  });
+}
+
+export async function getProjectCredentials(projectId: string) {
+  return request<any[] | { error: string }>(`/projects/${projectId}/credentials`, {
+    method: "GET",
+  });
+}
+
+export async function markProjectVerified(projectId: string, username: string) {
+  return request<{ status: string }>(`/projects/${projectId}/mark-verified`, {
+    method: "POST",
+    body: { username },
+  });
+}
+
+export async function runProjectPlaywright(projectId: string, cred: any) {
+  return request<{ status: string }>(`/projects/${projectId}/run-playwright`, {
+    method: "POST",
+    body: cred,
   });
 }

@@ -1,8 +1,8 @@
-"""Initial schema — users, projects, project_members, project_files
+"""Consolidated schema — all tables and columns in one migration
 
-Revision ID: 0001
+Revision ID: 0001_consolidated
 Revises:
-Create Date: 2026-04-05
+Create Date: 2026-04-11
 
 """
 from typing import Sequence, Union
@@ -11,13 +11,29 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0001"
+revision: str = "0001_consolidated"
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # ── enums ──────────────────────────────────────────────────────────────────
+    project_status = postgresql.ENUM(
+        "Active", "Draft", "Blocked", name="project_status", create_type=False
+    )
+    project_role = postgresql.ENUM(
+        "OWNER", "TESTER", name="project_role", create_type=False
+    )
+    file_type_enum = postgresql.ENUM(
+        "brd", "fsd", "wbs", "assumption", "credentials", "swagger_docs",
+        name="project_file_type",
+        create_type=False,
+    )
+    project_status.create(op.get_bind(), checkfirst=True)
+    project_role.create(op.get_bind(), checkfirst=True)
+    file_type_enum.create(op.get_bind(), checkfirst=True)
+
     # ── users ──────────────────────────────────────────────────────────────────
     op.create_table(
         "users",
@@ -32,23 +48,6 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
     )
-
-    # ── enums ──────────────────────────────────────────────────────────────────
-    project_status = postgresql.ENUM(
-        "Active", "Draft", "Blocked", name="project_status", create_type=False
-    )
-    project_role = postgresql.ENUM(
-        "OWNER", "TESTER", name="project_role", create_type=False
-    )
-    file_type_enum = postgresql.ENUM(
-        "brd", "fsd", "wbs", "assumption", "credentials", "swagger_docs",
-        name="project_file_type",
-        create_type=False,
-    )
-
-    project_status.create(op.get_bind(), checkfirst=True)
-    project_role.create(op.get_bind(), checkfirst=True)
-    file_type_enum.create(op.get_bind(), checkfirst=True)
 
     # ── projects ───────────────────────────────────────────────────────────────
     op.create_table(
@@ -82,6 +81,8 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("now()"),
         ),
+        # Added via bec9f4de284d + 4b5c45cb517c (drop + re-add resolved to final state)
+        sa.Column("is_verified", sa.Boolean(), nullable=False, server_default="false"),
     )
 
     # ── project_members ────────────────────────────────────────────────────────
@@ -153,8 +154,74 @@ def upgrade() -> None:
         ),
     )
 
+    # ── project_credential_verifications ───────────────────────────────────────
+    op.create_table(
+        "project_credential_verifications",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "project_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("projects.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        sa.Column("username", sa.String(255), nullable=False),
+        sa.Column("is_verified", sa.Boolean(), nullable=False, server_default="false"),
+    )
+
+    # ── extracted_text ─────────────────────────────────────────────────────────
+    op.create_table(
+        "extracted_text",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "file_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("project_files.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "project_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("projects.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        sa.Column("blob_url", sa.Text, nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+    )
+
+    # ── api_endpoints ──────────────────────────────────────────────────────────
+    op.create_table(
+        "api_endpoints",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "project_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("projects.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        sa.Column("path", sa.Text, nullable=True),
+        sa.Column("method", sa.Text, nullable=True),
+        sa.Column("description", sa.Text, nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("api_endpoints")
+    op.drop_table("extracted_text")
+    op.drop_table("project_credential_verifications")
     op.drop_table("project_files")
     op.drop_table("project_members")
     op.drop_table("projects")

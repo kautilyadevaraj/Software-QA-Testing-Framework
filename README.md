@@ -9,6 +9,7 @@ Autonomous QA pipeline: upload project documents, verify the target URL, and gen
 | **Frontend** | Next.js 16 (App Router), TypeScript, Tailwind-compatible Vanilla CSS |
 | **Backend** | FastAPI (Python 3.11+), SQLAlchemy 2, Alembic |
 | **Database** | PostgreSQL 14+ |
+| **Extraction** | PyMuPDF (PDF Text), Prance (Swagger/OpenAPI), Playwright (Auth/E2E Docs) |
 | **Auth** | JWT (access + refresh tokens, HTTP-only cookies) |
 | **File Storage** | Local filesystem (`server/uploads/`) |
 
@@ -44,6 +45,9 @@ uv venv
 uv pip install -r requirements.txt
 # OR (reads from pyproject.toml)
 uv sync
+
+# Install Playwright browsers (Required for E2E Auth features)
+playwright install
 ```
 
 ### 2a - Configure `.env`
@@ -167,6 +171,16 @@ alembic revision --autogenerate -m "add column to table"
 alembic upgrade head
 ```
 
+### Collaborating with DB Changes (Team workflow)
+
+Alembic guarantees you and your team won't overwrite or unexpectedly break each other's local databases when changing the schema. 
+
+1. **Your teammate modifies code:** They add/edit a SQLAlchemy model in `server/app/models/` (e.g. adding a new table) and run `alembic revision --autogenerate`. Alembic creates a fresh migration file inside `migrations/versions/`.
+2. **They commit and push:** They push both the model changes and the new migration file to GitHub.
+3. **You pull their code:** When you fetch their code, your local database doesn't magically have their new table yet.
+4. **You sync up:** You simply run `alembic upgrade head`. Alembic perfectly runs their migration against your local DB to bring your schema perfectly into alignment with theirs!
+> *(If their migration ever causes problems, you can simply run `alembic downgrade -1` to safely roll back your database state!)*
+
 ## Project Structure
 
 ```
@@ -266,3 +280,5 @@ Full interactive docs: `http://localhost:8000/docs`
 | GET | `/projects/{id}/documents` | List uploaded documents |
 | POST | `/projects/{id}/documents` | Upload document(s) |
 | DELETE | `/projects/{id}/documents/{docId}` | Delete a document |
+| POST | `/projects/{id}/ingest` | Ingest project processing (Swagger, PDF docs) |
+| GET | `/projects/{id}/status` | Poll extraction process status |

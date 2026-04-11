@@ -59,8 +59,11 @@ def validate_and_save_upload(db: Session, project: Project, file: UploadFile, fi
         if ext not in ['json', 'yaml', 'yml']:
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Swagger docs must be JSON or YAML formats.")
     elif file_type == FileType.CREDENTIALS:
-        if ext not in ['pdf', 'txt']:
-             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Credentials must be PDF or TXT formats.")
+        if ext != 'csv':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Credentials must be CSV format."
+            )
     else:
         if ext != 'pdf':
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{file_type.value} must be a PDF file.")

@@ -56,6 +56,7 @@ CREATE TABLE projects (
     description TEXT           NOT NULL DEFAULT '',
     status      project_status NOT NULL DEFAULT 'Draft',
     url         VARCHAR(2048)  NOT NULL DEFAULT '',
+    is_verified BOOLEAN        NOT NULL DEFAULT false,
     created_at  TIMESTAMPTZ    NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
@@ -107,6 +108,51 @@ CREATE TABLE project_files (
 
 CREATE INDEX ix_project_files_project_id ON project_files (project_id);
 CREATE INDEX ix_project_files_file_type  ON project_files (file_type);
+
+
+-- ---------------------------------------------------------------------------
+-- 6. PROJECT CREDENTIAL VERIFICATIONS
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE project_credential_verifications (
+    id          UUID         NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    project_id  UUID         NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    username    VARCHAR(255) NOT NULL,
+    is_verified BOOLEAN      NOT NULL DEFAULT false
+);
+
+CREATE INDEX ix_project_credential_verifications_project_id ON project_credential_verifications (project_id);
+
+
+-- ---------------------------------------------------------------------------
+-- 7. EXTRACTED TEXT
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE extracted_text (
+    id         UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    file_id    UUID        NOT NULL REFERENCES project_files (id) ON DELETE CASCADE,
+    project_id UUID        NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    blob_url   TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ix_extracted_text_project_id ON extracted_text (project_id);
+
+
+-- ---------------------------------------------------------------------------
+-- 8. API ENDPOINTS
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE api_endpoints (
+    id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    project_id  UUID        NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    path        TEXT,
+    method      TEXT,
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ix_api_endpoints_project_id ON api_endpoints (project_id);
 
 
 -- =============================================================================
