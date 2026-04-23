@@ -151,6 +151,35 @@ export type UserSearchResponse = {
   email: string;
 };
 
+export type JiraConfig = {
+  connected: boolean;
+  jira_project_key: string | null;
+  jira_project_id: string | null;
+  already_existed?: boolean;
+};
+
+export type JiraTicketResponse = {
+  id: string;
+  project_id: string;
+  jira_issue_key: string;
+  jira_issue_id: string;
+  title: string;
+  description: string;
+  issue_type: string;
+  priority: string;
+  status: string;
+  raised_from: string;
+  created_at: string;
+};
+
+export type RaiseTicketPayload = {
+  title: string;
+  description: string;
+  issue_type: "Bug" | "Task" | "Story";
+  priority: "High" | "Medium" | "Low";
+  raised_from: "url_section" | "credentials_section";
+};
+
 export async function signup(email: string, password: string) {
   return request<AuthResponse>("/auth/signup", {
     method: "POST",
@@ -286,14 +315,11 @@ export async function ingestProject(projectId: string) {
   );
 }
 
-export async function createTicket(projectId: string, title: string, description: string) {
-  return request<{ id: string; project_id: string; title: string; description: string; status: string; created_at: string }>(
-    `/projects/${projectId}/tickets`,
-    {
-      method: "POST",
-      body: { title, description },
-    }
-  );
+export async function createTicket(projectId: string, payload: RaiseTicketPayload) {
+  return request<JiraTicketResponse>(`/projects/${projectId}/tickets`, {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export async function searchUsers(query: string) {
@@ -343,5 +369,17 @@ export async function runProjectPlaywright(projectId: string, cred: any) {
   return request<{ status: string }>(`/projects/${projectId}/run-playwright`, {
     method: "POST",
     body: cred,
+  });
+}
+
+export async function connectProjectToJira(projectId: string) {
+  return request<JiraConfig>(`/projects/${projectId}/jira/connect`, {
+    method: "POST",
+  });
+}
+
+export async function getProjectJiraConfig(projectId: string) {
+  return request<JiraConfig>(`/projects/${projectId}/jira/config`, {
+    method: "GET",
   });
 }

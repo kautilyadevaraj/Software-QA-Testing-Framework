@@ -8,6 +8,7 @@ import {
   ArrowRight,
   DatabaseZap,
   FileText,
+  Link2,
   Play,
   Save,
   TestTubeDiagonal,
@@ -33,10 +34,12 @@ import { markProjectVerified } from "@/lib/api";
 import {
   ApiError,
   addProjectMember,
+  connectProjectToJira,
   createTicket,
   deleteProjectDocument,
   getCurrentUser,
   getProject,
+  getProjectJiraConfig,
   ingestProject,
   launchProject,
   listProjectDocuments,
@@ -49,6 +52,7 @@ import {
   verifyProject,
   getProjectCredentials,
   runProjectPlaywright,
+  type JiraConfig,
 } from "@/lib/api";
 import type { MemberResponse, UserSearchResponse } from "@/lib/api";
 import {
@@ -63,6 +67,7 @@ import {
   mapProjectFromApi,
 } from "@/lib/projects";
 import { cn } from "@/lib/utils";
+import { RaiseTicketModal } from "@/components/raise-ticket-modal";
 
 type ActiveTab = "qa" | "configuration";
 
@@ -158,19 +163,36 @@ export default function ProjectDetailsPage() {
     credentials.length > 0 &&
     credentials.every((c) => c.verified === true);
 
+  // Jira integration state
+  const [jiraConfig, setJiraConfig] = useState<JiraConfig | null>(null);
+  const [isConnectingJira, setIsConnectingJira] = useState(false);
+  const [raiseTicketModal, setRaiseTicketModal] = useState<{
+    open: boolean;
+    defaultTitle: string;
+    defaultDescription: string;
+    raisedFrom: "url_section" | "credentials_section";
+  }>({
+    open: false,
+    defaultTitle: "",
+    defaultDescription: "",
+    raisedFrom: "url_section",
+  });
+
   const loadProjectState = useCallback(async () => {
     setIsLoading(true);
 
     try {
-      const [projectResponse, documentsResponse, membersResponse, currentUser] =
+      const [projectResponse, documentsResponse, membersResponse, currentUser, jiraConfigResponse] =
         await Promise.all([
           getProject(projectId),
           listProjectDocuments(projectId),
           listProjectMembers(projectId),
           getCurrentUser(),
+          getProjectJiraConfig(projectId),
         ]);
 
       setCurrentUserEmail(currentUser.email);
+      setJiraConfig(jiraConfigResponse);
 
       const mappedProject = mapProjectFromApi(projectResponse);
       setProject(mappedProject);
@@ -196,6 +218,36 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     void loadProjectState();
   }, [loadProjectState]);
+
+  // ── Jira handlers ──────────────────────────────────────────────────────────
+
+  const handleConnectJira = async () => {
+    if (!project) return;
+    setIsConnectingJira(true);
+    try {
+      const result = await connectProjectToJira(project.id);
+      setJiraConfig(result);
+      if (result.already_existed) {
+        toast.info(`Already connected — Jira project key: ${result.jira_project_key}`);
+      } else {
+        toast.success(`Connected! Jira project key: ${result.jira_project_key}`);
+      }
+    } catch (error) {
+      const message =
+        error instanceof ApiError ? error.message : "Failed to connect to Jira.";
+      toast.error(message);
+    } finally {
+      setIsConnectingJira(false);
+    }
+  };
+
+  const openRaiseTicket = (
+    raisedFrom: "url_section" | "credentials_section",
+    defaultTitle: string,
+    defaultDescription: string,
+  ) => {
+    setRaiseTicketModal({ open: true, defaultTitle, defaultDescription, raisedFrom });
+  };
 
   useEffect(() => {
     if (activeTab === "qa" || isIngestionStarted) {
@@ -730,7 +782,8 @@ export default function ProjectDetailsPage() {
               <p className="text-sm font-semibold">{cred.username}</p>
               <p className="text-xs text-gray-500">{cred.role}</p>
 
-              <div className="mt-3 flex gap-2">
+              {/* Row 1: verification actions */}
+              <div className="mt-3 flex flex-wrap gap-2">
                 {!cred.verified ? (
                   <>
                     <Button size="sm" onClick={() => handleVerify(cred)}>
@@ -748,6 +801,32 @@ export default function ProjectDetailsPage() {
                 )}
               </div>
 
+              {/* Row 2: Raise Ticket — full width so it never overflows */}
+              <div className="mt-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!jiraConfig?.connected}
+                  title={
+                    !jiraConfig?.connected
+                      ? "Connect to Jira first to raise tickets"
+                      : `Raise a Jira ticket for ${cred.username}`
+                  }
+                  onClick={() =>
+                    openRaiseTicket(
+                      "credentials_section",
+                      `Login Failure — ${cred.username} (${cred.role})`,
+                      `Credential verification issue for user ${cred.username} (role: ${cred.role}, auth: ${cred.auth_type ?? "N/A"}). Endpoint: ${cred.endpoint ?? "N/A"}. Raised from credentials verification step.`,
+                    )
+                  }
+                  className="w-full justify-center gap-1.5 border-[#2a63f5]/30 text-[#2a63f5] hover:bg-[#2a63f5]/5 disabled:opacity-40"
+                >
+                  <Ticket className="h-3.5 w-3.5" />
+                  Raise Ticket
+                </Button>
+              </div>
+
+
               {cred.verified && (
                 <p className="text-green-600 text-xs mt-2">Verified</p>
               )}
@@ -755,27 +834,6 @@ export default function ProjectDetailsPage() {
           ))
         )}
       </div>
-      {credentials.length > 0 && !allVerified && (
-        <div className="flex justify-center mt-4">
-          <Button
-            onClick={async () => {
-              try {
-                await createTicket(
-                  projectId,
-                  `Issue for ${project?.name}`,
-                  "Raised from credentials section",
-                );
-                toast.success("Ticket raised successfully");
-              } catch (error) {
-                toast.error("Failed to raise ticket");
-              }
-            }}
-          >
-            <Ticket className="h-4 w-4 mr-2" />
-            Raise Ticket
-          </Button>
-        </div>
-      )}
     </div>
   );
 
@@ -808,6 +866,7 @@ export default function ProjectDetailsPage() {
   }
 
   return (
+    <>
     <div className="space-y-4 px-4 py-4 sm:px-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -889,10 +948,39 @@ export default function ProjectDetailsPage() {
       ) : (
         <Card className="border-black/10 bg-white">
           <CardHeader>
-            <CardTitle className="text-black">Project Configuration</CardTitle>
-            <CardDescription>
-              Edit name, description, testing team, and documents.
-            </CardDescription>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle className="text-black">Project Configuration</CardTitle>
+                <CardDescription>
+                  Edit name, description, testing team, and documents.
+                </CardDescription>
+              </div>
+
+              {/* Connect to Jira — 3-state button */}
+              {jiraConfig?.connected ? (
+                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  Connected · Key:{" "}
+                  <span className="font-bold">{jiraConfig.jira_project_key}</span>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleConnectJira()}
+                  disabled={isConnectingJira}
+                  className="gap-2 border-[#2a63f5]/30 text-[#2a63f5] hover:bg-[#2a63f5]/5"
+                >
+                  {isConnectingJira ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Link2 className="h-3.5 w-3.5" />
+                  )}
+                  {isConnectingJira ? "Connecting…" : "Connect to Jira"}
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid grid-cols-1 gap-4">
@@ -1078,22 +1166,20 @@ export default function ProjectDetailsPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={async () => {
-                      try {
-                        await createTicket(
-                          project.id,
-                          `Issue for ${project.name}`,
-                          "Raised from Project Configuration",
-                        );
-                        toast.success("Ticket raised for this project.");
-                      } catch (error) {
-                        const message =
-                          error instanceof ApiError
-                            ? error.message
-                            : "Unable to raise ticket.";
-                        toast.error(message);
-                      }
-                    }}
+                    disabled={!jiraConfig?.connected}
+                    title={
+                      !jiraConfig?.connected
+                        ? "Connect to Jira first to raise tickets"
+                        : "Raise a ticket for this URL verification issue"
+                    }
+                    onClick={() =>
+                      openRaiseTicket(
+                        "url_section",
+                        `URL Verification Issue — ${project.name}`,
+                        `The project URL ${project.url || formState.url} was launched and requires attention. Raised from URL verification step.`,
+                      )
+                    }
+                    className="gap-2 disabled:opacity-40"
                   >
                     <Ticket className="h-4 w-4" />
                     Raise Ticket
@@ -1269,5 +1355,18 @@ export default function ProjectDetailsPage() {
         </Card>
       )}
     </div>
+
+    {/* Raise Ticket Modal — shared across URL section and credentials section */}
+    <RaiseTicketModal
+      open={raiseTicketModal.open}
+      onClose={() =>
+        setRaiseTicketModal((prev) => ({ ...prev, open: false }))
+      }
+      projectId={projectId}
+      defaultTitle={raiseTicketModal.defaultTitle}
+      defaultDescription={raiseTicketModal.defaultDescription}
+      raisedFrom={raiseTicketModal.raisedFrom}
+    />
+    </>
   );
 }
