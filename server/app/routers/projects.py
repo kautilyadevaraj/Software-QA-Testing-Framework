@@ -1,6 +1,14 @@
 import uuid
 import csv
-from app.models.project import ProjectFile, FileType, ProjectCredentialVerification, ExtractedText, APIEndpoint
+from app.models.project import (
+    ProjectFile,
+    FileType,
+    ProjectCredentialVerification,
+    ExtractedText,
+    APIEndpoint,
+    ProjectJiraConfig,
+    JiraTicket,
+)
 from playwright.sync_api import sync_playwright
 import threading
 
@@ -226,6 +234,132 @@ def ingest_project(
     }
 
 
+# ---------------------------------------------------------------------------
+# Jira — Connect project to a Jira project (one-time, idempotent)
+# ---------------------------------------------------------------------------
+
+@router.post("/{project_id}/jira/connect")
+@limiter.limit(settings.rate_limit_api)
+def connect_jira(
+    request: Request,
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Create a Jira project for this app project and persist the mapping.
+
+    Idempotent: if the mapping already exists in the DB the Jira API is
+    never called again — the existing config is returned immediately.
+    """
+    from app.services.jira_service import (
+        is_jira_configured,
+        generate_jira_key,
+        create_jira_project,
+    )
+
+    project = get_project_or_404(db, current_user.id, project_id)
+
+    # — Idempotency guard —
+    existing = (
+        db.query(ProjectJiraConfig)
+        .filter(ProjectJiraConfig.project_id == project.id)
+        .first()
+    )
+    if existing:
+        return {
+            "connected": True,
+            "jira_project_key": existing.jira_project_key,
+            "jira_project_id": existing.jira_project_id,
+            "already_existed": True,
+        }
+
+    # — Credential check —
+    if not is_jira_configured():
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Jira credentials are not configured. "
+                "Set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in your .env file."
+            ),
+        )
+
+    # — Generate unique key —
+    base_key = generate_jira_key(project.name)
+
+    # Ensure uniqueness within this workspace (check existing keys in DB)
+    used_keys = {
+        row.jira_project_key
+        for row in db.query(ProjectJiraConfig.jira_project_key).all()
+    }
+    candidate = base_key
+    suffix = 1
+    while candidate in used_keys:
+        candidate = f"{base_key}{suffix}"
+        suffix += 1
+
+    # — Create Jira project —
+    try:
+        result = create_jira_project(
+            name=project.name,
+            key=candidate,
+            description=project.description or "",
+        )
+    except RuntimeError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    # — Persist mapping —
+    config = ProjectJiraConfig(
+        project_id=project.id,
+        jira_project_key=result["jira_project_key"],
+        jira_project_id=result["jira_project_id"],
+    )
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+
+    return {
+        "connected": True,
+        "jira_project_key": config.jira_project_key,
+        "jira_project_id": config.jira_project_id,
+        "already_existed": False,
+    }
+
+
+@router.get("/{project_id}/jira/config")
+@limiter.limit(settings.rate_limit_api)
+def get_jira_config(
+    request: Request,
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return the current Jira connection state for this project.
+
+    Always succeeds (never 404) — ``connected`` will be ``False`` when no
+    mapping exists yet.
+    """
+    get_project_or_404(db, current_user.id, project_id)  # auth check
+
+    config = (
+        db.query(ProjectJiraConfig)
+        .filter(ProjectJiraConfig.project_id == project_id)
+        .first()
+    )
+    if config:
+        return {
+            "connected": True,
+            "jira_project_key": config.jira_project_key,
+            "jira_project_id": config.jira_project_id,
+        }
+    return {"connected": False, "jira_project_key": None, "jira_project_id": None}
+
+
+# ---------------------------------------------------------------------------
+# Tickets — real Jira issue creation + local persistence
+# ---------------------------------------------------------------------------
+
 @router.post("/{project_id}/tickets")
 @limiter.limit(settings.rate_limit_api)
 def create_ticket(
@@ -235,15 +369,94 @@ def create_ticket(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    project = get_project_or_404(db, current_user.id, project_id)
+    """Create a Jira issue and persist a local record.
+
+    Expected payload fields:
+        title        (str)  — issue summary
+        description  (str)  — issue body
+        issue_type   (str)  — Bug | Task | Story
+        priority     (str)  — High | Medium | Low
+        raised_from  (str)  — url_section | credentials_section
+
+    Returns the locally-stored ticket record including the Jira issue key.
+    """
+    from fastapi import HTTPException
+    from app.services.jira_service import create_jira_issue, is_jira_configured
     from datetime import datetime, timezone
+
+    project = get_project_or_404(db, current_user.id, project_id)
+
+    # — Must be connected to Jira first —
+    jira_config = (
+        db.query(ProjectJiraConfig)
+        .filter(ProjectJiraConfig.project_id == project.id)
+        .first()
+    )
+    if not jira_config:
+        raise HTTPException(
+            status_code=400,
+            detail="This project is not connected to Jira yet. Click 'Connect to Jira' first.",
+        )
+
+    if not is_jira_configured():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Jira credentials are not configured. "
+                "Set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in your .env file."
+            ),
+        )
+
+    title: str = (payload.get("title") or "").strip()
+    description: str = (payload.get("description") or "").strip()
+    issue_type: str = (payload.get("issue_type") or "Bug").strip()
+    priority: str = (payload.get("priority") or "Medium").strip()
+    raised_from: str = (payload.get("raised_from") or "url_section").strip()
+
+    if not title:
+        raise HTTPException(status_code=422, detail="'title' is required.")
+
+    # — Call Jira API —
+    try:
+        result = create_jira_issue(
+            project_key=jira_config.jira_project_key,
+            title=title,
+            description=description,
+            issue_type=issue_type,
+            priority=priority,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    # — Persist locally —
+    ticket = JiraTicket(
+        project_id=project.id,
+        jira_issue_key=result["jira_issue_key"],
+        jira_issue_id=result["jira_issue_id"],
+        title=title,
+        description=description,
+        issue_type=issue_type,
+        priority=priority,
+        status="Open",
+        raised_from=raised_from,
+        raised_by_user_id=current_user.id,
+    )
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+
     return {
-        "id": str(uuid.uuid4()),
-        "project_id": str(project.id),
-        "title": payload.get("title", ""),
-        "description": payload.get("description", ""),
-        "status": "open",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "id": str(ticket.id),
+        "project_id": str(ticket.project_id),
+        "jira_issue_key": ticket.jira_issue_key,
+        "jira_issue_id": ticket.jira_issue_id,
+        "title": ticket.title,
+        "description": ticket.description,
+        "issue_type": ticket.issue_type,
+        "priority": ticket.priority,
+        "status": ticket.status,
+        "raised_from": ticket.raised_from,
+        "created_at": ticket.created_at.isoformat(),
     }
 
 

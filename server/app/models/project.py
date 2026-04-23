@@ -132,3 +132,63 @@ class APIEndpoint(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     project = relationship("Project")
+
+
+class ProjectJiraConfig(Base):
+    """Stores the Jira project binding for one app project.
+
+    There is a DB-level UNIQUE constraint on project_id — one app project
+    maps to exactly one Jira project, forever.
+    """
+
+    __tablename__ = "project_jira_config"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid6.uuid7)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # ← enforces one-project-one-key at DB level
+        index=True,
+    )
+    jira_project_key: Mapped[str] = mapped_column(String(20), nullable=False)
+    jira_project_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    project = relationship("Project")
+
+
+class JiraTicket(Base):
+    """Local record of every Jira ticket raised from within this app."""
+
+    __tablename__ = "jira_tickets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid6.uuid7)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    jira_issue_key: Mapped[str] = mapped_column(String(50), nullable=False)  # e.g. "MSA-1"
+    jira_issue_id: Mapped[str] = mapped_column(String(50), nullable=False)   # Jira internal ID
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    issue_type: Mapped[str] = mapped_column(String(50), nullable=False, default="Bug")
+    priority: Mapped[str] = mapped_column(String(20), nullable=False, default="Medium")
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="Open")
+    raised_from: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="url_section"
+    )  # "url_section" | "credentials_section"
+    raised_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    project = relationship("Project")

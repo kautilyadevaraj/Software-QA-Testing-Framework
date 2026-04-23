@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
 
+    # Jira Integration
+    jira_base_url: str | None = None
+    jira_email: str | None = None
+    jira_api_token: str | None = None
+    jira_lead_account_id: str | None = None
+
     @field_validator("cookie_samesite")
     @classmethod
     def validate_cookie_samesite(cls, value: str) -> str:
