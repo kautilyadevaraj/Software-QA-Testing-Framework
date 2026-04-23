@@ -103,6 +103,24 @@ class ExtractedText(Base):
     project = relationship("Project")
 
 
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid6.uuid7)
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("project_files.id", ondelete="CASCADE"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    extracted_text_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("extracted_text.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    start_idx: Mapped[int] = mapped_column(nullable=False)
+    end_idx: Mapped[int] = mapped_column(nullable=False)
+    qdrant_point_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    file = relationship("ProjectFile")
+    project = relationship("Project")
+    extracted_text = relationship("ExtractedText")
+
+
 class APIEndpoint(Base):
     __tablename__ = "api_endpoints"
 

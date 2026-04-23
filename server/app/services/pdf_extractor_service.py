@@ -6,12 +6,48 @@ from sqlalchemy import select, func
 import prance
 import re
 import time
+import json
+import uuid
 
-from app.models.project import ProjectFile, FileType, Project, ExtractedText, APIEndpoint
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models
+except ImportError:
+    QdrantClient = None
+    models = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+    embedder = SentenceTransformer("all-MiniLM-L6-v2")
+except Exception as e:
+    print(f"Failed to load sentence-transformers: {e}")
+    embedder = None
+
+from app.models.project import ProjectFile, FileType, Project, ExtractedText, APIEndpoint, Chunk
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 
 PDF_PROGRESS = {}
+
+
+def chunk_text(text: str, chunk_size: int = 1000, overlap_ratio: float = 0.2):
+    overlap = int(chunk_size * overlap_ratio)
+    step = chunk_size - overlap
+    chunks = []
+    start_indices = []
+    end_indices = []
+    
+    if not text:
+        return chunks, start_indices, end_indices
+        
+    for i in range(0, len(text), step):
+        chunk = text[i:i+chunk_size]
+        chunks.append(chunk)
+        start_indices.append(i)
+        end_indices.append(i + len(chunk))
+        if i + chunk_size >= len(text):
+            break
+    return chunks, start_indices, end_indices
 
 
 def _run_extraction(project_id_str: str):
@@ -20,6 +56,15 @@ def _run_extraction(project_id_str: str):
         settings = get_settings()
         project_dir = Path(settings.upload_dir) / project_id_str
         project_dir.mkdir(parents=True, exist_ok=True)
+        
+        qdrant_client = None
+        if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+            qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+            if not qdrant_client.collection_exists("project_documents"):
+                qdrant_client.create_collection(
+                    collection_name="project_documents",
+                    vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
+                )
 
         project = db.query(Project).get(project_id_str)
         if not project:
@@ -39,7 +84,7 @@ def _run_extraction(project_id_str: str):
                     FileType.WBS,
                     FileType.ASSUMPTION,
                 ])
-            )
+            ).order_by(ProjectFile.file_type, ProjectFile.uploaded_at)
         ).scalars().all()
 
         if not files:
@@ -61,7 +106,8 @@ def _run_extraction(project_id_str: str):
                     "progress": int((i / total) * 100),
                     "logs": logs
                 }
-                time.sleep(1.5)
+                time.sleep(1.0)
+
 
                 doc = fitz.open(file.absolute_path)
 
@@ -96,6 +142,62 @@ def _run_extraction(project_id_str: str):
                 )
                 db.add(extracted)
                 db.commit()
+                db.refresh(extracted)
+
+                logs.append(f"Generating chunks and embeddings for {file.original_filename}...")
+                PDF_PROGRESS[project_id_str] = {
+                    "status": "processing",
+                    "progress": int((i / total) * 100) + 5,
+                    "logs": logs
+                }
+                time.sleep(1.5)
+
+                
+                chunks_text, start_idx_list, end_idx_list = chunk_text(text, chunk_size=1000, overlap_ratio=0.2)
+                
+                if embedder and chunks_text:
+                    embeddings = embedder.encode(chunks_text, convert_to_numpy=True).tolist()
+                    qdrant_points = []
+                    
+                    for idx, (chunk_str, start_i, end_i, emb) in enumerate(zip(chunks_text, start_idx_list, end_idx_list, embeddings)):
+                        # Deterministic ID using text hash for deduplication
+                        qdrant_point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_str))
+                        
+                        db_chunk = Chunk(
+                            file_id=file.id,
+                            project_id=project.id,
+                            extracted_text_id=extracted.id,
+                            chunk_index=idx,
+                            start_idx=start_i,
+                            end_idx=end_i,
+                            qdrant_point_id=qdrant_point_id
+                        )
+                        db.add(db_chunk)
+                        
+                        if qdrant_client:
+                            qdrant_points.append(
+                                models.PointStruct(
+                                    id=qdrant_point_id,
+                                    vector=emb,
+                                    payload={
+                                        "chunk_id": qdrant_point_id,
+                                        "file_id": str(file.id),
+                                        "project_id": str(project.id),
+                                        "start_idx": start_i,
+                                        "end_idx": end_i,
+                                        "category": file.file_type.value,
+                                        "text": chunk_str
+                                    }
+                                )
+                            )
+                    
+                    db.commit()
+                    
+                    if qdrant_client and qdrant_points:
+                        qdrant_client.upsert(
+                            collection_name="project_documents",
+                            points=qdrant_points
+                        )
 
                 logs.append(f"Successfully parsed {file.original_filename}")
 
@@ -106,7 +208,7 @@ def _run_extraction(project_id_str: str):
             select(ProjectFile).where(
                 ProjectFile.project_id == project.id,
                 ProjectFile.file_type == FileType.SWAGGER_DOCS
-            )
+            ).order_by(ProjectFile.uploaded_at)
         ).scalars().all()
 
         for file in swagger_files:
@@ -117,7 +219,7 @@ def _run_extraction(project_id_str: str):
                     "progress": 90,
                     "logs": logs
                 }
-                time.sleep(1)
+
                 
                 parser = prance.ResolvingParser(file.absolute_path)
                 spec = parser.specification

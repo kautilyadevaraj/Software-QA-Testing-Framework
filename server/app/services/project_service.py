@@ -5,6 +5,13 @@ import shutil
 import uuid
 from pathlib import Path
 
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models
+except ImportError:
+    QdrantClient = None
+    models = None
+
 from fastapi import HTTPException, status
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
@@ -99,6 +106,23 @@ def delete_project(db: Session, project: Project) -> None:
     
     db.delete(project)
     db.commit()
+
+    if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+        try:
+            qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+            qdrant_client.delete(
+                collection_name="project_documents",
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="project_id",
+                            match=models.MatchValue(value=str(project.id))
+                        )
+                    ]
+                )
+            )
+        except Exception as e:
+            print(f"Failed to clear Qdrant data for project {project.id}: {e}")
 
     # Clean up files physically
     if project_dir.exists() and project_dir.is_dir():

@@ -11,6 +11,8 @@ Autonomous QA pipeline: upload project documents, verify the target URL, and gen
 | **Database** | PostgreSQL 14+ |
 | **Extraction** | PyMuPDF (PDF Text), Prance (Swagger/OpenAPI), Playwright (Auth/E2E Docs) |
 | **Auth** | JWT (access + refresh tokens, HTTP-only cookies) |
+| **Vector DB** | Qdrant Cloud |
+| **Embeddings** | Hugging Face (Sentence Transformers) |
 | **File Storage** | Local filesystem (`server/uploads/`) |
 
 ## Prerequisites
@@ -65,6 +67,11 @@ Edit `server/.env`:
 DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/sqat_db
 JWT_SECRET_KEY=at_least_24_characters_long_random_string
 FRONTEND_ORIGINS=http://localhost:3000
+
+# Optional: For RAG / Semantic Search features
+HF_TOKEN=your_huggingface_token
+QDRANT_URL=your_qdrant_cloud_url
+QDRANT_API_KEY=your_qdrant_api_key
 ```
 
 > The rest of the values in `.env.example` are fine as defaults for local dev.

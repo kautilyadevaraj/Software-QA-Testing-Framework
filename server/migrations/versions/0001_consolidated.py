@@ -216,9 +216,45 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
     )
+    # ── chunks ──────────────────────────────────────────────────────────────────
+    op.create_table(
+        "chunks",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "file_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("project_files.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "project_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("projects.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        sa.Column(
+            "extracted_text_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("extracted_text.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        sa.Column("chunk_index", sa.Integer, nullable=False),
+        sa.Column("start_idx", sa.Integer, nullable=False),
+        sa.Column("end_idx", sa.Integer, nullable=False),
+        sa.Column("qdrant_point_id", sa.Text, nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("chunks")
     op.drop_table("api_endpoints")
     op.drop_table("extracted_text")
     op.drop_table("project_credential_verifications")

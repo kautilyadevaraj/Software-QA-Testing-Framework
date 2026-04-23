@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     rate_limit_auth: str = "300/minute"
     rate_limit_api: str = "5000/minute"
 
+    qdrant_url: str | None = None
+    qdrant_api_key: str | None = None
+
     @field_validator("cookie_samesite")
     @classmethod
     def validate_cookie_samesite(cls, value: str) -> str:

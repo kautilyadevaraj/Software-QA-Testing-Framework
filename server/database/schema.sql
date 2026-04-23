@@ -140,6 +140,27 @@ CREATE INDEX ix_extracted_text_project_id ON extracted_text (project_id);
 
 
 -- ---------------------------------------------------------------------------
+-- 7.5 CHUNKS
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE chunks (
+    id                UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    file_id           UUID        NOT NULL REFERENCES project_files (id) ON DELETE CASCADE,
+    project_id        UUID        NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    extracted_text_id UUID        NOT NULL REFERENCES extracted_text (id) ON DELETE CASCADE,
+    chunk_index       INTEGER     NOT NULL,
+    start_idx         INTEGER     NOT NULL,
+    end_idx           INTEGER     NOT NULL,
+    qdrant_point_id   TEXT        NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ix_chunks_project_id ON chunks (project_id);
+CREATE INDEX ix_chunks_extracted_text_id ON chunks (extracted_text_id);
+
+
+
+-- ---------------------------------------------------------------------------
 -- 8. API ENDPOINTS
 -- ---------------------------------------------------------------------------
 

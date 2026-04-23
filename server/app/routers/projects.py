@@ -4,6 +4,13 @@ from app.models.project import ProjectFile, FileType, ProjectCredentialVerificat
 from playwright.sync_api import sync_playwright
 import threading
 
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models
+except ImportError:
+    QdrantClient = None
+    models = None
+
 from fastapi import APIRouter, Body, Depends, Query, Request
 from sqlalchemy.orm import Session
 
@@ -184,6 +191,23 @@ def ingest_project(
     db.query(ExtractedText).filter(ExtractedText.project_id == project.id).delete()
     db.query(APIEndpoint).filter(APIEndpoint.project_id == project.id).delete()
     db.commit()
+
+    if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+        try:
+            qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+            qdrant_client.delete(
+                collection_name="project_documents",
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="project_id",
+                            match=models.MatchValue(value=str(project.id))
+                        )
+                    ]
+                )
+            )
+        except Exception as e:
+            print(f"Failed to clear Qdrant data: {e}")
 
     project_id_str = str(project.id)
     if project_id_str in PDF_PROGRESS:

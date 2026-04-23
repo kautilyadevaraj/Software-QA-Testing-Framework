@@ -610,7 +610,7 @@ export default function ProjectDetailsPage() {
 
               {status !== "idle" && (() => {
                   const expectedDocs = [
-                    ...[...(documents.BRD || []), ...(documents.FSD || []), ...(documents.WBS || []), ...(documents.Assumption || [])].map(d => d.name),
+                    ...[...(documents.BRD || []), ...(documents.FSD || []), ...(documents.WBS || []), ...(documents.Assumptions || [])].map(d => d.name),
                     ...(documents.SwaggerDocs || []).map(d => `Swagger ${d.name}`)
                   ];
 
@@ -621,12 +621,18 @@ export default function ProjectDetailsPage() {
                     const parseStr = isSwagger ? `Parsing Swagger ${baseName}` : `Parsing ${baseName}`;
                     const successStr = isSwagger ? `Successfully parsed Swagger ${baseName}` : `Successfully parsed ${baseName}`;
                     const failStr = isSwagger ? `Failed parsing Swagger ${baseName}` : `Failed ${baseName}`;
+                    const chunkingStr = `Generating chunks and embeddings for ${baseName}`;
 
                     const successLog = logsList.find(l => l.startsWith(successStr));
                     if (successLog) return 'completed';
 
                     const failLog = logsList.find(l => l.startsWith(failStr));
                     if (failLog) return 'failed';
+
+                    if (!isSwagger) {
+                      const chunkingLog = logsList.find(l => l.startsWith(chunkingStr));
+                      if (chunkingLog) return 'chunking';
+                    }
 
                     const parseLog = logsList.find(l => l.startsWith(parseStr));
                     if (parseLog) return 'processing';
@@ -678,6 +684,11 @@ export default function ProjectDetailsPage() {
                                     <div className="absolute inset-0 rounded-full border-[2.5px] border-[#2a63f5]/20 border-t-[#2a63f5] animate-spin" style={{ animationDuration: '1s' }}></div>
                                     <span className="font-semibold text-xs text-[#2a63f5] z-10">{task.id}</span>
                                  </div>
+                              ) : task.status === 'chunking' ? (
+                                 <div className="relative w-7 h-7 flex items-center justify-center shrink-0">
+                                    <div className="absolute inset-0 rounded-full border-[2.5px] border-[#8b5cf6]/20 border-t-[#8b5cf6] animate-spin" style={{ animationDuration: '1s' }}></div>
+                                    <span className="font-semibold text-xs text-[#8b5cf6] z-10">{task.id}</span>
+                                 </div>
                               ) : task.status === 'failed' ? (
                                  <div className="w-7 h-7 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 shadow-sm border border-transparent transition-all">
                                    <span className="font-bold text-[10px]">X</span>
@@ -687,9 +698,10 @@ export default function ProjectDetailsPage() {
                                    {task.id}
                                  </div>
                               )}
-                              <span className={`text-[15px] font-medium transition-all duration-300 ${task.status === 'completed' ? 'text-gray-500' : task.status === 'failed' ? 'text-red-500' : task.status === 'processing' ? 'text-gray-900' : 'text-gray-400'}`}>
-                                 {task.status === 'completed' ? `Successfully parsed ${task.label}` :
-                                  task.status === 'failed' ? `Failed to parse ${task.label}` :
+                              <span className={`text-[15px] font-medium transition-all duration-300 ${task.status === 'completed' ? 'text-gray-500' : task.status === 'failed' ? 'text-red-500' : (task.status === 'processing' || task.status === 'chunking') ? 'text-gray-900' : 'text-gray-400'}`}>
+                                 {task.status === 'completed' ? `Successfully processed ${task.label}` :
+                                  task.status === 'failed' ? `Failed to process ${task.label}` :
+                                  task.status === 'chunking' ? `Chunking & generating embeddings for ${task.label}...` :
                                   task.status === 'processing' ? `Parsing ${task.label}...` :
                                   `Queued for parsing ${task.label}`}
                               </span>
