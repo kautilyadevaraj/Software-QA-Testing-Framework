@@ -1,5 +1,6 @@
 import uuid
 import csv
+import asyncio
 from app.models.project import (
     ProjectFile,
     FileType,
@@ -203,17 +204,26 @@ def ingest_project(
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-            qdrant_client.delete(
-                collection_name="project_documents",
-                points_selector=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="project_id",
-                            match=models.MatchValue(value=str(project.id))
-                        )
-                    ]
+            if not qdrant_client.collection_exists("project_documents"):
+                qdrant_client = None
+
+            if qdrant_client is not None:
+                qdrant_client.create_payload_index(
+                    collection_name="project_documents",
+                    field_name="project_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD,
                 )
-            )
+                qdrant_client.delete(
+                    collection_name="project_documents",
+                    points_selector=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="project_id",
+                                match=models.MatchValue(value=str(project.id))
+                            )
+                        ]
+                    )
+                )
         except Exception as e:
             print(f"Failed to clear Qdrant data: {e}")
 
@@ -551,6 +561,11 @@ def run_playwright(
                     break
 
     def run():
+        if hasattr(asyncio, "WindowsProactorEventLoopPolicy") and not isinstance(
+            asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy
+        ):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
             context = browser.new_context()

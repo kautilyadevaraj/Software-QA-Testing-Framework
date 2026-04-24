@@ -143,6 +143,14 @@ def delete_project_file(db: Session, project: Project, file_id: uuid.UUID) -> No
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+            if not qdrant_client.collection_exists("project_documents"):
+                return
+
+            qdrant_client.create_payload_index(
+                collection_name="project_documents",
+                field_name="file_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
             qdrant_client.delete(
                 collection_name="project_documents",
                 points_selector=models.Filter(

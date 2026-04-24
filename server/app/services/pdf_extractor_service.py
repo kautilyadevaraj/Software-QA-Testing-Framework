@@ -19,10 +19,8 @@ except ImportError:
 
 try:
     from sentence_transformers import SentenceTransformer
-    from huggingface_hub import snapshot_download
 except Exception:
     SentenceTransformer = None
-    snapshot_download = None
 
 from app.models.project import ProjectFile, FileType, Project, ExtractedText, APIEndpoint, Chunk
 from app.core.config import get_settings
@@ -64,6 +62,11 @@ def _load_sentence_transformer(model_ref: str, cache_dir: Path, token: str | Non
         raise
 
 
+def _is_local_model_ready(model_dir: Path) -> bool:
+    # SentenceTransformer.save() outputs these files at model root.
+    return (model_dir / "modules.json").exists() and (model_dir / "config_sentence_transformers.json").exists()
+
+
 def get_embedder():
     global _EMBEDDER
 
@@ -93,20 +96,7 @@ def get_embedder():
         os.environ.setdefault("HF_HOME", str(cache_dir))
         os.environ.setdefault("TRANSFORMERS_CACHE", str(cache_dir))
 
-        has_local_model = (model_dir / "config.json").exists()
-        if not has_local_model and snapshot_download is not None:
-            try:
-                download_kwargs = {
-                    "repo_id": model_name,
-                    "local_dir": str(model_dir),
-                    "cache_dir": str(cache_dir),
-                }
-                if token:
-                    download_kwargs["token"] = token
-                snapshot_download(**download_kwargs)
-                has_local_model = True
-            except Exception as exc:
-                print(f"Failed to download model '{model_name}' locally: {exc}")
+        has_local_model = _is_local_model_ready(model_dir)
 
         if has_local_model:
             try:
@@ -117,6 +107,12 @@ def get_embedder():
 
         try:
             _EMBEDDER = _load_sentence_transformer(model_name, cache_dir, token, local_only=False)
+            if _EMBEDDER is not None:
+                try:
+                    model_dir.mkdir(parents=True, exist_ok=True)
+                    _EMBEDDER.save(str(model_dir))
+                except Exception as exc:
+                    print(f"Failed to persist model to '{model_dir}': {exc}")
         except Exception as exc:
             print(f"Failed to load sentence-transformers model '{model_name}': {exc}")
             _EMBEDDER = None
@@ -159,6 +155,14 @@ def _run_extraction(project_id_str: str):
                     collection_name="project_documents",
                     vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
                 )
+            try:
+                qdrant_client.create_payload_index(
+                    collection_name="project_documents",
+                    field_name="project_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                )
+            except Exception as exc:
+                print(f"Qdrant payload index setup skipped/failed for project_id: {exc}")
 
         project = db.query(Project).get(project_id_str)
         if not project:

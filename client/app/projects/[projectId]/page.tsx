@@ -52,6 +52,8 @@ import {
   verifyProject,
   getProjectCredentials,
   runProjectPlaywright,
+  getProjectExtractStatus,
+  startProjectPdfExtraction,
   type JiraConfig,
 } from "@/lib/api";
 import type { MemberResponse, UserSearchResponse } from "@/lib/api";
@@ -250,45 +252,73 @@ export default function ProjectDetailsPage() {
   };
 
   useEffect(() => {
-    if (activeTab === "qa" || isIngestionStarted) {
-      fetchCredentials();
+    if (activeTab !== "configuration" && !isIngestionStarted) return;
 
-      const interval = setInterval(fetchCredentials, 3000);
-      return () => clearInterval(interval);
-    }
+    let isStopped = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const syncCredentials = async () => {
+      const verified = await fetchCredentials();
+      if (verified && interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+
+    void syncCredentials();
+
+    const shouldPoll = activeTab === "configuration" && isIngestionStarted;
+    if (!shouldPoll) return;
+
+    interval = setInterval(() => {
+      if (!isStopped) {
+        void syncCredentials();
+      }
+    }, 5000);
+
+    return () => {
+      isStopped = true;
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
   }, [activeTab, isIngestionStarted]);
 
   useEffect(() => {
     if (!allVerified || !isIngestionStarted) return;
 
     const interval = setInterval(async () => {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/projects/${projectId}/extract-status`,
-        {
-          credentials: "include",
-        },
-      );
-      const data = await res.json();
+      try {
+        const data = await getProjectExtractStatus(projectId);
 
-      setProgress(data.progress || 0);
-      setLogs(data.logs || []);
-      setStatus(data.status || "idle");
+        setProgress(data.progress || 0);
+        setLogs(data.logs || []);
+        setStatus(data.status || "idle");
 
-      if (data.status === "completed") {
+        if (data.status === "completed") {
+          clearInterval(interval);
+          setTimeout(() => {
+            setActiveTab("qa");
+          }, 3000);
+          return;
+        }
+
+        if (data.status === "error" || data.status === "no_files") {
+          clearInterval(interval);
+        }
+      } catch (error) {
+        console.error("Failed to fetch extraction status:", error);
         clearInterval(interval);
-        setTimeout(() => {
-          setActiveTab("qa");
-        }, 3000);
       }
-    }, 2000);
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [allVerified, isIngestionStarted, projectId]);
 
   const canIngestAndAddDocuments = isLaunched && isProceedConfirmed;
 
-  const fetchCredentials = async () => {
-    if (!projectId) return;
+  const fetchCredentials = async (): Promise<boolean> => {
+    if (!projectId) return false;
 
     try {
       const data = await getProjectCredentials(projectId);
@@ -297,6 +327,7 @@ export default function ProjectDetailsPage() {
         console.log("DEBUG credentials:", data);
         setCredentials(data);
         setIsBackendSynced(true);
+        return data.length > 0 && data.every((c) => c.verified === true);
       } else {
         setCredentials([]);
       }
@@ -304,6 +335,8 @@ export default function ProjectDetailsPage() {
       console.error("Failed to fetch credentials:", err);
       setCredentials([]);
     }
+
+    return false;
   };
 
   const handleSearchUsers = async () => {
@@ -408,13 +441,7 @@ export default function ProjectDetailsPage() {
   };
 
   const startExtraction = async () => {
-    await fetch(
-      `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/projects/${projectId}/extract-pdfs`,
-      {
-        method: "POST",
-        credentials: "include",
-      },
-    );
+    await startProjectPdfExtraction(projectId);
   };
 
   const handleMarkVerified = async (cred: any) => {

@@ -1,5 +1,9 @@
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const API_BASE_URL_FALLBACK = API_BASE_URL.includes("localhost")
+  ? API_BASE_URL.replace("localhost", "127.0.0.1")
+  : API_BASE_URL;
 const API_ROOT = `${API_BASE_URL}/api/v1`;
+const API_ROOT_FALLBACK = `${API_BASE_URL_FALLBACK}/api/v1`;
 
 type ApiRequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -73,7 +77,15 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     }
   }
 
-  const response = await fetch(`${API_ROOT}${path}`, init);
+  let response: Response;
+  try {
+    response = await fetch(`${API_ROOT}${path}`, init);
+  } catch (error) {
+    if (API_ROOT_FALLBACK === API_ROOT) {
+      throw error;
+    }
+    response = await fetch(`${API_ROOT_FALLBACK}${path}`, init);
+  }
 
   const isJson = response.headers.get("content-type")?.includes("application/json");
   const payload = isJson ? ((await response.json()) as unknown) : null;
@@ -382,4 +394,19 @@ export async function getProjectJiraConfig(projectId: string) {
   return request<JiraConfig>(`/projects/${projectId}/jira/config`, {
     method: "GET",
   });
+}
+
+export async function startProjectPdfExtraction(projectId: string) {
+  return request<{ status: string }>(`/projects/${projectId}/extract-pdfs`, {
+    method: "POST",
+  });
+}
+
+export async function getProjectExtractStatus(projectId: string) {
+  return request<{ status: string; progress: number; logs: string[] }>(
+    `/projects/${projectId}/extract-status`,
+    {
+      method: "GET",
+    },
+  );
 }

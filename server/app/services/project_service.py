@@ -110,17 +110,23 @@ def delete_project(db: Session, project: Project) -> None:
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-            qdrant_client.delete(
-                collection_name="project_documents",
-                points_selector=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="project_id",
-                            match=models.MatchValue(value=str(project.id))
-                        )
-                    ]
+            if qdrant_client.collection_exists("project_documents"):
+                qdrant_client.create_payload_index(
+                    collection_name="project_documents",
+                    field_name="project_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD,
                 )
-            )
+                qdrant_client.delete(
+                    collection_name="project_documents",
+                    points_selector=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="project_id",
+                                match=models.MatchValue(value=str(project.id))
+                            )
+                        ]
+                    )
+                )
         except Exception as e:
             print(f"Failed to clear Qdrant data for project {project.id}: {e}")
 
