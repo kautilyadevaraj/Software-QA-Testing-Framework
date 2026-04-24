@@ -203,27 +203,13 @@ def ingest_project(
 
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
+            import re
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-            if not qdrant_client.collection_exists("project_documents"):
-                qdrant_client = None
+            safe_project_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', project.name)
+            collection_name = f"{project.id}_{safe_project_name}"
 
-            if qdrant_client is not None:
-                qdrant_client.create_payload_index(
-                    collection_name="project_documents",
-                    field_name="project_id",
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
-                qdrant_client.delete(
-                    collection_name="project_documents",
-                    points_selector=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="project_id",
-                                match=models.MatchValue(value=str(project.id))
-                            )
-                        ]
-                    )
-                )
+            if qdrant_client.collection_exists(collection_name):
+                qdrant_client.delete_collection(collection_name)
         except Exception as e:
             print(f"Failed to clear Qdrant data: {e}")
 

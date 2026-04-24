@@ -147,23 +147,6 @@ def _run_extraction(project_id_str: str):
         project_dir = Path(settings.upload_dir) / project_id_str
         project_dir.mkdir(parents=True, exist_ok=True)
         
-        qdrant_client = None
-        if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
-            qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-            if not qdrant_client.collection_exists("project_documents"):
-                qdrant_client.create_collection(
-                    collection_name="project_documents",
-                    vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
-                )
-            try:
-                qdrant_client.create_payload_index(
-                    collection_name="project_documents",
-                    field_name="project_id",
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
-            except Exception as exc:
-                print(f"Qdrant payload index setup skipped/failed for project_id: {exc}")
-
         project = db.query(Project).get(project_id_str)
         if not project:
             PDF_PROGRESS[project_id_str] = {
@@ -172,6 +155,27 @@ def _run_extraction(project_id_str: str):
                 "logs": ["Project not found"]
             }
             return
+
+        import re
+        safe_project_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', project.name)
+        collection_name = f"{project.id}_{safe_project_name}"
+
+        qdrant_client = None
+        if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+            qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key, timeout=60.0)
+            if not qdrant_client.collection_exists(collection_name):
+                qdrant_client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
+                )
+            try:
+                qdrant_client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="project_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                )
+            except Exception as exc:
+                print(f"Qdrant payload index setup skipped/failed for project_id: {exc}")
 
         files = db.execute(
             select(ProjectFile).where(
@@ -295,10 +299,13 @@ def _run_extraction(project_id_str: str):
                     db.commit()
                     
                     if qdrant_client and qdrant_points:
-                        qdrant_client.upsert(
-                            collection_name="project_documents",
-                            points=qdrant_points
-                        )
+                        batch_size = 50
+                        for i in range(0, len(qdrant_points), batch_size):
+                            batch = qdrant_points[i:i + batch_size]
+                            qdrant_client.upsert(
+                                collection_name=collection_name,
+                                points=batch
+                            )
 
                 logs.append(f"Successfully parsed {file.original_filename}")
 
