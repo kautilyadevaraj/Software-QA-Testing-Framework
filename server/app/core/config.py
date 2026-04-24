@@ -41,6 +41,21 @@ class Settings(BaseSettings):
     rate_limit_auth: str = "300/minute"
     rate_limit_api: str = "5000/minute"
 
+    # Qdrant vector store
+    qdrant_host: str = "localhost"
+    qdrant_port: int = 6333
+    qdrant_collection: str = "sqat_chunks"
+
+    # Embedding model
+    embedding_model: str = "all-MiniLM-L6-v2"
+
+    # Chunking parameters
+    chunk_size_tokens: int = 512
+    chunk_overlap_tokens: int = 64
+
+    # Extracted text output directory (local, no Blob Storage)
+    extracted_text_dir: str = "extracted"
+
     @field_validator("cookie_samesite")
     @classmethod
     def validate_cookie_samesite(cls, value: str) -> str:

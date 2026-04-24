@@ -140,22 +140,7 @@ def verify_project(
     }
 
 
-@router.post("/{project_id}/ingest")
-@limiter.limit(settings.rate_limit_api)
-def ingest_project(
-    request: Request,
-    project_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> dict:
-    project = get_project_or_404(db, current_user.id, project_id)
-    from datetime import datetime, timezone
-    return {
-        "id": str(uuid.uuid4()),
-        "project_id": str(project.id),
-        "status": "queued",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+
 
 
 @router.post("/{project_id}/tickets")

@@ -17,7 +17,9 @@ def _prepare_password(password: str) -> bytes:
 
 
 def hash_password(password: str) -> str:
-    hashed = bcrypt.hashpw(_prepare_password(password), bcrypt.gensalt())
+    settings = get_settings()
+    rounds = 4 if settings.is_development else 12
+    hashed = bcrypt.hashpw(_prepare_password(password), bcrypt.gensalt(rounds))
     return hashed.decode("utf-8")
 
 

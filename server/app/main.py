@@ -15,6 +15,7 @@ from app.db.base import Base
 from app.db.session import engine
 from app.routers.auth import router as auth_router
 from app.routers.files import router as files_router
+from app.routers.ingestion import router as ingestion_router
 from app.routers.members import router as members_router
 from app.routers.projects import router as projects_router
 from app.utils.rate_limiter import limiter
@@ -43,6 +44,15 @@ def on_startup() -> None:
     # For production / schema changes, use: alembic upgrade head
     Base.metadata.create_all(bind=engine)
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.extracted_text_dir).mkdir(parents=True, exist_ok=True)
+
+    # Bootstrap Qdrant collection (idempotent)
+    try:
+        from app.db.qdrant import ensure_collection
+        ensure_collection()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Qdrant bootstrap skipped: %s", e)
 
 
 @app.exception_handler(RequestValidationError)
@@ -65,3 +75,4 @@ app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(members_router, prefix=settings.api_prefix)
 app.include_router(files_router, prefix=settings.api_prefix)
+app.include_router(ingestion_router, prefix=settings.api_prefix)

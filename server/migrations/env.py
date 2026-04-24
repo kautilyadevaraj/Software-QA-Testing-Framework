@@ -11,7 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # ── Import all models so SQLAlchemy's metadata is fully populated ─────────────
 from app.db.base import Base  # noqa: E402
-from app.models import User, Project, ProjectMember, ProjectFile  # noqa: F401,E402
+from app.models import (  # noqa: F401,E402
+    User, Project, ProjectMember, ProjectFile,
+    ApiEndpoint, DocumentChunk, IngestionJob,
+)
 from app.core.config import get_settings  # noqa: E402
 
 # Alembic Config object — gives access to values in alembic.ini

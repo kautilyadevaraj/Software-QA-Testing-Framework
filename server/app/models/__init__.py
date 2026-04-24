@@ -1,12 +1,27 @@
-from app.models.project import FileType, Project, ProjectFile, ProjectMember, ProjectRole, ProjectStatus
+from app.models.project import (
+    ApiEndpoint,
+    DocumentChunk,
+    FileType,
+    IngestionJob,
+    IngestionStatus,
+    Project,
+    ProjectFile,
+    ProjectMember,
+    ProjectRole,
+    ProjectStatus,
+)
 from app.models.user import User
 
 __all__ = [
-    "Project",
-    "ProjectStatus",
-    "ProjectMember",
-    "ProjectFile",
-    "ProjectRole",
+    "ApiEndpoint",
+    "DocumentChunk",
     "FileType",
+    "IngestionJob",
+    "IngestionStatus",
+    "Project",
+    "ProjectFile",
+    "ProjectMember",
+    "ProjectRole",
+    "ProjectStatus",
     "User",
 ]

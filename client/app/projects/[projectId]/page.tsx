@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, useCallback, useEffect, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, DatabaseZap, FileText, Play, Save, TestTubeDiagonal, Ticket, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, DatabaseZap, FileText, Loader2, Play, Save, TestTubeDiagonal, Ticket, Trash2, Upload, XCircle, Globe, Hash, Layers } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,9 +15,12 @@ import {
   createTicket,
   deleteProjectDocument,
   getCurrentUser,
+  getIngestionStatus,
   getProject,
   ingestProject,
   launchProject,
+  listApiEndpoints,
+  listDocumentChunks,
   listProjectDocuments,
   listProjectMembers,
   removeProjectMember,
@@ -27,7 +30,7 @@ import {
   uploadProjectDocuments,
   verifyProject,
 } from "@/lib/api";
-import type { MemberResponse, UserSearchResponse } from "@/lib/api";
+import type { MemberResponse, UserSearchResponse, IngestionStatusResponse, ApiEndpointResponse, DocumentChunkResponse } from "@/lib/api";
 import {
   DOCUMENT_CATEGORIES,
   DocumentCategory,
@@ -113,6 +116,12 @@ export default function ProjectDetailsPage() {
   const [isLaunched, setIsLaunched] = useState(false);
   const [isProceedConfirmed, setIsProceedConfirmed] = useState(false);
 
+  // Ingestion / Knowledge Base state
+  const [ingestionStatus, setIngestionStatus] = useState<IngestionStatusResponse | null>(null);
+  const [apiEndpoints, setApiEndpoints] = useState<ApiEndpointResponse[]>([]);
+  const [documentChunks, setDocumentChunks] = useState<DocumentChunkResponse[]>([]);
+  const [isIngesting, setIsIngesting] = useState(false);
+
   const loadProjectState = useCallback(async () => {
     setIsLoading(true);
 
@@ -146,9 +155,24 @@ export default function ProjectDetailsPage() {
     }
   }, [projectId]);
 
+  const loadIngestionStatus = useCallback(async () => {
+    try {
+      const [status, endpoints, chunksResp] = await Promise.all([
+        getIngestionStatus(projectId),
+        listApiEndpoints(projectId),
+        listDocumentChunks(projectId, 1, 100), // Load first 100 chunks for preview
+      ]);
+      setIngestionStatus(status);
+      setApiEndpoints(endpoints.items);
+      setDocumentChunks(chunksResp.items);
+    } catch {
+      // silently ignore — ingestion may not have run yet
+    }
+  }, [projectId]);
+
   useEffect(() => {
-    void loadProjectState();
-  }, [loadProjectState]);
+    void loadProjectState().then(() => void loadIngestionStatus());
+  }, [loadProjectState, loadIngestionStatus]);
 
   const canIngestAndAddDocuments = isLaunched && isProceedConfirmed;
 
@@ -353,13 +377,19 @@ export default function ProjectDetailsPage() {
       setProject(mapped);
       setFormState(toFormState(mapped));
 
-      // 2. Trigger ingestion
-      await ingestProject(project.id);
-      toast.success("Saved and ingestion started — switching to QA Testing.");
-
-      // 3. Switch to QA tab
+      // 2. Trigger ingestion (synchronous — waits until done)
+      setIsIngesting(true);
       setActiveTab("qa");
+      toast.info("Ingestion started — processing documents…");
+
+      await ingestProject(project.id);
+
+      // 3. Reload ingestion status
+      await loadIngestionStatus();
+      setIsIngesting(false);
+      toast.success("Ingestion completed successfully.");
     } catch (error) {
+      setIsIngesting(false);
       const message = error instanceof ApiError ? error.message : "Unable to save and ingest.";
       toast.error(message);
     }
@@ -447,31 +477,185 @@ export default function ProjectDetailsPage() {
       {activeTab === "qa" ? (
         <Card className="border-black/10 bg-white">
           <CardHeader>
-            <CardTitle className="text-black">QA Testing</CardTitle>
-            <CardDescription>Execution console will be available here.</CardDescription>
+            <CardTitle className="text-black">Knowledge Base &amp; QA Testing</CardTitle>
+            <CardDescription>Ingestion pipeline status and knowledge base summary.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
-                <p className="text-xs uppercase tracking-wide text-black/60">Suite Status</p>
-                <p className="mt-2 text-lg font-semibold text-black">Pending</p>
+            {/* Ingesting spinner */}
+            {isIngesting && (
+              <div className="flex items-center gap-3 rounded-lg border border-[#2a63f5]/30 bg-[#2a63f5]/5 p-4">
+                <Loader2 className="h-5 w-5 animate-spin text-[#2a63f5]" />
+                <div>
+                  <p className="text-sm font-semibold text-black">Processing documents…</p>
+                  <p className="text-xs text-black/60">Extracting text, parsing APIs, chunking, and generating embeddings. This may take a minute.</p>
+                </div>
               </div>
+            )}
+
+            {/* Status summary cards */}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
               <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
-                <p className="text-xs uppercase tracking-wide text-black/60">Total Cases</p>
-                <p className="mt-2 text-lg font-semibold text-black">0</p>
+                <p className="text-xs uppercase tracking-wide text-black/60">Ingestion Status</p>
+                <div className="mt-2 flex items-center gap-2">
+                  {ingestionStatus?.job?.status === "completed" && <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+                  {ingestionStatus?.job?.status === "failed" && <XCircle className="h-4 w-4 text-red-600" />}
+                  {ingestionStatus?.job?.status === "processing" && <Loader2 className="h-4 w-4 animate-spin text-[#2a63f5]" />}
+                  <p className={cn(
+                    "text-lg font-semibold",
+                    ingestionStatus?.job?.status === "completed" ? "text-emerald-600" :
+                    ingestionStatus?.job?.status === "failed" ? "text-red-600" :
+                    "text-black"
+                  )}>
+                    {ingestionStatus?.job?.status
+                      ? ingestionStatus.job.status.charAt(0).toUpperCase() + ingestionStatus.job.status.slice(1)
+                      : "Not Started"}
+                  </p>
+                </div>
               </div>
+
               <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
-                <p className="text-xs uppercase tracking-wide text-black/60">Last Run</p>
-                <p className="mt-2 text-lg font-semibold text-black">Not Started</p>
+                <p className="text-xs uppercase tracking-wide text-black/60">
+                  <Layers className="mr-1 inline h-3 w-3" />
+                  Total Chunks
+                </p>
+                <p className="mt-2 text-lg font-semibold text-black">{ingestionStatus?.total_chunks ?? 0}</p>
+              </div>
+
+              <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
+                <p className="text-xs uppercase tracking-wide text-black/60">
+                  <Globe className="mr-1 inline h-3 w-3" />
+                  API Endpoints
+                </p>
+                <p className="mt-2 text-lg font-semibold text-black">{ingestionStatus?.total_endpoints ?? 0}</p>
+              </div>
+
+              <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
+                <p className="text-xs uppercase tracking-wide text-black/60">
+                  <Hash className="mr-1 inline h-3 w-3" />
+                  Files Processed
+                </p>
+                <p className="mt-2 text-lg font-semibold text-black">
+                  {ingestionStatus?.job ? `${ingestionStatus.job.processed_files} / ${ingestionStatus.job.total_files}` : "0"}
+                </p>
               </div>
             </div>
 
-            <div className="rounded-lg border border-dashed border-black/20 bg-[#2a63f5]/5 p-10 text-center text-sm text-black/60">
-              <div className="flex flex-col items-center gap-2">
-                <TestTubeDiagonal className="h-6 w-6 text-[#2a63f5]" />
-                QA Testing content will be added in upcoming iterations.
+            {/* Error message */}
+            {ingestionStatus?.job?.status === "failed" && ingestionStatus.job.error_message && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                <p className="text-sm font-semibold text-red-700">Ingestion Error</p>
+                <p className="mt-1 text-xs text-red-600">{ingestionStatus.job.error_message}</p>
               </div>
-            </div>
+            )}
+
+            {/* API Endpoints table */}
+            {apiEndpoints.length > 0 && (
+              <div className="rounded-lg border border-black/10 p-4">
+                <p className="mb-3 text-sm font-semibold text-black">Parsed API Endpoints</p>
+                <div className="max-h-64 overflow-y-auto rounded-md border border-black/10">
+                  <table className="w-full text-left text-sm">
+                    <thead className="sticky top-0 bg-[#2a63f5]/5 text-xs uppercase tracking-wide text-black/60">
+                      <tr>
+                        <th className="px-3 py-2">Method</th>
+                        <th className="px-3 py-2">Path</th>
+                        <th className="px-3 py-2">Summary</th>
+                        <th className="px-3 py-2">Tags</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {apiEndpoints.map((ep) => (
+                        <tr key={ep.id} className="border-t border-black/5 hover:bg-[#2a63f5]/5">
+                          <td className="px-3 py-2">
+                            <span className={cn(
+                              "inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
+                              ep.http_method === "GET" ? "bg-emerald-100 text-emerald-700" :
+                              ep.http_method === "POST" ? "bg-blue-100 text-blue-700" :
+                              ep.http_method === "PUT" ? "bg-amber-100 text-amber-700" :
+                              ep.http_method === "PATCH" ? "bg-orange-100 text-orange-700" :
+                              ep.http_method === "DELETE" ? "bg-red-100 text-red-700" :
+                              "bg-gray-100 text-gray-700"
+                            )}>
+                              {ep.http_method}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">{ep.path}</td>
+                          <td className="px-3 py-2 text-black/70">{ep.summary || "—"}</td>
+                          <td className="px-3 py-2 text-xs text-black/50">{ep.tags.join(", ") || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Document Chunks list preview */}
+            {documentChunks.length > 0 && (
+              <div className="rounded-lg border border-black/10 p-4 mt-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-sm font-semibold text-black">Extracted Chunks (Preview)</p>
+                  <span className="rounded-full bg-[#2a63f5]/10 px-2 py-0.5 text-[10px] font-semibold text-[#2a63f5]">
+                    Showing {documentChunks.length} chunks
+                  </span>
+                </div>
+                <div className="max-h-96 overflow-y-auto rounded-md border border-black/10">
+                  <table className="w-full text-left text-sm">
+                    <thead className="sticky top-0 bg-[#2a63f5]/5 text-xs uppercase tracking-wide text-black/60 shadow-sm">
+                      <tr>
+                        <th className="px-3 py-2 w-20">Source</th>
+                        <th className="px-3 py-2">Content Snippet</th>
+                        <th className="px-3 py-2 w-24 text-right">Tokens</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/5">
+                      {documentChunks.map((chunk) => {
+                        const originalFilename = typeof chunk.chunk_metadata?.original_filename === "string" 
+                          ? chunk.chunk_metadata.original_filename 
+                          : chunk.source_type;
+                          
+                        return (
+                          <tr key={chunk.id} className="hover:bg-[#2a63f5]/5">
+                            <td className="px-3 py-3 align-top">
+                              <div className="flex flex-col gap-1">
+                                <span className={cn(
+                                  "inline-flex w-fit rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
+                                  chunk.source_type === "pdf" ? "bg-amber-100 text-amber-700" : "bg-purple-100 text-purple-700"
+                                )}>
+                                  {chunk.source_type}
+                                </span>
+                                <span className="text-[10px] text-black/50 truncate max-w-[80px]" title={originalFilename}>
+                                  {originalFilename}
+                                </span>
+                                {chunk.page_number && (
+                                  <span className="text-[10px] text-black/40">page {chunk.page_number}</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 font-mono text-[11px] leading-relaxed text-black/80 whitespace-pre-wrap break-words max-w-lg">
+                              {chunk.content.substring(0, 300)}
+                              {chunk.content.length > 300 && <span className="text-black/40">...</span>}
+                            </td>
+                            <td className="px-3 py-3 text-right align-top text-xs font-medium text-black/70">
+                              {chunk.token_count}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Empty state — no ingestion yet */}
+            {!ingestionStatus?.job && !isIngesting && (
+              <div className="rounded-lg border border-dashed border-black/20 bg-[#2a63f5]/5 p-10 text-center text-sm text-black/60">
+                <div className="flex flex-col items-center gap-2">
+                  <DatabaseZap className="h-6 w-6 text-[#2a63f5]" />
+                  Upload documents in the Configuration tab and click &quot;Save &amp; Ingest&quot; to build the knowledge base.
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : (

@@ -324,3 +324,83 @@ export async function transferProjectOwnership(projectId: string, memberId: stri
     method: "POST",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Ingestion / Knowledge Base
+// ---------------------------------------------------------------------------
+
+export type IngestionJobResponse = {
+  id: string;
+  project_id: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  total_files: number;
+  processed_files: number;
+  total_chunks: number;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+};
+
+export type IngestionStatusResponse = {
+  job: IngestionJobResponse | null;
+  total_chunks: number;
+  total_endpoints: number;
+};
+
+export type ApiEndpointResponse = {
+  id: string;
+  http_method: string;
+  path: string;
+  operation_id: string | null;
+  summary: string;
+  description: string;
+  tags: string[];
+  created_at: string;
+};
+
+export type ApiEndpointListResponse = {
+  items: ApiEndpointResponse[];
+  total: number;
+};
+
+export type DocumentChunkResponse = {
+  id: string;
+  file_id: string;
+  chunk_index: number;
+  content: string;
+  token_count: number;
+  page_number: number | null;
+  source_type: string;
+  chunk_metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type DocumentChunkListResponse = {
+  items: DocumentChunkResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export async function getIngestionStatus(projectId: string) {
+  return request<IngestionStatusResponse>(`/projects/${projectId}/ingest/status`, {
+    method: "GET",
+  });
+}
+
+export async function listApiEndpoints(projectId: string) {
+  return request<ApiEndpointListResponse>(`/projects/${projectId}/ingest/endpoints`, {
+    method: "GET",
+  });
+}
+
+export async function listDocumentChunks(projectId: string, page = 1, pageSize = 20) {
+  const query = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  return request<DocumentChunkListResponse>(`/projects/${projectId}/ingest/chunks?${query.toString()}`, {
+    method: "GET",
+  });
+}
