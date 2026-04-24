@@ -1,6 +1,7 @@
 import threading
 import fitz
 from pathlib import Path
+import os
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 import prance
@@ -18,16 +19,109 @@ except ImportError:
 
 try:
     from sentence_transformers import SentenceTransformer
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
-except Exception as e:
-    print(f"Failed to load sentence-transformers: {e}")
-    embedder = None
+    from huggingface_hub import snapshot_download
+except Exception:
+    SentenceTransformer = None
+    snapshot_download = None
 
 from app.models.project import ProjectFile, FileType, Project, ExtractedText, APIEndpoint, Chunk
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 
 PDF_PROGRESS = {}
+_EMBEDDER = None
+_EMBEDDER_LOCK = threading.Lock()
+
+
+def _get_models_root() -> Path:
+    settings = get_settings()
+    configured_path = Path(settings.hf_models_dir)
+    if configured_path.is_absolute():
+        return configured_path
+
+    server_root = Path(__file__).resolve().parents[2]
+    return server_root / configured_path
+
+
+def _load_sentence_transformer(model_ref: str, cache_dir: Path, token: str | None, local_only: bool = False):
+    if SentenceTransformer is None:
+        return None
+
+    load_kwargs = {
+        "cache_folder": str(cache_dir),
+        "local_files_only": local_only,
+    }
+    if token:
+        load_kwargs["token"] = token
+
+    try:
+        return SentenceTransformer(model_ref, **load_kwargs)
+    except TypeError:
+        if token:
+            load_kwargs.pop("token", None)
+            load_kwargs["use_auth_token"] = token
+            return SentenceTransformer(model_ref, **load_kwargs)
+        raise
+
+
+def get_embedder():
+    global _EMBEDDER
+
+    if _EMBEDDER is not None:
+        return _EMBEDDER
+
+    with _EMBEDDER_LOCK:
+        if _EMBEDDER is not None:
+            return _EMBEDDER
+
+        settings = get_settings()
+        model_name = settings.hf_model_name
+        model_slug = model_name.split("/")[-1]
+
+        models_root = _get_models_root()
+        model_dir = models_root / model_slug
+        cache_dir = models_root / "hf-cache"
+
+        models_root.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        token = settings.hf_token
+        if token:
+            os.environ.setdefault("HF_TOKEN", token)
+            os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", token)
+
+        os.environ.setdefault("HF_HOME", str(cache_dir))
+        os.environ.setdefault("TRANSFORMERS_CACHE", str(cache_dir))
+
+        has_local_model = (model_dir / "config.json").exists()
+        if not has_local_model and snapshot_download is not None:
+            try:
+                download_kwargs = {
+                    "repo_id": model_name,
+                    "local_dir": str(model_dir),
+                    "cache_dir": str(cache_dir),
+                }
+                if token:
+                    download_kwargs["token"] = token
+                snapshot_download(**download_kwargs)
+                has_local_model = True
+            except Exception as exc:
+                print(f"Failed to download model '{model_name}' locally: {exc}")
+
+        if has_local_model:
+            try:
+                _EMBEDDER = _load_sentence_transformer(str(model_dir), cache_dir, token, local_only=True)
+                return _EMBEDDER
+            except Exception as exc:
+                print(f"Failed to load local model from '{model_dir}': {exc}")
+
+        try:
+            _EMBEDDER = _load_sentence_transformer(model_name, cache_dir, token, local_only=False)
+        except Exception as exc:
+            print(f"Failed to load sentence-transformers model '{model_name}': {exc}")
+            _EMBEDDER = None
+
+        return _EMBEDDER
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap_ratio: float = 0.2):
@@ -97,6 +191,9 @@ def _run_extraction(project_id_str: str):
 
         total = len(files)
         logs = []
+        embedder = get_embedder()
+        if embedder is None:
+            logs.append("Embeddings unavailable: model could not be loaded. Continuing without vector embeddings.")
 
         for i, file in enumerate(files):
             try:

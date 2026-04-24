@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
 
+    hf_token: str | None = None
+    hf_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    hf_models_dir: str = "models"
+
     # Jira Integration
     jira_base_url: str | None = None
     jira_email: str | None = None

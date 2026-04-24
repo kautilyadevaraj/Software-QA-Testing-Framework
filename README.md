@@ -1,6 +1,6 @@
 # SQAT - Software QA Testing Framework
 
-Autonomous QA pipeline: upload project documents, verify the target URL, configure credentials, and raise Jira tickets — all from a single unified interface.
+Autonomous QA pipeline: upload project documents, verify the target URL, configure credentials, and raise Jira tickets - all from a single unified interface.
 
 ## Tech Stack
 
@@ -16,31 +16,25 @@ Autonomous QA pipeline: upload project documents, verify the target URL, configu
 | **Ticketing** | Jira Cloud REST API v3 |
 | **File Storage** | Local filesystem (`server/uploads/`) |
 
----
-
 ## Prerequisites
 
 - **Node.js** 18+
 - **Python** 3.11+
 - **PostgreSQL** 14+ running locally
-- **uv** (Python package manager) — install with `pip install uv` or see [uv docs](https://docs.astral.sh/uv/)
+- **uv** (Python package manager) - install with `pip install uv` or see [uv docs](https://docs.astral.sh/uv/)
 
----
+## 1 - Database Setup
 
-## 1 — Database Setup
-
-### Option A — pgAdmin (GUI)
+### Option A - pgAdmin (GUI)
 1. Open pgAdmin → right-click **Databases** → **Create** → **Database**
 2. Name it `sqat_db` → **Save**
 
-### Option B — psql (terminal)
+### Option B - psql (terminal)
 ```bash
 psql -U postgres -c "CREATE DATABASE sqat_db;"
 ```
 
----
-
-## 2 — Backend (FastAPI) Setup
+## 2 - Backend (FastAPI) Setup
 
 ```bash
 cd server
@@ -59,7 +53,7 @@ uv sync
 playwright install
 ```
 
-### 2a — Configure `server/.env`
+### 2a - Configure `server/.env`
 
 ```bash
 copy server\.env.example server\.env   # Windows
@@ -88,7 +82,7 @@ JIRA_LEAD_ACCOUNT_ID=your_jira_account_id
 
 > All other values in `.env.example` are fine as defaults for local development.
 
-### 2b — Run Database Migrations
+### 2b - Run Database Migrations
 
 **Fresh installation** (no tables yet):
 ```bash
@@ -104,7 +98,7 @@ alembic stamp head
 
 > After stamping, all future schema changes use `alembic upgrade head`.
 
-### 2c — Alternative: Initialise Database Without Alembic
+### 2c - Alternative: Initialise Database Without Alembic
 
 If you prefer not to use Alembic for a fresh local setup:
 
@@ -114,9 +108,9 @@ python init_db.py
 ```
 
 This creates `sqat_db` (if it doesn't exist) and all tables from the SQLAlchemy models.  
-No seed data is inserted — register your first user via the UI or `POST /api/v1/auth/signup`.
+No seed data is inserted - register your first user via the UI or `POST /api/v1/auth/signup`.
 
-### 2d — Start the Server
+### 2d - Start the Server
 
 ```bash
 uvicorn app.main:app --reload --port 8000
@@ -125,16 +119,14 @@ uvicorn app.main:app --reload --port 8000
 - API base: `http://localhost:8000`
 - Interactive docs: `http://localhost:8000/docs`
 
----
-
-## 3 — Frontend (Next.js) Setup
+## 3 - Frontend (Next.js) Setup
 
 ```bash
 cd client
 npm install
 ```
 
-### 3a — Configure `client/.env`
+### 3a - Configure `client/.env`
 
 ```bash
 copy client\.env.example client\.env   # Windows
@@ -145,7 +137,7 @@ copy client\.env.example client\.env   # Windows
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-### 3b — Start the Frontend
+### 3b - Start the Frontend
 
 ```bash
 npm run dev
@@ -153,9 +145,7 @@ npm run dev
 
 App is available at: `http://localhost:3000`
 
----
-
-## 4 — Full Startup Checklist
+## 4 - Full Startup Checklist
 
 ```
 1. PostgreSQL is running
@@ -167,13 +157,11 @@ App is available at: `http://localhost:3000`
 7. Open http://localhost:3000
 ```
 
----
-
-## 5 — Jira Integration Setup
+## 5 - Jira Integration Setup
 
 The Jira integration allows you to raise Jira tickets directly from the URL verification and credentials verification sections of any project.
 
-### 5a — Get Your Credentials
+### 5a - Get Your Credentials
 
 | Variable | Where to Find It |
 |---|---|
@@ -182,7 +170,7 @@ The Jira integration allows you to raise Jira tickets directly from the URL veri
 | `JIRA_API_TOKEN` | [Manage API tokens](https://id.atlassian.com/manage-profile/security/api-tokens) → **Create API token** |
 | `JIRA_LEAD_ACCOUNT_ID` | Visit `https://yourcompany.atlassian.net/rest/api/3/myself` while logged in → copy the `accountId` field |
 
-### 5b — Add to `.env`
+### 5b - Add to `.env`
 
 ```env
 JIRA_BASE_URL=https://yourcompany.atlassian.net
@@ -193,15 +181,15 @@ JIRA_LEAD_ACCOUNT_ID=712020:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 > Restart the backend server after editing `.env` to reload the cached settings.
 
-### 5c — Connect a Project to Jira
+### 5c - Connect a Project to Jira
 
 1. Open any project → **Project Configuration** tab
 2. Click **"Connect to Jira"** in the top-right of the card
 3. SQAT auto-generates a Jira project key from the project name (e.g. `My Shopping App → MSA`) and creates the Jira project
 4. The button changes to a green badge: `● Connected · Key: MSA`
-5. This is a **one-time action per project** — clicking again returns the existing key without creating duplicates
+5. This is a **one-time action per project** - clicking again returns the existing key without creating duplicates
 
-### 5d — Raise a Ticket
+### 5d - Raise a Ticket
 
 **From the URL section:**
 - Launch a URL → click **"Raise Ticket"**
@@ -217,9 +205,7 @@ On submit: the ticket is created in Jira AND saved locally to the `jira_tickets`
 
 > The "Raise Ticket" buttons are **disabled** until the project is connected to Jira.
 
----
-
-## Alembic — DB Migration Cheatsheet
+## Alembic - DB Migration Cheatsheet
 
 Run all commands from the `server/` directory with the venv activated.
 
@@ -249,11 +235,9 @@ alembic upgrade head
 
 1. **Teammate modifies a model** → runs `alembic revision --autogenerate` → commits both the model change and the migration file
 2. **You pull their code** → your local DB doesn't have the new table yet
-3. **You sync** → run `alembic upgrade head` — done
+3. **You sync** → run `alembic upgrade head` - done
 
 > Roll back safely at any time with `alembic downgrade -1`.
-
----
 
 ## Project Structure
 
@@ -298,16 +282,14 @@ Software-QA-Testing-Framework/
     └── pyproject.toml
 ```
 
----
-
 ## Document Upload Rules
 
 | Category | Format | Max Files | Required |
 |---|---|---|---|
 | BRD | PDF | Multiple | ✅ |
-| FSD | PDF | Multiple | — |
-| WBS | PDF | Multiple | — |
-| Assumptions | PDF | 1 | — |
+| FSD | PDF | Multiple | - |
+| WBS | PDF | Multiple | - |
+| Assumptions | PDF | 1 | - |
 | Credentials | PDF or TXT | 1 | ✅ |
 | Swagger Docs | YAML or JSON | 1 | ✅ |
 
@@ -325,7 +307,7 @@ server/uploads/
 
 `{Number}` is the sequential count of files of the same category within the project (1-based). The original filename is preserved in `project_files.original_filename`.
 
-Example — 2 BRDs + 1 Swagger file:
+Example - 2 BRDs + 1 Swagger file:
 ```
 server/uploads/
 └── 018e1a2b-.../
@@ -339,8 +321,6 @@ server/uploads/
 File uploads are only enabled after:
 1. Entering a Project URL and clicking **Launch**
 2. Clicking **Proceed** to confirm
-
----
 
 ## API Reference
 

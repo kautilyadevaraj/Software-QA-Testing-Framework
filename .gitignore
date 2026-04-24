@@ -54,6 +54,9 @@ next-env.d.ts
 uploads/
 **/uploads/
 
+# ── Local ML model cache ─────────────────────────────────────────────────────
+server/models/
+
 # ── Testing ─────────────────────────────────────────────────────────────────
 **/coverage/
 
@@ -83,4 +86,4 @@ prisma/migrations
 
 # ── Deployment ──────────────────────────────────────────────────────────────
 .vercel
-docs
+docs
