@@ -61,7 +61,13 @@ def list_projects(
     offset = (page - 1) * page_size
 
     items = (
-        db.execute(_base_project_query(user.id).order_by(order_expression).offset(offset).limit(page_size))
+        db.execute(
+            _base_project_query(user.id)
+            .options(selectinload(Project.members).selectinload(ProjectMember.user))
+            .order_by(order_expression)
+            .offset(offset)
+            .limit(page_size)
+        )
         .scalars()
         .all()
     )
@@ -109,13 +115,18 @@ def delete_project(db: Session, project: Project) -> None:
 
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
-            import re
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-            safe_project_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', project.name)
-            collection_name = f"{project.id}_{safe_project_name}"
-            
-            if qdrant_client.collection_exists(collection_name):
-                qdrant_client.delete_collection(collection_name)
+            project_id_str = str(project.id)
+            collections_to_delete = {project_id_str}
+
+            for collection in qdrant_client.get_collections().collections:
+                collection_name = getattr(collection, "name", "")
+                if isinstance(collection_name, str) and collection_name.startswith(f"{project_id_str}_"):
+                    collections_to_delete.add(collection_name)
+
+            for collection_name in collections_to_delete:
+                if qdrant_client.collection_exists(collection_name):
+                    qdrant_client.delete_collection(collection_name)
         except Exception as e:
             print(f"Failed to clear Qdrant data for project {project.id}: {e}")
 

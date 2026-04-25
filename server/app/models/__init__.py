@@ -1,4 +1,12 @@
-from app.models.project import FileType, Project, ProjectFile, ProjectMember, ProjectRole, ProjectStatus
+from app.models.project import (
+    FileType,
+    HighLevelScenario,
+    Project,
+    ProjectFile,
+    ProjectMember,
+    ProjectRole,
+    ProjectStatus,
+)
 from app.models.user import User
 
 __all__ = [
@@ -8,5 +16,6 @@ __all__ = [
     "ProjectFile",
     "ProjectRole",
     "FileType",
+    "HighLevelScenario",
     "User",
 ]

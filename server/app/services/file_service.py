@@ -142,10 +142,8 @@ def delete_project_file(db: Session, project: Project, file_id: uuid.UUID) -> No
     settings = get_settings()
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
-            import re
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-            safe_project_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', project.name)
-            collection_name = f"{project.id}_{safe_project_name}"
+            collection_name = str(project.id)
 
             if not qdrant_client.collection_exists(collection_name):
                 return

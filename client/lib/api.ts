@@ -1,9 +1,5 @@
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
-const API_BASE_URL_FALLBACK = API_BASE_URL.includes("localhost")
-  ? API_BASE_URL.replace("localhost", "127.0.0.1")
-  : API_BASE_URL;
 const API_ROOT = `${API_BASE_URL}/api/v1`;
-const API_ROOT_FALLBACK = `${API_BASE_URL_FALLBACK}/api/v1`;
 
 type ApiRequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -56,7 +52,7 @@ function getErrorMessage(payload: ApiErrorPayload | null, fallback: string) {
   return fallback;
 }
 
-async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+async function request<T>(path: string, options: ApiRequestOptions = {}, allowRefresh = true): Promise<T> {
   const { body, headers, ...rest } = options;
 
   const finalHeaders = new Headers(headers ?? undefined);
@@ -77,20 +73,22 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     }
   }
 
-  let response: Response;
-  try {
-    response = await fetch(`${API_ROOT}${path}`, init);
-  } catch (error) {
-    if (API_ROOT_FALLBACK === API_ROOT) {
-      throw error;
-    }
-    response = await fetch(`${API_ROOT_FALLBACK}${path}`, init);
-  }
+  const response = await fetch(`${API_ROOT}${path}`, init);
 
   const isJson = response.headers.get("content-type")?.includes("application/json");
   const payload = isJson ? ((await response.json()) as unknown) : null;
 
   if (!response.ok) {
+    if (response.status === 401 && allowRefresh && !path.startsWith("/auth/")) {
+      const refreshResponse = await fetch(`${API_ROOT}/auth/refresh`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (refreshResponse.ok) {
+        return request<T>(path, options, false);
+      }
+    }
+
     const message = getErrorMessage(payload as ApiErrorPayload | null, `Request failed with ${response.status}`);
     throw new ApiError(message, response.status);
   }
@@ -113,6 +111,7 @@ export type ProjectStatus = "Active" | "Draft" | "Blocked";
 
 export type ProjectResponse = {
   id: string;
+  owner_id: string;
   name: string;
   description: string;
   status: ProjectStatus;
@@ -120,6 +119,8 @@ export type ProjectResponse = {
   created_at: string;
   updated_at: string;
   is_verified: boolean;
+  tester_ids: string[];
+  tester_emails: string[];
 };
 
 export type ProjectListResponse = {
@@ -190,6 +191,62 @@ export type RaiseTicketPayload = {
   issue_type: "Bug" | "Task" | "Story";
   priority: "High" | "Medium" | "Low";
   raised_from: "url_section" | "credentials_section";
+};
+
+export type ProjectCredential = {
+  username: string;
+  role: string | null;
+  auth_type: string | null;
+  endpoint: string | null;
+  verified: boolean;
+};
+
+export type ScenarioSource = "agent_1" | "agent_2" | "manual";
+export type ScenarioStatus = "pending" | "completed";
+export type ScenarioGenerationType =
+  | "ALL"
+  | "HLS"
+  | "Functional"
+  | "Technical"
+  | "API"
+  | "Security"
+  | "Performance"
+  | "Integration"
+  | "Data"
+  | "Compliance"
+  | "Usability";
+export type ScenarioAccessMode = "UI_ONLY_WEB" | "UI_AND_API" | "TECHNICAL_REVIEW";
+export type ScenarioLevel = "HLS" | "DETAILED_HLS";
+
+export type ScenarioGenerationSettings = {
+  max_scenarios: number | null;
+  scenario_types: ScenarioGenerationType[];
+  access_mode: ScenarioAccessMode;
+  scenario_level: ScenarioLevel;
+  existing_scenarios?: PreviewScenario[];
+};
+
+export type PreviewScenario = {
+  title: string;
+  description: string;
+  source: ScenarioSource;
+};
+
+export type HighLevelScenario = {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  source: ScenarioSource;
+  status: ScenarioStatus;
+  completed_by: string | null;
+  completed_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScenarioListResponse = {
+  scenarios: HighLevelScenario[];
 };
 
 export async function signup(email: string, password: string) {
@@ -365,7 +422,7 @@ export async function transferProjectOwnership(projectId: string, memberId: stri
 }
 
 export async function getProjectCredentials(projectId: string) {
-  return request<any[] | { error: string }>(`/projects/${projectId}/credentials`, {
+  return request<ProjectCredential[] | { error: string }>(`/projects/${projectId}/credentials`, {
     method: "GET",
   });
 }
@@ -377,7 +434,7 @@ export async function markProjectVerified(projectId: string, username: string) {
   });
 }
 
-export async function runProjectPlaywright(projectId: string, cred: any) {
+export async function runProjectPlaywright(projectId: string, cred: ProjectCredential) {
   return request<{ status: string }>(`/projects/${projectId}/run-playwright`, {
     method: "POST",
     body: cred,
@@ -409,4 +466,56 @@ export async function getProjectExtractStatus(projectId: string) {
       method: "GET",
     },
   );
+}
+
+export async function generateHighLevelScenarios(projectId: string, settings: ScenarioGenerationSettings) {
+  return request<{ scenarios: PreviewScenario[] }>(`/projects/${projectId}/scenarios/generate`, {
+    method: "POST",
+    body: settings,
+  });
+}
+
+export async function approveHighLevelScenarios(projectId: string, scenarios: PreviewScenario[]) {
+  return request<{ saved: number }>(`/projects/${projectId}/scenarios/approve`, {
+    method: "POST",
+    body: { scenarios },
+  });
+}
+
+export async function listHighLevelScenarios(projectId: string) {
+  return request<ScenarioListResponse>(`/projects/${projectId}/scenarios`, {
+    method: "GET",
+  });
+}
+
+export async function createHighLevelScenario(
+  projectId: string,
+  payload: { title: string; description: string },
+) {
+  return request<HighLevelScenario>(`/projects/${projectId}/scenarios`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function updateHighLevelScenario(
+  projectId: string,
+  scenarioId: string,
+  payload: {
+    title?: string;
+    description?: string;
+    status?: ScenarioStatus;
+    current_user_id?: string;
+  },
+) {
+  return request<HighLevelScenario>(`/projects/${projectId}/scenarios/${scenarioId}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export async function deleteHighLevelScenario(projectId: string, scenarioId: string) {
+  return request<{ deleted: true }>(`/projects/${projectId}/scenarios/${scenarioId}`, {
+    method: "DELETE",
+  });
 }

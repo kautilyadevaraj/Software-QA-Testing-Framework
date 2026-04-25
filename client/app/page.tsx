@@ -25,22 +25,41 @@ export default async function Home() {
             cases from that journey.
           </p>
           <div className="flex flex-wrap items-center gap-3">
-            <Button asChild size="lg">
-              <Link href="/projects">
-                <Play className="h-4 w-4" />
-                Go to Projects
-              </Link>
-            </Button>
-            <Button asChild variant="outline" size="lg">
-              <Link href={hasAuthToken ? "/projects" : "/login"}>
-                <Terminal className="h-4 w-4" />
-                Open Workspace
-              </Link>
-            </Button>
+            {hasAuthToken ? (
+              <>
+                <Button asChild size="lg">
+                  <Link href="/projects">
+                    <Play className="h-4 w-4" />
+                    Open Dashboard
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="lg">
+                  <Link href="#quick-status">
+                    <Terminal className="h-4 w-4" />
+                    View Live Status
+                  </Link>
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button asChild size="lg">
+                  <Link href="/login">
+                    <Play className="h-4 w-4" />
+                    Log in
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="lg">
+                  <Link href="/signup">
+                    <Terminal className="h-4 w-4" />
+                    Get Started
+                  </Link>
+                </Button>
+              </>
+            )}
           </div>
         </div>
 
-        <Card className="bg-white">
+        <Card id="quick-status" className="bg-white">
           <CardHeader>
             <CardTitle className="flex items-center justify-between text-black">
               Quick Status

@@ -176,6 +176,41 @@ CREATE TABLE api_endpoints (
 CREATE INDEX ix_api_endpoints_project_id ON api_endpoints (project_id);
 
 
+-- ---------------------------------------------------------------------------
+-- 9. HIGH LEVEL SCENARIOS
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE high_level_scenarios (
+    id           UUID        NOT NULL PRIMARY KEY,
+    project_id   UUID        NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    title        TEXT        NOT NULL,
+    description  TEXT        NOT NULL DEFAULT '',
+    source       TEXT        NOT NULL,
+    status       TEXT        NOT NULL DEFAULT 'pending',
+    completed_by UUID        NULL REFERENCES users (id) ON DELETE SET NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_high_level_scenarios_source CHECK (source IN ('agent_1', 'agent_2', 'manual')),
+    CONSTRAINT ck_high_level_scenarios_status CHECK (status IN ('pending', 'completed'))
+);
+
+CREATE INDEX ix_high_level_scenarios_project_id   ON high_level_scenarios (project_id);
+CREATE INDEX ix_high_level_scenarios_status       ON high_level_scenarios (status);
+CREATE INDEX ix_high_level_scenarios_completed_by ON high_level_scenarios (completed_by);
+
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_high_level_scenarios_updated_at
+BEFORE UPDATE ON high_level_scenarios
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
 -- =============================================================================
 -- END OF SCHEMA
 -- =============================================================================
