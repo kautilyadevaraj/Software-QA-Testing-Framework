@@ -2,6 +2,13 @@ import uuid
 from pathlib import Path
 from sqlalchemy import func, select
 
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models
+except ImportError:
+    QdrantClient = None
+    models = None
+
 from fastapi import HTTPException, UploadFile, status
 
 from sqlalchemy.orm import Session
@@ -59,8 +66,11 @@ def validate_and_save_upload(db: Session, project: Project, file: UploadFile, fi
         if ext not in ['json', 'yaml', 'yml']:
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Swagger docs must be JSON or YAML formats.")
     elif file_type == FileType.CREDENTIALS:
-        if ext not in ['pdf', 'txt']:
-             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Credentials must be PDF or TXT formats.")
+        if ext != 'csv':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Credentials must be CSV format."
+            )
     else:
         if ext != 'pdf':
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{file_type.value} must be a PDF file.")
@@ -128,3 +138,33 @@ def delete_project_file(db: Session, project: Project, file_id: uuid.UUID) -> No
         
     db.delete(file)
     db.commit()
+
+    settings = get_settings()
+    if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+        try:
+            import re
+            qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+            safe_project_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', project.name)
+            collection_name = f"{project.id}_{safe_project_name}"
+
+            if not qdrant_client.collection_exists(collection_name):
+                return
+
+            qdrant_client.create_payload_index(
+                collection_name=collection_name,
+                field_name="file_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+            qdrant_client.delete(
+                collection_name=collection_name,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="file_id",
+                            match=models.MatchValue(value=str(file_id))
+                        )
+                    ]
+                )
+            )
+        except Exception as e:
+            print(f"Failed to clear Qdrant data for file {file_id}: {e}")

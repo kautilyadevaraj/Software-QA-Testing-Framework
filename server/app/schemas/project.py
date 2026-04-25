@@ -102,6 +102,7 @@ class ProjectResponse(BaseModel):
     url: str | None
     created_at: datetime
     updated_at: datetime
+    is_verified: bool = False
 
     @field_validator("url", mode="before")
     @classmethod

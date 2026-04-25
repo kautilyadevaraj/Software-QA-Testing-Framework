@@ -1,5 +1,9 @@
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const API_BASE_URL_FALLBACK = API_BASE_URL.includes("localhost")
+  ? API_BASE_URL.replace("localhost", "127.0.0.1")
+  : API_BASE_URL;
 const API_ROOT = `${API_BASE_URL}/api/v1`;
+const API_ROOT_FALLBACK = `${API_BASE_URL_FALLBACK}/api/v1`;
 
 type ApiRequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -73,7 +77,15 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     }
   }
 
-  const response = await fetch(`${API_ROOT}${path}`, init);
+  let response: Response;
+  try {
+    response = await fetch(`${API_ROOT}${path}`, init);
+  } catch (error) {
+    if (API_ROOT_FALLBACK === API_ROOT) {
+      throw error;
+    }
+    response = await fetch(`${API_ROOT_FALLBACK}${path}`, init);
+  }
 
   const isJson = response.headers.get("content-type")?.includes("application/json");
   const payload = isJson ? ((await response.json()) as unknown) : null;
@@ -107,6 +119,7 @@ export type ProjectResponse = {
   url: string | null;
   created_at: string;
   updated_at: string;
+  is_verified: boolean;
 };
 
 export type ProjectListResponse = {
@@ -148,6 +161,35 @@ export type MemberResponse = {
 export type UserSearchResponse = {
   id: string;
   email: string;
+};
+
+export type JiraConfig = {
+  connected: boolean;
+  jira_project_key: string | null;
+  jira_project_id: string | null;
+  already_existed?: boolean;
+};
+
+export type JiraTicketResponse = {
+  id: string;
+  project_id: string;
+  jira_issue_key: string;
+  jira_issue_id: string;
+  title: string;
+  description: string;
+  issue_type: string;
+  priority: string;
+  status: string;
+  raised_from: string;
+  created_at: string;
+};
+
+export type RaiseTicketPayload = {
+  title: string;
+  description: string;
+  issue_type: "Bug" | "Task" | "Story";
+  priority: "High" | "Medium" | "Low";
+  raised_from: "url_section" | "credentials_section";
 };
 
 export async function signup(email: string, password: string) {
@@ -285,14 +327,11 @@ export async function ingestProject(projectId: string) {
   );
 }
 
-export async function createTicket(projectId: string, title: string, description: string) {
-  return request<{ id: string; project_id: string; title: string; description: string; status: string; created_at: string }>(
-    `/projects/${projectId}/tickets`,
-    {
-      method: "POST",
-      body: { title, description },
-    }
-  );
+export async function createTicket(projectId: string, payload: RaiseTicketPayload) {
+  return request<JiraTicketResponse>(`/projects/${projectId}/tickets`, {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export async function searchUsers(query: string) {
@@ -323,4 +362,51 @@ export async function transferProjectOwnership(projectId: string, memberId: stri
   return request<{ status: string }>(`/projects/${projectId}/members/${memberId}/transfer`, {
     method: "POST",
   });
+}
+
+export async function getProjectCredentials(projectId: string) {
+  return request<any[] | { error: string }>(`/projects/${projectId}/credentials`, {
+    method: "GET",
+  });
+}
+
+export async function markProjectVerified(projectId: string, username: string) {
+  return request<{ status: string }>(`/projects/${projectId}/mark-verified`, {
+    method: "POST",
+    body: { username },
+  });
+}
+
+export async function runProjectPlaywright(projectId: string, cred: any) {
+  return request<{ status: string }>(`/projects/${projectId}/run-playwright`, {
+    method: "POST",
+    body: cred,
+  });
+}
+
+export async function connectProjectToJira(projectId: string) {
+  return request<JiraConfig>(`/projects/${projectId}/jira/connect`, {
+    method: "POST",
+  });
+}
+
+export async function getProjectJiraConfig(projectId: string) {
+  return request<JiraConfig>(`/projects/${projectId}/jira/config`, {
+    method: "GET",
+  });
+}
+
+export async function startProjectPdfExtraction(projectId: string) {
+  return request<{ status: string }>(`/projects/${projectId}/extract-pdfs`, {
+    method: "POST",
+  });
+}
+
+export async function getProjectExtractStatus(projectId: string) {
+  return request<{ status: string; progress: number; logs: string[] }>(
+    `/projects/${projectId}/extract-status`,
+    {
+      method: "GET",
+    },
+  );
 }

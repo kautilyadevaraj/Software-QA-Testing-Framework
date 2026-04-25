@@ -42,6 +42,7 @@ export type ProjectRecord = {
   updatedAt: string;
   status: ProjectStatus;
   url: string | null;
+  is_verified: boolean;
 };
 
 export function mapProjectFromApi(project: ProjectResponse): ProjectRecord {
@@ -53,6 +54,7 @@ export function mapProjectFromApi(project: ProjectResponse): ProjectRecord {
     updatedAt: project.updated_at,
     status: project.status,
     url: project.url,
+    is_verified: project.is_verified,
   };
 }
 

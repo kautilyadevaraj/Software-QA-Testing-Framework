@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     rate_limit_auth: str = "300/minute"
     rate_limit_api: str = "5000/minute"
 
+    qdrant_url: str | None = None
+    qdrant_api_key: str | None = None
+
+    hf_token: str | None = None
+    hf_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    hf_models_dir: str = "models"
+
+    # Jira Integration
+    jira_base_url: str | None = None
+    jira_email: str | None = None
+    jira_api_token: str | None = None
+    jira_lead_account_id: str | None = None
+
     @field_validator("cookie_samesite")
     @classmethod
     def validate_cookie_samesite(cls, value: str) -> str:
