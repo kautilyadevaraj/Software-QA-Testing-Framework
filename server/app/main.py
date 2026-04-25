@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,6 +17,8 @@ from app.routers.auth import router as auth_router
 from app.routers.files import router as files_router
 from app.routers.members import router as members_router
 from app.routers.projects import router as projects_router
+from app.routers.scenarios import router as scenarios_router
+from app.routers.recorder import router as recorder_router
 from app.utils.rate_limiter import limiter
 
 
@@ -25,7 +27,10 @@ settings = get_settings()
 app = FastAPI(title=settings.app_name)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+def rate_limit_handler(request: Request, exc: Exception) -> Response:
+    return _rate_limit_exceeded_handler(request, exc)  # type: ignore
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
@@ -65,3 +70,5 @@ app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(members_router, prefix=settings.api_prefix)
 app.include_router(files_router, prefix=settings.api_prefix)
+app.include_router(scenarios_router, prefix=settings.api_prefix)
+app.include_router(recorder_router, prefix=settings.api_prefix)

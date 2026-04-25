@@ -46,6 +46,13 @@ class Project(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    
+    recorder_token: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    phase_2_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     owner = relationship("User", back_populates="projects")
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")

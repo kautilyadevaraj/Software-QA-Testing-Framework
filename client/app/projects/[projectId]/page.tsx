@@ -70,6 +70,7 @@ import {
 } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 import { RaiseTicketModal } from "@/components/raise-ticket-modal";
+import { Phase2Testing } from "@/components/phase2-testing";
 
 type ActiveTab = "qa" | "configuration";
 
@@ -941,37 +942,16 @@ export default function ProjectDetailsPage() {
 
       {activeTab === "qa" ? (
         <Card className="border-black/10 bg-white">
-          <CardHeader>
-            <CardTitle className="text-black">QA Testing</CardTitle>
-            <CardDescription>
-              Execution console will be available here.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
-                <p className="text-xs uppercase tracking-wide text-black/60">
-                  Suite Status
-                </p>
-                <p className="mt-2 text-lg font-semibold text-black">Pending</p>
-              </div>
-              <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
-                <p className="text-xs uppercase tracking-wide text-black/60">
-                  Total Cases
-                </p>
-                <p className="mt-2 text-lg font-semibold text-black">0</p>
-              </div>
-              <div className="rounded-lg border border-black/10 bg-[#2a63f5]/5 p-4">
-                <p className="text-xs uppercase tracking-wide text-black/60">
-                  Last Run
-                </p>
-                <p className="mt-2 text-lg font-semibold text-black">
-                  Not Started
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <CardHeader>
+          <CardTitle className="text-black">QA Testing — Phase 2</CardTitle>
+          <CardDescription>
+            Scenario review, UI discovery recording, and test script generation.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Phase2Testing projectId={projectId} />
+        </CardContent>
+      </Card>
       ) : (
         <Card className="border-black/10 bg-white">
           <CardHeader>

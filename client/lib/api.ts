@@ -410,3 +410,128 @@ export async function getProjectExtractStatus(projectId: string) {
     },
   );
 }
+
+// ─── Types ────────────────────────────────────────────────────────────────
+
+export type ScenarioSource = "agent_1" | "agent_2" | "manual";
+export type ScenarioStatus = "pending" | "completed";
+export type RecordingStatus = "pending" | "in_progress" | "completed" | "failed";
+
+export interface ScenarioResponse {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string | null;
+  source: ScenarioSource;
+  status: ScenarioStatus;
+  completed_by: string | null;
+  created_at: string;
+  updated_at: string;
+  recording_status: RecordingStatus | null;
+}
+
+export interface ScenarioListResponse {
+  items: ScenarioResponse[];
+  total: number;
+}
+
+export interface Phase2StatusResponse {
+  phase_2_locked: boolean;
+  total_scenarios: number;
+  recorded_scenarios: number;
+  all_recorded: boolean;
+}
+
+export interface RecordingSessionResponse {
+  id: string;
+  project_id: string;
+  scenario_id: string;
+  scenario_title: string;
+  status: RecordingStatus;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  step_count: number;
+}
+
+export interface RecordingSessionListResponse {
+  items: RecordingSessionResponse[];
+}
+
+export interface LockScenariosResponse {
+  locked: boolean;
+  sessions_created: number;
+}
+
+export interface RecordingSetupResponse {
+  setup_command: string;
+  recorder_token: string;
+}
+
+// ─── Scenario CRUD ────────────────────────────────────────────────────────
+
+export async function listScenarios(projectId: string): Promise<ScenarioListResponse> {
+  return request<ScenarioListResponse>(`/projects/${projectId}/scenarios`, {
+    method: "GET",
+  });
+}
+
+export async function createScenario(
+  projectId: string,
+  data: { title: string; description?: string; source?: string }
+): Promise<ScenarioResponse> {
+  return request<ScenarioResponse>(`/projects/${projectId}/scenarios`, {
+    method: "POST",
+    body: data,
+  });
+}
+
+export async function updateScenario(
+  projectId: string,
+  scenarioId: string,
+  data: { title?: string; description?: string }
+): Promise<ScenarioResponse> {
+  return request<ScenarioResponse>(`/projects/${projectId}/scenarios/${scenarioId}`, {
+    method: "PATCH",
+    body: data,
+  });
+}
+
+export async function deleteScenario(
+  projectId: string,
+  scenarioId: string
+): Promise<void> {
+  return request<void>(`/projects/${projectId}/scenarios/${scenarioId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function lockScenarios(projectId: string): Promise<LockScenariosResponse> {
+  return request<LockScenariosResponse>(`/projects/${projectId}/scenarios/lock`, {
+    method: "POST",
+  });
+}
+
+// ─── Phase 2 status & recording sessions ─────────────────────────────────
+
+export async function getPhase2Status(projectId: string): Promise<Phase2StatusResponse> {
+  return request<Phase2StatusResponse>(`/projects/${projectId}/scenarios/phase2-status`, {
+    method: "GET",
+  });
+}
+
+export async function listRecordingSessions(
+  projectId: string
+): Promise<RecordingSessionListResponse> {
+  return request<RecordingSessionListResponse>(`/projects/${projectId}/scenarios/recording-sessions`, {
+    method: "GET",
+  });
+}
+
+export async function getRecordingSetup(
+  projectId: string
+): Promise<RecordingSetupResponse> {
+  return request<RecordingSetupResponse>(`/projects/${projectId}/scenarios/recording-setup`, {
+    method: "GET",
+  });
+}

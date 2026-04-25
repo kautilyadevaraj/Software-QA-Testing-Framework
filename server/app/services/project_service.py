@@ -122,3 +122,7 @@ def delete_project(db: Session, project: Project) -> None:
     # Clean up files physically
     if project_dir.exists() and project_dir.is_dir():
         shutil.rmtree(project_dir, ignore_errors=True)
+
+def assert_project_member(db: Session, project_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    project = get_project_or_404(db, user_id, project_id)
+    # If it didn't raise, user has access. Nothing else needed.
