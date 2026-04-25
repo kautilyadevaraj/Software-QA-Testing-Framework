@@ -57,7 +57,8 @@ Software-QA-Testing-Framework/
       ├── migrations/                  # Alembic migration files
       │   └── versions/
       │       ├── 0001_consolidated.py
-      │       └── 0002_add_jira_tables.py
+      │       ├── 0002_add_jira_tables.py
+      │       └── 0003_add_high_level_scenarios.py
       ├── uploads/                     # User-uploaded files (gitignored)
       ├── .env                         # Local env (gitignored)
       ├── .env.example                 # Template (tracked)
