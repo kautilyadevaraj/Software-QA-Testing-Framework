@@ -1,23 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, useCallback, useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useParams } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
+  ChevronDown,
   DatabaseZap,
   FileText,
   Link2,
   Play,
   Save,
-  TestTubeDiagonal,
   Ticket,
   Trash2,
   Upload,
   CheckCircle2,
   Loader2,
-  Terminal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -35,7 +34,6 @@ import {
   ApiError,
   addProjectMember,
   connectProjectToJira,
-  createTicket,
   deleteProjectDocument,
   getCurrentUser,
   getProject,
@@ -55,6 +53,7 @@ import {
   getProjectExtractStatus,
   startProjectPdfExtraction,
   type JiraConfig,
+  type ProjectCredential,
 } from "@/lib/api";
 import type { MemberResponse, UserSearchResponse } from "@/lib/api";
 import {
@@ -62,6 +61,7 @@ import {
   DocumentCategory,
   ProjectDocuments,
   ProjectRecord,
+  ProjectStatus,
   REQUIRED_DOCUMENT_CATEGORIES,
   SINGLE_UPLOAD_CATEGORIES,
   createEmptyDocuments,
@@ -70,13 +70,14 @@ import {
 } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 import { RaiseTicketModal } from "@/components/raise-ticket-modal";
-import { Phase2Testing } from "@/components/phase2-testing";
+import { ScenarioQaPanel } from "@/components/scenario-qa-panel";
 
 type ActiveTab = "qa" | "configuration";
 
 type ProjectFormState = {
   name: string;
   description: string;
+  status: ProjectStatus;
   url: string;
 };
 
@@ -87,6 +88,7 @@ function toFormState(project: ProjectRecord): ProjectFormState {
   return {
     name: project.name,
     description: project.description,
+    status: project.status,
     url: project.url ?? "",
   };
 }
@@ -135,10 +137,30 @@ function getAcceptedFormatLabel(category: DocumentCategory) {
   return "PDF";
 }
 
+function getStatusTone(status: ProjectStatus) {
+  if (status === "Active") {
+    return {
+      wrapper: "bg-emerald-50",
+      dot: "bg-emerald-500",
+    };
+  }
+
+  if (status === "Blocked") {
+    return {
+      wrapper: "bg-red-50",
+      dot: "bg-red-500",
+    };
+  }
+
+  return {
+    wrapper: "bg-amber-50",
+    dot: "bg-amber-500",
+  };
+}
+
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
-  const router = useRouter();
 
   const [project, setProject] = useState<ProjectRecord | null>(null);
   const [formState, setFormState] = useState<ProjectFormState | null>(null);
@@ -146,6 +168,7 @@ export default function ProjectDetailsPage() {
     createEmptyDocuments(),
   );
   const [members, setMembers] = useState<MemberResponse[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<UserSearchResponse[]>([]);
@@ -156,11 +179,14 @@ export default function ProjectDetailsPage() {
   const [isLaunched, setIsLaunched] = useState(false);
   const [isProceedConfirmed, setIsProceedConfirmed] = useState(false);
   const [isIngestionStarted, setIsIngestionStarted] = useState(false);
+  const [isSavingAndIngesting, setIsSavingAndIngesting] = useState(false);
+  const [isRedirectingToQa, setIsRedirectingToQa] = useState(false);
   const [isBackendSynced, setIsBackendSynced] = useState(false);
-  const [credentials, setCredentials] = useState<any[]>([]);
+  const [credentials, setCredentials] = useState<ProjectCredential[]>([]);
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [status, setStatus] = useState("idle");
+  const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const allVerified =
     isBackendSynced &&
     credentials.length > 0 &&
@@ -194,6 +220,7 @@ export default function ProjectDetailsPage() {
           getProjectJiraConfig(projectId),
         ]);
 
+      setCurrentUserId(currentUser.id);
       setCurrentUserEmail(currentUser.email);
       setJiraConfig(jiraConfigResponse);
 
@@ -210,6 +237,8 @@ export default function ProjectDetailsPage() {
       toast.error(message);
       setProject(null);
       setFormState(null);
+      setCurrentUserId(null);
+      setCurrentUserEmail(null);
       setDocuments(createEmptyDocuments());
       setIsLaunched(false);
       setIsProceedConfirmed(false);
@@ -298,8 +327,11 @@ export default function ProjectDetailsPage() {
 
         if (data.status === "completed") {
           clearInterval(interval);
-          setTimeout(() => {
+          setIsRedirectingToQa(true);
+          redirectTimeoutRef.current = setTimeout(() => {
             setActiveTab("qa");
+            setIsRedirectingToQa(false);
+            redirectTimeoutRef.current = null;
           }, 3000);
           return;
         }
@@ -313,7 +345,14 @@ export default function ProjectDetailsPage() {
       }
     }, 5000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (redirectTimeoutRef.current) {
+        clearTimeout(redirectTimeoutRef.current);
+        redirectTimeoutRef.current = null;
+      }
+      setIsRedirectingToQa(false);
+    };
   }, [allVerified, isIngestionStarted, projectId]);
 
   const canIngestAndAddDocuments = isLaunched && isProceedConfirmed;
@@ -325,7 +364,6 @@ export default function ProjectDetailsPage() {
       const data = await getProjectCredentials(projectId);
 
       if (Array.isArray(data)) {
-        console.log("DEBUG credentials:", data);
         setCredentials(data);
         setIsBackendSynced(true);
         return data.length > 0 && data.every((c) => c.verified === true);
@@ -346,7 +384,7 @@ export default function ProjectDetailsPage() {
     try {
       const results = await searchUsers(searchQuery);
       setSearchResults(results);
-    } catch (error) {
+    } catch {
       toast.error("Failed to search users");
     } finally {
       setIsSearching(false);
@@ -404,20 +442,11 @@ export default function ProjectDetailsPage() {
       return;
     }
 
-    for (const requiredCategory of REQUIRED_DOCUMENT_CATEGORIES) {
-      if (documents[requiredCategory].length === 0) {
-        toast.error(
-          `${formatCategoryLabel(requiredCategory)} requires at least one ${getAcceptedFormatLabel(requiredCategory)} file.`,
-        );
-        return;
-      }
-    }
-
     try {
       const updated = await updateProject(project.id, {
         name: formState.name.trim(),
         description: formState.description.trim(),
-        status: project.status,
+        status: formState.status,
         url: formState.url.trim() ? formState.url.trim() : null,
       });
 
@@ -432,11 +461,11 @@ export default function ProjectDetailsPage() {
     }
   };
 
-  const handleVerify = async (cred: any) => {
+  const handleVerify = async (cred: ProjectCredential) => {
     try {
       await runProjectPlaywright(projectId, cred);
       toast.success("Playwright launched");
-    } catch (err) {
+    } catch {
       toast.error("Failed to launch Playwright");
     }
   };
@@ -445,7 +474,7 @@ export default function ProjectDetailsPage() {
     await startProjectPdfExtraction(projectId);
   };
 
-  const handleMarkVerified = async (cred: any) => {
+  const handleMarkVerified = async (cred: ProjectCredential) => {
     try {
       await markProjectVerified(projectId, cred.username);
 
@@ -453,16 +482,16 @@ export default function ProjectDetailsPage() {
 
       // ✅ ONLY backend source of truth
       await fetchCredentials();
-    } catch (err) {
+    } catch {
       toast.error("Failed to mark verified");
     }
   };
 
-  const handleReverify = async (cred: any) => {
+  const handleReverify = async (cred: ProjectCredential) => {
     try {
       await handleMarkVerified(cred); // toggle from backend
       toast.success("Reverify started");
-    } catch (err) {
+    } catch {
       toast.error("Failed to reverify");
     }
   };
@@ -581,7 +610,7 @@ export default function ProjectDetailsPage() {
   };
 
   const handleSaveAndIngest = async () => {
-    if (!project || !formState || !canIngestAndAddDocuments) {
+    if (!project || !formState || !canIngestAndAddDocuments || isSavingAndIngesting) {
       return;
     }
 
@@ -600,11 +629,18 @@ export default function ProjectDetailsPage() {
     }
 
     try {
+      setIsSavingAndIngesting(true);
+      if (redirectTimeoutRef.current) {
+        clearTimeout(redirectTimeoutRef.current);
+        redirectTimeoutRef.current = null;
+      }
+      setIsRedirectingToQa(false);
+
       // 1. Save project metadata
       const updated = await updateProject(project.id, {
         name: formState.name.trim(),
         description: formState.description.trim(),
-        status: project.status,
+        status: formState.status,
         url: formState.url.trim() ? formState.url.trim() : null,
       });
       const mapped = mapProjectFromApi(updated);
@@ -619,6 +655,10 @@ export default function ProjectDetailsPage() {
       setCredentials([]);
       setIsBackendSynced(false);
       setIsIngestionStarted(true);
+      setProgress(0);
+      setLogs([]);
+      setStatus("idle");
+      setActiveTab("configuration");
 
       // OPTIONAL: avoid flicker of "All verified"
       setTimeout(async () => {
@@ -630,6 +670,8 @@ export default function ProjectDetailsPage() {
           ? error.message
           : "Unable to save and ingest.";
       toast.error(message);
+    } finally {
+      setIsSavingAndIngesting(false);
     }
   };
 
@@ -774,7 +816,7 @@ export default function ProjectDetailsPage() {
                                    <span className="font-bold text-[10px]">X</span>
                                  </div>
                               ) : (
-                                 <div className="w-7 h-7 rounded-full border-[2px] border-gray-200 text-gray-400 flex items-center justify-center shrink-0 transition-all font-semibold text-xs bg-gray-50">
+                                 <div className="w-7 h-7 rounded-full border-2 border-gray-200 text-gray-400 flex items-center justify-center shrink-0 transition-all font-semibold text-xs bg-gray-50">
                                    {task.id}
                                  </div>
                               )}
@@ -791,9 +833,32 @@ export default function ProjectDetailsPage() {
 
                       {/* Final Redirection Indicator */}
                       {status === "completed" && (
-                        <div className="mt-8 flex items-center justify-center gap-2 text-sm text-gray-500 animate-pulse bg-gray-50 rounded-lg py-3 w-full border border-gray-100 transition-all fade-in zoom-in">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Redirecting to QA page in 3 seconds...
+                        <div className="mt-8 flex w-full flex-col items-center justify-between gap-3 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-600 transition-all fade-in zoom-in sm:flex-row">
+                          <div className="flex items-center gap-2">
+                            {isRedirectingToQa ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                            )}
+                            {isRedirectingToQa
+                              ? "Redirecting to QA page in 3 seconds..."
+                              : "QA page is ready. Reingest to refresh the latest documents."}
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleSaveAndIngest()}
+                            disabled={!canIngestAndAddDocuments || isSavingAndIngesting}
+                            className="w-full border-emerald-200 text-emerald-700 hover:bg-emerald-50 sm:w-auto"
+                          >
+                            {isSavingAndIngesting ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <DatabaseZap className="h-3.5 w-3.5" />
+                            )}
+                            {isSavingAndIngesting ? "Reingesting..." : "Reingest"}
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -911,16 +976,38 @@ export default function ProjectDetailsPage() {
         </div>
 
         <div className="flex flex-col items-start gap-2 sm:items-end">
-          <div className="rounded-lg border border-black/10 bg-white px-3 py-2 text-sm text-black/70">
-            Status:{" "}
-            <span
-              className={cn(
-                "font-semibold",
-                project.status === "Active" ? "text-[#2a63f5]" : "text-black",
-              )}
-            >
-              {project.status}
-            </span>
+          <div className="inline-flex items-center">
+            <Label htmlFor="project-status" className="mr-2 text-xs font-semibold uppercase tracking-wide text-black/60">
+              Status
+            </Label>
+            <div className={cn("relative rounded-lg border border-black/15", getStatusTone(formState.status).wrapper)}>
+              <span
+                className={cn(
+                  "pointer-events-none absolute left-2.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full",
+                  getStatusTone(formState.status).dot,
+                )}
+              />
+              <select
+                id="project-status"
+                value={formState.status}
+                onChange={(event) =>
+                  setFormState((current) =>
+                    current
+                      ? {
+                          ...current,
+                          status: event.target.value as ProjectStatus,
+                        }
+                      : current,
+                  )
+                }
+                className="h-8 min-w-32 appearance-none bg-transparent py-1 pl-7 pr-8 text-sm font-semibold text-black focus-visible:outline-none"
+              >
+                <option value="Draft">Draft</option>
+                <option value="Active">Active</option>
+                <option value="Blocked">Blocked</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-black/60" />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -942,16 +1029,17 @@ export default function ProjectDetailsPage() {
 
       {activeTab === "qa" ? (
         <Card className="border-black/10 bg-white">
-        <CardHeader>
-          <CardTitle className="text-black">QA Testing — Phase 2</CardTitle>
-          <CardDescription>
-            Scenario review, UI discovery recording, and test script generation.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Phase2Testing projectId={projectId} />
-        </CardContent>
-      </Card>
+          <CardHeader>
+            <CardTitle className="text-black">QA Testing</CardTitle>
+            <CardDescription>
+              Generate, review, and launch high-level test scenarios.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ScenarioQaPanel projectId={projectId} currentUserId={currentUserId} />
+          </CardContent>
+        </Card>
+
       ) : (
         <Card className="border-black/10 bg-white">
           <CardHeader>
@@ -1350,11 +1438,15 @@ export default function ProjectDetailsPage() {
                 <Button
                   type="button"
                   onClick={() => void handleSaveAndIngest()}
-                  disabled={!canIngestAndAddDocuments}
+                  disabled={!canIngestAndAddDocuments || isSavingAndIngesting}
                   className="bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
-                  <DatabaseZap className="h-4 w-4" />
-                  Save &amp; Ingest
+                  {isSavingAndIngesting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <DatabaseZap className="h-4 w-4" />
+                  )}
+                  {isSavingAndIngesting ? "Starting..." : "Save & Ingest"}
                 </Button>
               </div>
             )}

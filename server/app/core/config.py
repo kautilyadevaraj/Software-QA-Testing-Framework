@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
 
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_max_tokens: int = 1024
+    scenario_agent_batch_chars: int = 4500
+    scenario_agent_batch_size: int = 4
+    scenario_agent_max_scenarios_per_batch: int = 5
+    scenario_agent_batch_delay_seconds: float = 1.0
+    scenario_dedup_max_chars: int = 8000
+
     hf_token: str | None = None
     hf_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     hf_models_dir: str = "models"
@@ -75,6 +84,17 @@ class Settings(BaseSettings):
     @property
     def frontend_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+
+    @property
+    def groq_api_keys(self) -> list[str]:
+        if not self.groq_api_key:
+            return []
+        keys: list[str] = []
+        for key in self.groq_api_key.split(","):
+            normalized = key.strip()
+            if normalized and normalized not in keys:
+                keys.append(normalized)
+        return keys
 
     @property
     def is_development(self) -> bool:

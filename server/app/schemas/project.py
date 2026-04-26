@@ -96,6 +96,7 @@ class ProjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    owner_id: uuid.UUID
     name: str
     description: str
     status: ProjectStatus
@@ -103,6 +104,8 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     is_verified: bool = False
+    tester_ids: list[uuid.UUID] = Field(default_factory=list)
+    tester_emails: list[str] = Field(default_factory=list)
 
     @field_validator("url", mode="before")
     @classmethod

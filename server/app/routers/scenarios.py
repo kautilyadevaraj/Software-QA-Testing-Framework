@@ -1,163 +1,233 @@
-"""Scenario management endpoints — called by the Next.js frontend."""
+import logging
+from uuid import UUID
 
-from __future__ import annotations
-
-import uuid
-
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from uuid6 import uuid7
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
+from app.graph.scenario_graph import run_scenario_graph
+from app.models.project import HighLevelScenario
 from app.models.user import User
 from app.schemas.scenario import (
-    LockScenariosResponse,
-    Phase2StatusResponse,
-    RecordingSessionListResponse,
-    RecordingSetupResponse,
-    ScenarioCreate,
+    ApproveScenariosRequest,
+    ApproveScenariosResponse,
+    GenerateScenariosRequest,
+    GenerateScenariosResponse,
+    HighLevelScenarioResponse,
+    ManualScenarioRequest,
     ScenarioListResponse,
-    ScenarioResponse,
-    ScenarioUpdate,
+    ScenarioUpdateRequest,
 )
-from app.services import scenario_service, recorder_service
-from app.core.config import settings
+from app.services.project_service import get_project_or_404
+from app.utils.rate_limiter import limiter
 
-router = APIRouter(prefix="/projects/{project_id}/scenarios", tags=["scenarios"])
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/projects", tags=["scenarios"])
+settings = get_settings()
 
 
-def _require_project_member(
-    project_id: uuid.UUID,
+def _scenario_response(row: HighLevelScenario, completed_by_name: str | None = None) -> HighLevelScenarioResponse:
+    return HighLevelScenarioResponse(
+        id=row.id,
+        project_id=row.project_id,
+        title=row.title,
+        description=row.description,
+        source=row.source,  # type: ignore[arg-type]
+        status=row.status,  # type: ignore[arg-type]
+        completed_by=row.completed_by,
+        completed_by_name=completed_by_name,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _get_scenario_with_completed_by_name(
     db: Session,
-    current_user: User,
-) -> None:
-    """
-    Raise 403 if the current user is not a member of the project.
-    Re-use your existing project membership check here.
-    """
-    from app.services.project_service import assert_project_member  # adjust import
-    assert_project_member(db, project_id, current_user.id)
+    project_id: UUID,
+    scenario_id: UUID,
+) -> HighLevelScenarioResponse:
+    result = db.execute(
+        select(HighLevelScenario, User.email)
+        .outerjoin(User, HighLevelScenario.completed_by == User.id)
+        .where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.id == scenario_id,
+        )
+    ).first()
+    if not result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
+    scenario, completed_by_name = result
+    return _scenario_response(scenario, completed_by_name)
 
 
-# ── Scenario CRUD ──────────────────────────────────────────────────────────
+@router.post("/{project_id}/scenarios/generate", response_model=GenerateScenariosResponse)
+@limiter.limit(settings.rate_limit_api)
+def generate_scenarios(
+    request: Request,
+    project_id: UUID,
+    payload: GenerateScenariosRequest = Body(default=GenerateScenariosRequest()),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GenerateScenariosResponse:
+    get_project_or_404(db, current_user.id, project_id)
+    try:
+        scenarios = run_scenario_graph(
+            str(project_id),
+            {
+                "max_scenarios": payload.max_scenarios,
+                "scenario_types": payload.scenario_types,
+                "access_mode": payload.access_mode,
+                "scenario_level": payload.scenario_level,
+            },
+            [
+                {
+                    "title": scenario.title,
+                    "description": scenario.description,
+                    "source": scenario.source,
+                }
+                for scenario in payload.existing_scenarios
+            ],
+        )
+    except Exception as error:
+        logger.exception("Scenario generation failed for project_id=%s: %s", project_id, error)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Scenario generation failed") from error
+    return GenerateScenariosResponse(scenarios=scenarios)
 
-@router.get("", response_model=ScenarioListResponse)
+
+@router.post("/{project_id}/scenarios/approve", response_model=ApproveScenariosResponse)
+@limiter.limit(settings.rate_limit_api)
+def approve_scenarios(
+    request: Request,
+    project_id: UUID,
+    payload: ApproveScenariosRequest = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ApproveScenariosResponse:
+    get_project_or_404(db, current_user.id, project_id)
+    rows = [
+        HighLevelScenario(
+            id=uuid7(),
+            project_id=project_id,
+            title=scenario.title,
+            description=scenario.description,
+            source=scenario.source,
+        )
+        for scenario in payload.scenarios
+        if scenario.title.strip()
+    ]
+    if rows:
+        db.add_all(rows)
+        db.commit()
+    return ApproveScenariosResponse(saved=len(rows))
+
+
+@router.get("/{project_id}/scenarios", response_model=ScenarioListResponse)
+@limiter.limit(settings.rate_limit_api)
 def list_scenarios(
-    project_id: uuid.UUID,
+    request: Request,
+    project_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ScenarioListResponse:
-    _require_project_member(project_id, db, current_user)
-    return scenario_service.list_scenarios(db, project_id)
+    get_project_or_404(db, current_user.id, project_id)
+    rows = db.execute(
+        select(HighLevelScenario, User.email)
+        .outerjoin(User, HighLevelScenario.completed_by == User.id)
+        .where(HighLevelScenario.project_id == project_id)
+        .order_by(HighLevelScenario.id.asc())
+    ).all()
+    return ScenarioListResponse(scenarios=[_scenario_response(row, name) for row, name in rows])
 
 
-@router.post("", response_model=ScenarioResponse, status_code=status.HTTP_201_CREATED)
-def create_scenario(
-    project_id: uuid.UUID,
-    payload: ScenarioCreate,
+@router.post("/{project_id}/scenarios", response_model=HighLevelScenarioResponse)
+@limiter.limit(settings.rate_limit_api)
+def create_manual_scenario(
+    request: Request,
+    project_id: UUID,
+    payload: ManualScenarioRequest = Body(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> ScenarioResponse:
-    _require_project_member(project_id, db, current_user)
-    return scenario_service.create_scenario(db, project_id, payload, current_user.id)
-
-
-@router.patch("/{scenario_id}", response_model=ScenarioResponse)
-def update_scenario(
-    project_id: uuid.UUID,
-    scenario_id: uuid.UUID,
-    payload: ScenarioUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> ScenarioResponse:
-    _require_project_member(project_id, db, current_user)
-    try:
-        return scenario_service.update_scenario(db, project_id, scenario_id, payload)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.delete("/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None, response_class=Response)
-def delete_scenario(
-    project_id: uuid.UUID,
-    scenario_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> None:
-    _require_project_member(project_id, db, current_user)
-    try:
-        scenario_service.delete_scenario(db, project_id, scenario_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-# ── Lock ───────────────────────────────────────────────────────────────────
-
-@router.post("/lock", response_model=LockScenariosResponse)
-def lock_scenarios(
-    project_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> LockScenariosResponse:
-    _require_project_member(project_id, db, current_user)
-    try:
-        sessions_created, already_locked = scenario_service.lock_scenarios(db, project_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return LockScenariosResponse(locked=True, sessions_created=sessions_created)
-
-
-# ── Phase 2 status ─────────────────────────────────────────────────────────
-
-@router.get("/phase2-status", response_model=Phase2StatusResponse)
-def get_phase2_status(
-    project_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Phase2StatusResponse:
-    _require_project_member(project_id, db, current_user)
-    try:
-        return scenario_service.get_phase2_status(db, project_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-# ── Recording sessions (frontend read) ─────────────────────────────────────
-
-@router.get("/recording-sessions", response_model=RecordingSessionListResponse)
-def list_recording_sessions(
-    project_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> RecordingSessionListResponse:
-    _require_project_member(project_id, db, current_user)
-    return scenario_service.list_recording_sessions(db, project_id)
-
-
-# ── Recorder setup command ──────────────────────────────────────────────────
-
-@router.get("/recording-setup", response_model=RecordingSetupResponse)
-def get_recording_setup(
-    project_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> RecordingSetupResponse:
-    _require_project_member(project_id, db, current_user)
-    from app.models.project import Project
-    project = db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    token = str(project.recorder_token)
-    server_url = settings.PUBLIC_API_URL  # e.g. https://your-vm.com
-
-    # The tester runs this command on their local machine
-    setup_command = (
-        f'curl -o recorder.py "{server_url}/api/v1/recorder/{project_id}/script" '
-        f'-H "X-Recorder-Token: {token}" && '
-        f"pip install playwright && "
-        f"playwright install chromium && "
-        f"python recorder.py"
+) -> HighLevelScenarioResponse:
+    get_project_or_404(db, current_user.id, project_id)
+    if not payload.title:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Title is required")
+    scenario = HighLevelScenario(
+        id=uuid7(),
+        project_id=project_id,
+        title=payload.title,
+        description=payload.description,
+        source="manual",
     )
+    db.add(scenario)
+    db.commit()
+    return _get_scenario_with_completed_by_name(db, project_id, scenario.id)
 
-    return RecordingSetupResponse(setup_command=setup_command, recorder_token=token)
+
+@router.patch("/{project_id}/scenarios/{scenario_id}", response_model=HighLevelScenarioResponse)
+@limiter.limit(settings.rate_limit_api)
+def update_scenario(
+    request: Request,
+    project_id: UUID,
+    scenario_id: UUID,
+    payload: ScenarioUpdateRequest = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> HighLevelScenarioResponse:
+    get_project_or_404(db, current_user.id, project_id)
+    scenario = db.execute(
+        select(HighLevelScenario).where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.id == scenario_id,
+        )
+    ).scalar_one_or_none()
+    if not scenario:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
+
+    if payload.title is not None:
+        if not payload.title:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Title is required")
+        scenario.title = payload.title
+    if payload.description is not None:
+        scenario.description = payload.description
+    if payload.status is not None:
+        scenario.status = payload.status
+        if payload.status == "completed":
+            if payload.current_user_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="current_user_id is required when status is completed",
+                )
+            scenario.completed_by = payload.current_user_id
+        else:
+            scenario.completed_by = None
+
+    db.add(scenario)
+    db.commit()
+    return _get_scenario_with_completed_by_name(db, project_id, scenario.id)
+
+
+@router.delete("/{project_id}/scenarios/{scenario_id}")
+@limiter.limit(settings.rate_limit_api)
+def delete_scenario(
+    request: Request,
+    project_id: UUID,
+    scenario_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, bool]:
+    get_project_or_404(db, current_user.id, project_id)
+    scenario = db.execute(
+        select(HighLevelScenario).where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.id == scenario_id,
+        )
+    ).scalar_one_or_none()
+    if not scenario:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
+    db.delete(scenario)
+    db.commit()
+    return {"deleted": True}

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 
 import uuid6
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func, Boolean
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -199,3 +199,35 @@ class JiraTicket(Base):
     )
 
     project = relationship("Project")
+
+
+class HighLevelScenario(Base):
+    __tablename__ = "high_level_scenarios"
+
+    __table_args__ = (
+        CheckConstraint("source IN ('agent_1', 'agent_2', 'manual')", name="ck_high_level_scenarios_source"),
+        CheckConstraint("status IN ('pending', 'completed')", name="ck_high_level_scenarios_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid6.uuid7)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", index=True)
+    completed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    project = relationship("Project")
+    completed_by_user = relationship("User", foreign_keys=[completed_by])

@@ -59,8 +59,7 @@ except Exception as exc:
 # ── 2. Create tables ───────────────────────────────────────────────────────────
 from app.db.session import engine
 from app.db.base import Base
-from app.models.user import User  # noqa: F401
-from app.models.project import Project, ProjectMember, ProjectFile  # noqa: F401
+import app.models  # noqa: F401
 
 print("Creating database tables...")
 Base.metadata.create_all(bind=engine)

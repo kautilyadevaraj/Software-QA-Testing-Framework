@@ -24,7 +24,7 @@ export function ProjectsSideNav({ isExpanded, onExpandedChange }: ProjectsSideNa
   return (
     <aside
       className={cn(
-        "fixed left-0 top-16 z-40 h-[calc(100vh-4rem)] shrink-0 overflow-hidden border-r border-black/10 bg-white shadow-sm transition-[width] duration-200 ease-out",
+        "fixed left-0 top-16 z-40 h-[calc(100dvh-4rem)] shrink-0 overflow-hidden border-r border-black/10 bg-white shadow-sm transition-[width] duration-200 ease-out",
         isExpanded ? "w-56" : "w-16"
       )}
       onMouseEnter={() => onExpandedChange(true)}

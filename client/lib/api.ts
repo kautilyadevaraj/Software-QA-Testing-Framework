@@ -1,9 +1,5 @@
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
-const API_BASE_URL_FALLBACK = API_BASE_URL.includes("localhost")
-  ? API_BASE_URL.replace("localhost", "127.0.0.1")
-  : API_BASE_URL;
 const API_ROOT = `${API_BASE_URL}/api/v1`;
-const API_ROOT_FALLBACK = `${API_BASE_URL_FALLBACK}/api/v1`;
 
 type ApiRequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -56,7 +52,7 @@ function getErrorMessage(payload: ApiErrorPayload | null, fallback: string) {
   return fallback;
 }
 
-async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+async function request<T>(path: string, options: ApiRequestOptions = {}, allowRefresh = true): Promise<T> {
   const { body, headers, ...rest } = options;
 
   const finalHeaders = new Headers(headers ?? undefined);
@@ -77,26 +73,30 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     }
   }
 
-  let response: Response;
-  try {
-    response = await fetch(`${API_ROOT}${path}`, init);
-  } catch (error) {
-    if (API_ROOT_FALLBACK === API_ROOT) {
-      throw error;
-    }
-    response = await fetch(`${API_ROOT_FALLBACK}${path}`, init);
-  }
+  const response = await fetch(`${API_ROOT}${path}`, init);
 
   const isJson = response.headers.get("content-type")?.includes("application/json");
   const payload = isJson ? ((await response.json()) as unknown) : null;
 
   if (!response.ok) {
+    if (response.status === 401 && allowRefresh && !path.startsWith("/auth/")) {
+      const refreshResponse = await fetch(`${API_ROOT}/auth/refresh`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (refreshResponse.ok) {
+        return request<T>(path, options, false);
+      }
+    }
+
     const message = getErrorMessage(payload as ApiErrorPayload | null, `Request failed with ${response.status}`);
     throw new ApiError(message, response.status);
   }
 
   return payload as T;
 }
+
+// ─── Auth types ────────────────────────────────────────────────────────────
 
 export type AuthUser = {
   id: string;
@@ -109,10 +109,13 @@ export type AuthResponse = {
   user: AuthUser;
 };
 
+// ─── Project types ─────────────────────────────────────────────────────────
+
 export type ProjectStatus = "Active" | "Draft" | "Blocked";
 
 export type ProjectResponse = {
   id: string;
+  owner_id: string;
   name: string;
   description: string;
   status: ProjectStatus;
@@ -120,6 +123,8 @@ export type ProjectResponse = {
   created_at: string;
   updated_at: string;
   is_verified: boolean;
+  tester_ids: string[];
+  tester_emails: string[];
 };
 
 export type ProjectListResponse = {
@@ -192,6 +197,100 @@ export type RaiseTicketPayload = {
   raised_from: "url_section" | "credentials_section";
 };
 
+export type ProjectCredential = {
+  username: string;
+  role: string | null;
+  auth_type: string | null;
+  endpoint: string | null;
+  verified: boolean;
+};
+
+// ─── Scenario types ────────────────────────────────────────────────────────
+
+export type ScenarioSource = "agent_1" | "agent_2" | "manual";
+export type ScenarioStatus = "pending" | "completed";
+export type RecordingStatus = "pending" | "in_progress" | "completed" | "failed";
+export type ScenarioGenerationType =
+  | "ALL"
+  | "HLS"
+  | "Functional"
+  | "Technical"
+  | "API"
+  | "Security"
+  | "Performance"
+  | "Integration"
+  | "Data"
+  | "Compliance"
+  | "Usability";
+export type ScenarioAccessMode = "UI_ONLY_WEB" | "UI_AND_API" | "TECHNICAL_REVIEW";
+export type ScenarioLevel = "HLS" | "DETAILED_HLS";
+
+export type ScenarioGenerationSettings = {
+  max_scenarios: number | null;
+  scenario_types: ScenarioGenerationType[];
+  access_mode: ScenarioAccessMode;
+  scenario_level: ScenarioLevel;
+  existing_scenarios?: PreviewScenario[];
+};
+
+export type PreviewScenario = {
+  title: string;
+  description: string;
+  source: ScenarioSource;
+};
+
+export type HighLevelScenario = {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  source: ScenarioSource;
+  status: ScenarioStatus;
+  completed_by: string | null;
+  completed_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScenarioListResponse = {
+  scenarios: HighLevelScenario[];
+};
+
+// ui-discovery additional types
+
+export type RecordingSessionResponse = {
+  id: string;
+  project_id: string;
+  scenario_id: string;
+  scenario_title: string;
+  status: RecordingStatus;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  step_count: number;
+};
+
+export type RecordingSessionListResponse = {
+  items: RecordingSessionResponse[];
+};
+
+export type LockScenariosResponse = {
+  locked: boolean;
+  sessions_created: number;
+};
+
+export type RecordingSetupResponse = {
+  setup_command: string;
+  recorder_token: string;
+};
+
+export type TriggerScenarioResponse = {
+  triggered: boolean;
+  scenario_id: string;
+};
+
+// ─── Auth API ──────────────────────────────────────────────────────────────
+
 export async function signup(email: string, password: string) {
   return request<AuthResponse>("/auth/signup", {
     method: "POST",
@@ -217,6 +316,8 @@ export async function getCurrentUser() {
     method: "GET",
   });
 }
+
+// ─── Projects API ──────────────────────────────────────────────────────────
 
 export async function listProjects(params: {
   sortBy: "id" | "name" | "created_at" | "status";
@@ -365,7 +466,7 @@ export async function transferProjectOwnership(projectId: string, memberId: stri
 }
 
 export async function getProjectCredentials(projectId: string) {
-  return request<any[] | { error: string }>(`/projects/${projectId}/credentials`, {
+  return request<ProjectCredential[] | { error: string }>(`/projects/${projectId}/credentials`, {
     method: "GET",
   });
 }
@@ -377,7 +478,7 @@ export async function markProjectVerified(projectId: string, username: string) {
   });
 }
 
-export async function runProjectPlaywright(projectId: string, cred: any) {
+export async function runProjectPlaywright(projectId: string, cred: ProjectCredential) {
   return request<{ status: string }>(`/projects/${projectId}/run-playwright`, {
     method: "POST",
     body: cred,
@@ -411,126 +512,74 @@ export async function getProjectExtractStatus(projectId: string) {
   );
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────
+// ─── Scenario API (HLS generators — main branch) ──────────────────────────
 
-export type ScenarioSource = "agent_1" | "agent_2" | "manual";
-export type ScenarioStatus = "pending" | "completed";
-export type RecordingStatus = "pending" | "in_progress" | "completed" | "failed";
-
-export interface ScenarioResponse {
-  id: string;
-  project_id: string;
-  title: string;
-  description: string | null;
-  source: ScenarioSource;
-  status: ScenarioStatus;
-  completed_by: string | null;
-  created_at: string;
-  updated_at: string;
-  recording_status: RecordingStatus | null;
+export async function generateHighLevelScenarios(projectId: string, settings: ScenarioGenerationSettings) {
+  return request<{ scenarios: PreviewScenario[] }>(`/projects/${projectId}/scenarios/generate`, {
+    method: "POST",
+    body: settings,
+  });
 }
 
-export interface ScenarioListResponse {
-  items: ScenarioResponse[];
-  total: number;
+export async function approveHighLevelScenarios(projectId: string, scenarios: PreviewScenario[]) {
+  return request<{ saved: number }>(`/projects/${projectId}/scenarios/approve`, {
+    method: "POST",
+    body: { scenarios },
+  });
 }
 
-export interface Phase2StatusResponse {
-  phase_2_locked: boolean;
-  total_scenarios: number;
-  recorded_scenarios: number;
-  all_recorded: boolean;
-}
-
-export interface RecordingSessionResponse {
-  id: string;
-  project_id: string;
-  scenario_id: string;
-  scenario_title: string;
-  status: RecordingStatus;
-  started_at: string | null;
-  completed_at: string | null;
-  created_at: string;
-  step_count: number;
-}
-
-export interface RecordingSessionListResponse {
-  items: RecordingSessionResponse[];
-}
-
-export interface LockScenariosResponse {
-  locked: boolean;
-  sessions_created: number;
-}
-
-export interface RecordingSetupResponse {
-  setup_command: string;
-  recorder_token: string;
-}
-
-// ─── Scenario CRUD ────────────────────────────────────────────────────────
-
-export async function listScenarios(projectId: string): Promise<ScenarioListResponse> {
+export async function listHighLevelScenarios(projectId: string) {
   return request<ScenarioListResponse>(`/projects/${projectId}/scenarios`, {
     method: "GET",
   });
 }
 
-export async function createScenario(
+export async function createHighLevelScenario(
   projectId: string,
-  data: { title: string; description?: string; source?: string }
-): Promise<ScenarioResponse> {
-  return request<ScenarioResponse>(`/projects/${projectId}/scenarios`, {
+  payload: { title: string; description: string },
+) {
+  return request<HighLevelScenario>(`/projects/${projectId}/scenarios`, {
     method: "POST",
-    body: data,
+    body: payload,
   });
 }
 
-export async function updateScenario(
+export async function updateHighLevelScenario(
   projectId: string,
   scenarioId: string,
-  data: { title?: string; description?: string }
-): Promise<ScenarioResponse> {
-  return request<ScenarioResponse>(`/projects/${projectId}/scenarios/${scenarioId}`, {
+  payload: {
+    title?: string;
+    description?: string;
+    status?: ScenarioStatus;
+    current_user_id?: string;
+  },
+) {
+  return request<HighLevelScenario>(`/projects/${projectId}/scenarios/${scenarioId}`, {
     method: "PATCH",
-    body: data,
+    body: payload,
   });
 }
 
-export async function deleteScenario(
-  projectId: string,
-  scenarioId: string
-): Promise<void> {
-  return request<void>(`/projects/${projectId}/scenarios/${scenarioId}`, {
+export async function deleteHighLevelScenario(projectId: string, scenarioId: string) {
+  return request<{ deleted: true }>(`/projects/${projectId}/scenarios/${scenarioId}`, {
     method: "DELETE",
   });
 }
 
-export async function lockScenarios(projectId: string): Promise<LockScenariosResponse> {
-  return request<LockScenariosResponse>(`/projects/${projectId}/scenarios/lock`, {
-    method: "POST",
-  });
+// ─── Trigger (ui-discovery — polling architecture) ─────────────────────────
+
+export async function triggerScenarioLaunch(projectId: string, scenarioId: string) {
+  return request<TriggerScenarioResponse>(
+    `/projects/${projectId}/scenarios/${scenarioId}/trigger`,
+    {
+      method: "POST",
+    },
+  );
 }
 
-// ─── Phase 2 status & recording sessions ─────────────────────────────────
+// ─── Recording setup (ui-discovery) ───────────────────────────────────────
 
-export async function getPhase2Status(projectId: string): Promise<Phase2StatusResponse> {
-  return request<Phase2StatusResponse>(`/projects/${projectId}/scenarios/phase2-status`, {
-    method: "GET",
-  });
-}
-
-export async function listRecordingSessions(
-  projectId: string
-): Promise<RecordingSessionListResponse> {
-  return request<RecordingSessionListResponse>(`/projects/${projectId}/scenarios/recording-sessions`, {
-    method: "GET",
-  });
-}
-
-export async function getRecordingSetup(
-  projectId: string
-): Promise<RecordingSetupResponse> {
+export async function getRecordingSetup(projectId: string): Promise<RecordingSetupResponse> {
   return request<RecordingSetupResponse>(`/projects/${projectId}/scenarios/recording-setup`, {
     method: "GET",
   });
