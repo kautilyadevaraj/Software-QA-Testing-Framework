@@ -14,7 +14,7 @@ from app.models.project import (
     ProjectStatus,
 )
 from app.models.user import User
-from app.models.scenario import TestScenario, RecordingSession, DiscoveredRoute, RouteVariant, ScenarioStep
+from app.models.scenario import RecordingSession, DiscoveredRoute, RouteVariant, ScenarioStep
 
 __all__ = [
     "APIEndpoint",
@@ -31,7 +31,6 @@ __all__ = [
     "ProjectMember",
     "ProjectRole",
     "User",
-    "TestScenario",
     "RecordingSession",
     "DiscoveredRoute",
     "RouteVariant",

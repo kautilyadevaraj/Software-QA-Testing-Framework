@@ -1,15 +1,15 @@
 """Phase 2 UI Discovery tables
 
-Revision ID: 0003_phase2_ui_discovery
-Revises: 0002_add_jira_tables
+Revision ID: 0004_phase2_ui_discovery
+Revises: 0003_add_high_level_scenarios
 Create Date: 2026-04-25
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
-revision = "0003_phase2_ui_discovery"
-down_revision = "0002_add_jira_tables"
+revision = "0004_phase2_ui_discovery"
+down_revision = "0003_add_high_level_scenarios"
 branch_labels = None
 depends_on = None
 

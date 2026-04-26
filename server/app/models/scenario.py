@@ -18,59 +18,6 @@ from sqlalchemy.sql import func
 from app.db.base import Base
 
 
-class TestScenario(Base):
-    __tablename__ = "test_scenarios"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # source: 'agent_1' | 'agent_2' | 'manual'
-    source: Mapped[str] = mapped_column(Text, nullable=False)
-    # status: 'pending' | 'completed'
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
-    completed_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        server_default=func.now(), onupdate=func.now(), nullable=False
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "source IN ('agent_1', 'agent_2', 'manual')",
-            name="ck_test_scenarios_source",
-        ),
-        CheckConstraint(
-            "status IN ('pending', 'completed')",
-            name="ck_test_scenarios_status",
-        ),
-    )
-
-    # Relationships
-    recording_sessions: Mapped[list["RecordingSession"]] = relationship(
-        back_populates="scenario", cascade="all, delete-orphan"
-    )
-    route_variants: Mapped[list["RouteVariant"]] = relationship(
-        back_populates="scenario", cascade="all, delete-orphan"
-    )
-    steps: Mapped[list["ScenarioStep"]] = relationship(
-        back_populates="scenario", cascade="all, delete-orphan"
-    )
-
-
 class RecordingSession(Base):
     __tablename__ = "recording_sessions"
 
@@ -85,7 +32,7 @@ class RecordingSession(Base):
     )
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("test_scenarios.id", ondelete="CASCADE"),
+        ForeignKey("high_level_scenarios.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -105,7 +52,7 @@ class RecordingSession(Base):
     )
 
     # Relationships
-    scenario: Mapped["TestScenario"] = relationship(back_populates="recording_sessions")
+    scenario = relationship("HighLevelScenario", back_populates="recording_sessions")
     route_variants: Mapped[list["RouteVariant"]] = relationship(
         back_populates="recording_session", cascade="all, delete-orphan"
     )
@@ -164,7 +111,7 @@ class RouteVariant(Base):
     )
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("test_scenarios.id", ondelete="CASCADE"),
+        ForeignKey("high_level_scenarios.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -190,7 +137,7 @@ class RouteVariant(Base):
 
     # Relationships
     route: Mapped["DiscoveredRoute"] = relationship(back_populates="variants")
-    scenario: Mapped["TestScenario"] = relationship(back_populates="route_variants")
+    scenario = relationship("HighLevelScenario", back_populates="route_variants")
     recording_session: Mapped["RecordingSession"] = relationship(
         back_populates="route_variants"
     )
@@ -204,7 +151,7 @@ class ScenarioStep(Base):
     )
     scenario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("test_scenarios.id", ondelete="CASCADE"),
+        ForeignKey("high_level_scenarios.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -241,7 +188,7 @@ class ScenarioStep(Base):
     )
 
     # Relationships
-    scenario: Mapped["TestScenario"] = relationship(back_populates="steps")
+    scenario = relationship("HighLevelScenario", back_populates="steps")
     recording_session: Mapped["RecordingSession"] = relationship(
         back_populates="steps"
     )

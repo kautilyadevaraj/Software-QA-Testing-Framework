@@ -584,3 +584,12 @@ export async function getRecordingSetup(projectId: string): Promise<RecordingSet
     method: "GET",
   });
 }
+
+export async function getScenarioRecordingStatus(
+  projectId: string,
+  scenarioId: string,
+): Promise<{ session_status: "none" | "pending" | "in_progress" | "completed" | "failed" }> {
+  return request(`/projects/${projectId}/scenarios/${scenarioId}/recording-status`, {
+    method: "GET",
+  });
+}

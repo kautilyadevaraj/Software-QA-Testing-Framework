@@ -6,7 +6,6 @@ passed in the X-Recorder-Token header.
 These endpoints are NOT protected by JWT. The recorder_token acts as the secret.
 """
 
-from __future__ import annotations
 
 import uuid
 from pathlib import Path
@@ -18,6 +17,7 @@ from fastapi import Depends
 
 from app.db.session import get_db
 from app.schemas.scenario import (
+    PulseResponse,
     RecorderProjectInfo,
     RecorderRouteResponse,
     RecorderRouteUpsert,
@@ -168,3 +168,41 @@ def append_step(
         return recorder_service.append_step(db, project, session_id, payload)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── Pulse (daemon polling) ──────────────────────────────────────────────────
+
+@router.get("/{project_id}/pulse", response_model=PulseResponse)
+def pulse(
+    project_id: uuid.UUID,
+    x_recorder_token: str = Header(...),
+    db: Session = Depends(get_db),
+) -> PulseResponse:
+    """
+    Called every second by the local Python daemon.
+    Returns the pending scenario_id (if any) and atomically clears it so
+    exactly one daemon response is triggered per UI "Launch" click.
+    """
+    project = _get_project_by_token(project_id, x_recorder_token, db)
+
+    launch_id = project.active_launch_scenario_id
+    if launch_id is None:
+        return PulseResponse()
+
+    # Atomically clear the flag before returning
+    project.active_launch_scenario_id = None
+    db.add(project)
+    db.commit()
+
+    # Fetch scenario details so the daemon can display useful output
+    from app.models.project import HighLevelScenario
+    from sqlalchemy import select as _select
+    scenario = db.execute(
+        _select(HighLevelScenario).where(HighLevelScenario.id == launch_id)
+    ).scalar_one_or_none()
+
+    return PulseResponse(
+        scenario_id=launch_id,
+        scenario_title=scenario.title if scenario else None,
+        project_url=project.url or None,
+    )

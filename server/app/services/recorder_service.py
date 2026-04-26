@@ -13,13 +13,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.project import Project
+from app.models.project import (
+    HighLevelScenario,
+    Project,
+)
 from app.models.scenario import (
     DiscoveredRoute,
     RecordingSession,
     RouteVariant,
     ScenarioStep,
-    TestScenario,
 )
 from app.schemas.scenario import (
     RecorderProjectInfo,
@@ -72,9 +74,9 @@ def validate_recorder_token(db: Session, project_id: uuid.UUID, token: str) -> P
 def get_project_info(db: Session, project: Project) -> RecorderProjectInfo:
     scenarios = (
         db.execute(
-            select(TestScenario).where(
-                TestScenario.project_id == project.id
-            ).order_by(TestScenario.created_at)
+            select(HighLevelScenario).where(
+                HighLevelScenario.project_id == project.id
+            ).order_by(HighLevelScenario.created_at)
         )
         .scalars()
         .all()
@@ -100,9 +102,9 @@ def create_session(
 ) -> RecorderSessionResponse:
     # Check scenario belongs to project
     scenario = db.execute(
-        select(TestScenario).where(
-            TestScenario.id == scenario_id,
-            TestScenario.project_id == project.id,
+        select(HighLevelScenario).where(
+            HighLevelScenario.id == scenario_id,
+            HighLevelScenario.project_id == project.id,
         )
     ).scalar_one_or_none()
     if scenario is None:
@@ -130,6 +132,12 @@ def create_session(
         status="pending",
     )
     db.add(session)
+    
+    # Clear the trigger flag if this was the launched scenario
+    if project.active_launch_scenario_id == scenario_id:
+        project.active_launch_scenario_id = None
+        db.add(project)
+
     db.commit()
     db.refresh(session)
     return RecorderSessionResponse(id=session.id, status=session.status)
@@ -171,7 +179,7 @@ def complete_session(
     db.commit()
 
     # Mark the scenario as completed
-    scenario = db.get(TestScenario, session.scenario_id)
+    scenario = db.get(HighLevelScenario, session.scenario_id)
     if scenario:
         scenario.status = "completed"
         scenario.completed_by = project.owner_id

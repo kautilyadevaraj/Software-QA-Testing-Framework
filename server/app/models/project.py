@@ -53,6 +53,12 @@ class Project(Base):
         nullable=False,
     )
     phase_2_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Messaging bus: set by the Web UI "Launch" button, cleared atomically by /pulse
+    active_launch_scenario_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        default=None,
+    )
 
     owner = relationship("User", back_populates="projects")
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
@@ -231,3 +237,12 @@ class HighLevelScenario(Base):
 
     project = relationship("Project")
     completed_by_user = relationship("User", foreign_keys=[completed_by])
+    recording_sessions = relationship(
+        "RecordingSession", back_populates="scenario", cascade="all, delete-orphan"
+    )
+    route_variants = relationship(
+        "RouteVariant", back_populates="scenario", cascade="all, delete-orphan"
+    )
+    steps = relationship(
+        "ScenarioStep", back_populates="scenario", cascade="all, delete-orphan"
+    )
