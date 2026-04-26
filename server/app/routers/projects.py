@@ -4,6 +4,7 @@ import asyncio
 from app.models.project import (
     ProjectFile,
     FileType,
+    ProjectRole,
     ProjectCredentialVerification,
     ExtractedText,
     APIEndpoint,
@@ -20,7 +21,7 @@ except ImportError:
     QdrantClient = None
     models = None
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -43,8 +44,16 @@ settings = get_settings()
 
 
 def _to_project_response(project) -> ProjectResponse:
+    tester_ids = [member.user_id for member in project.members if member.role == ProjectRole.TESTER]
+    tester_emails = [
+        member.user.email
+        for member in project.members
+        if member.role == ProjectRole.TESTER and member.user is not None
+    ]
+
     return ProjectResponse(
         id=project.id,
+        owner_id=project.owner_id,
         name=project.name,
         description=project.description,
         status=project.status,
@@ -52,6 +61,8 @@ def _to_project_response(project) -> ProjectResponse:
         created_at=project.created_at,
         updated_at=project.updated_at,
         is_verified=project.is_verified,
+        tester_ids=tester_ids,
+        tester_emails=tester_emails,
     )
 
 
@@ -117,6 +128,8 @@ def remove_project(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     project = get_project_or_404(db, current_user.id, project_id)
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project owner can delete the project")
     delete_project(db, project)
     return {"message": "Project deleted"}
 
@@ -203,13 +216,18 @@ def ingest_project(
 
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
-            import re
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-            safe_project_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', project.name)
-            collection_name = f"{project.id}_{safe_project_name}"
+            project_id_str = str(project.id)
+            collections_to_delete = {project_id_str}
 
-            if qdrant_client.collection_exists(collection_name):
-                qdrant_client.delete_collection(collection_name)
+            for collection in qdrant_client.get_collections().collections:
+                collection_name = getattr(collection, "name", "")
+                if isinstance(collection_name, str) and collection_name.startswith(f"{project_id_str}_"):
+                    collections_to_delete.add(collection_name)
+
+            for collection_name in collections_to_delete:
+                if qdrant_client.collection_exists(collection_name):
+                    qdrant_client.delete_collection(collection_name)
         except Exception as e:
             print(f"Failed to clear Qdrant data: {e}")
 

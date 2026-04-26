@@ -6,7 +6,11 @@ import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { logout } from "@/lib/api";
 
-export function AppNavbar() {
+type AppNavbarProps = {
+  isAuthenticated: boolean;
+};
+
+export function AppNavbar({ isAuthenticated }: AppNavbarProps) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -18,8 +22,8 @@ export function AppNavbar() {
   };
 
   return (
-    <nav className="sticky top-0 z-50 border-b border-black/10 bg-[#2a63f5]">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 sm:px-6">
+    <nav className="sticky top-0 z-50 h-16 border-b border-black/10 bg-[#2a63f5]">
+      <div className="mx-auto flex h-full w-full max-w-6xl items-center justify-between px-4 sm:px-6">
         <Link href="/" className="group inline-flex items-center gap-2">
           <span className="text-xl font-semibold tracking-wide text-white">SQAT</span>
         </Link>
@@ -42,6 +46,20 @@ export function AppNavbar() {
             <Button asChild variant="outline" className="border-white/45 bg-transparent text-white hover:bg-white/15">
               <Link href="/login">Log in</Link>
             </Button>
+          ) : isAuthenticated ? (
+            <>
+              <Button asChild variant="ghost" className="text-white hover:bg-white/15 hover:text-white">
+                <Link href="/projects">Open Dashboard</Link>
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleLogout}
+                className="border-white/45 bg-transparent text-white hover:bg-white/15"
+              >
+                <LogOut className="h-4 w-4" />
+                Logout
+              </Button>
+            </>
           ) : (
             <>
               <Button asChild variant="ghost" className="text-white hover:bg-white/15 hover:text-white">

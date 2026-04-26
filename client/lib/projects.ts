@@ -36,6 +36,7 @@ export function createEmptyDocuments(): ProjectDocuments {
 
 export type ProjectRecord = {
   id: string;
+  ownerId: string;
   name: string;
   description: string;
   createdAt: string;
@@ -43,11 +44,14 @@ export type ProjectRecord = {
   status: ProjectStatus;
   url: string | null;
   is_verified: boolean;
+  testerIds: string[];
+  testerEmails: string[];
 };
 
 export function mapProjectFromApi(project: ProjectResponse): ProjectRecord {
   return {
     id: project.id,
+    ownerId: project.owner_id,
     name: project.name,
     description: project.description,
     createdAt: project.created_at,
@@ -55,6 +59,8 @@ export function mapProjectFromApi(project: ProjectResponse): ProjectRecord {
     status: project.status,
     url: project.url,
     is_verified: project.is_verified,
+    testerIds: project.tester_ids ?? [],
+    testerEmails: project.tester_emails ?? [],
   };
 }
 

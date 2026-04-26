@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, createProject, deleteProject, listProjects } from "@/lib/api";
+import { ApiError, createProject, deleteProject, getCurrentUser, listProjects } from "@/lib/api";
 import { ProjectRecord, ProjectStatus, mapProjectFromApi } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +50,7 @@ export default function ProjectsPage() {
   const router = useRouter();
 
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [totalProjects, setTotalProjects] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -109,6 +110,29 @@ export default function ProjectsPage() {
   useEffect(() => {
     void fetchProjects();
   }, [fetchProjects]);
+
+  useEffect(() => {
+    let isUnmounted = false;
+
+    const loadCurrentUser = async () => {
+      try {
+        const user = await getCurrentUser();
+        if (!isUnmounted) {
+          setCurrentUserId(user.id);
+        }
+      } catch {
+        if (!isUnmounted) {
+          setCurrentUserId(null);
+        }
+      }
+    };
+
+    void loadCurrentUser();
+
+    return () => {
+      isUnmounted = true;
+    };
+  }, []);
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -207,8 +231,8 @@ export default function ProjectsPage() {
   }, [deleteConfirmText, fetchProjects, pageSize, projectPendingDelete, projects.length, safeCurrentPage]);
 
   return (
-    <Card className="h-full rounded-none border-black/10 bg-white shadow-sm">
-      <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <Card className="flex h-full max-h-full min-h-0 flex-col overflow-hidden rounded-none border-black/10 bg-white shadow-sm">
+      <CardHeader className="shrink-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <CardTitle className="text-2xl text-black">Projects</CardTitle>
           <CardDescription>Manage active QA projects, assignments, and status snapshots.</CardDescription>
@@ -262,10 +286,10 @@ export default function ProjectsPage() {
         </div>
       </CardHeader>
 
-      <CardContent>
-        <div className="overflow-x-auto rounded-none border border-black/10">
-          <table className="min-w-full border-collapse text-sm">
-            <thead>
+      <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-auto rounded-none border border-black/10">
+          <table className="w-full min-w-[1120px] border-collapse text-sm">
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#2a63f5]/10 text-left text-black">
                 <th className="px-3 py-3 font-semibold">Sl.No</th>
                 <th className="px-3 py-3 font-semibold">
@@ -330,13 +354,13 @@ export default function ProjectsPage() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="px-3 py-8 text-center text-black/60">
+                  <td colSpan={7} className="px-3 py-8 text-center text-black/60">
                     Loading projects...
                   </td>
                 </tr>
               ) : projects.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-3 py-8 text-center text-black/60">
+                  <td colSpan={7} className="px-3 py-8 text-center text-black/60">
                     No projects available.
                   </td>
                 </tr>
@@ -352,6 +376,7 @@ export default function ProjectsPage() {
                       project={project}
                       serialNumber={serialNumber}
                       isExpanded={isExpanded}
+                      canDelete={currentUserId === project.ownerId}
                       onOpenProject={() => router.push(`/projects/${project.id}`)}
                       onToggleExpand={() =>
                         setExpandedProjectIds((current) => ({
@@ -371,7 +396,7 @@ export default function ProjectsPage() {
           </table>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3">
+        <div className="mt-4 flex shrink-0 flex-wrap items-center gap-3">
           <p className="text-sm text-black/65">
             {totalProjects > 0
               ? `Showing ${(safeCurrentPage - 1) * (pageSize === "all" ? API_MAX_PAGE_SIZE : pageSize) + 1} to ${Math.min(
@@ -483,15 +508,16 @@ type FragmentRowProps = {
   project: ProjectRecord;
   serialNumber: number;
   isExpanded: boolean;
+  canDelete: boolean;
   onOpenProject: () => void;
   onToggleExpand: () => void;
   onRequestDelete: () => void;
 };
 
-function FragmentRow({ project, serialNumber, isExpanded, onOpenProject, onToggleExpand, onRequestDelete }: FragmentRowProps) {
+function FragmentRow({ project, serialNumber, isExpanded, canDelete, onOpenProject, onToggleExpand, onRequestDelete }: FragmentRowProps) {
   return (
     <>
-      <tr className="cursor-pointer border-t border-black/10 hover:bg-[#2a63f5]/5" onClick={onOpenProject}>
+      <tr className="cursor-pointer border-b border-black/10 bg-black/[0.02] hover:bg-[#2a63f5]/5" onClick={onOpenProject}>
         <td className="px-3 py-3 text-black/85">{serialNumber}</td>
         <td className="px-3 py-3 font-medium text-black">{project.id}</td>
         <td className="px-3 py-3 text-black">{project.name}</td>
@@ -515,6 +541,8 @@ function FragmentRow({ project, serialNumber, isExpanded, onOpenProject, onToggl
             variant="outline"
             size="sm"
             onClick={onRequestDelete}
+            disabled={!canDelete}
+            title={!canDelete ? "Only project owner can delete" : "Delete project"}
             className="border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700"
           >
             <Trash2 className="h-4 w-4" />
@@ -529,14 +557,31 @@ function FragmentRow({ project, serialNumber, isExpanded, onOpenProject, onToggl
       </tr>
 
       {isExpanded ? (
-        <tr className="border-t border-black/10 bg-[#2a63f5]/5">
-          <td colSpan={8} className="px-4 py-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
+        <tr className="bg-[#2a63f5]/5">
+          <td colSpan={7} className="px-4 py-4">
+            <div className="w-full md:w-1/2">
+              <div className="space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-black/60">Description</p>
                 <p className="mt-1 text-sm text-black/80">{project.description || "No description provided."}</p>
-              </div>
 
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-black/60">Tester Email IDs</p>
+                  {project.testerEmails.length > 0 ? (
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {project.testerEmails.map((email) => (
+                        <span
+                          key={email}
+                          className="inline-flex rounded-full border border-[#2a63f5]/25 bg-[#2a63f5]/10 px-2.5 py-1 text-xs font-medium text-[#2a63f5]"
+                        >
+                          {email}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-sm text-black/80">No testers assigned.</p>
+                  )}
+                </div>
+              </div>
             </div>
           </td>
         </tr>

@@ -156,9 +156,7 @@ def _run_extraction(project_id_str: str):
             }
             return
 
-        import re
-        safe_project_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', project.name)
-        collection_name = f"{project.id}_{safe_project_name}"
+        collection_name = str(project.id)
 
         qdrant_client = None
         if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
