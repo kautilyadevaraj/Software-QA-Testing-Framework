@@ -35,53 +35,6 @@ def upgrade() -> None:
         ),
     )
 
-    # ── test_scenarios ──────────────────────────────────────────────────────
-    op.create_table(
-        "test_scenarios",
-        sa.Column(
-            "id",
-            UUID(as_uuid=True),
-            primary_key=True,
-            server_default=sa.text("gen_random_uuid()"),
-        ),
-        sa.Column(
-            "project_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("projects.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("title", sa.Text(), nullable=False),
-        sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("source", sa.Text(), nullable=False),
-        sa.Column("status", sa.Text(), nullable=False, server_default="pending"),
-        sa.Column(
-            "completed_by",
-            UUID(as_uuid=True),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column(
-            "created_at",
-            sa.TIMESTAMP(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.Column(
-            "updated_at",
-            sa.TIMESTAMP(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.CheckConstraint(
-            "source IN ('agent_1', 'agent_2', 'manual')",
-            name="ck_test_scenarios_source",
-        ),
-        sa.CheckConstraint(
-            "status IN ('pending', 'completed')",
-            name="ck_test_scenarios_status",
-        ),
-    )
-    op.create_index("ix_test_scenarios_project_id", "test_scenarios", ["project_id"])
 
     # ── recording_sessions ──────────────────────────────────────────────────
     op.create_table(
@@ -101,7 +54,7 @@ def upgrade() -> None:
         sa.Column(
             "scenario_id",
             UUID(as_uuid=True),
-            sa.ForeignKey("test_scenarios.id", ondelete="CASCADE"),
+            sa.ForeignKey("high_level_scenarios.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("status", sa.Text(), nullable=False, server_default="pending"),
@@ -195,7 +148,7 @@ def upgrade() -> None:
         sa.Column(
             "scenario_id",
             UUID(as_uuid=True),
-            sa.ForeignKey("test_scenarios.id", ondelete="CASCADE"),
+            sa.ForeignKey("high_level_scenarios.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column(
@@ -242,7 +195,7 @@ def upgrade() -> None:
         sa.Column(
             "scenario_id",
             UUID(as_uuid=True),
-            sa.ForeignKey("test_scenarios.id", ondelete="CASCADE"),
+            sa.ForeignKey("high_level_scenarios.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column(
@@ -292,6 +245,6 @@ def downgrade() -> None:
     op.drop_table("route_variants")
     op.drop_table("discovered_routes")
     op.drop_table("recording_sessions")
-    op.drop_table("test_scenarios")
+
     op.drop_column("projects", "phase_2_locked")
     op.drop_column("projects", "recorder_token")
