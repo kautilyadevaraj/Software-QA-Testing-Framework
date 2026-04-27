@@ -298,7 +298,7 @@ def connect_jira(
             ),
         )
 
-    # — Generate unique key —
+    # — Generate unique key and create Jira project —
     base_key = generate_jira_key(project.name)
 
     # Ensure uniqueness within this workspace (check existing keys in DB)
@@ -306,22 +306,62 @@ def connect_jira(
         row.jira_project_key
         for row in db.query(ProjectJiraConfig.jira_project_key).all()
     }
-    candidate = base_key
-    suffix = 1
-    while candidate in used_keys:
-        candidate = f"{base_key}{suffix}"
-        suffix += 1
 
-    # — Create Jira project —
-    try:
-        result = create_jira_project(
-            name=project.name,
-            key=candidate,
-            description=project.description or "",
-        )
-    except RuntimeError as exc:
+    def _candidate_key(base: str, index: int) -> str:
+        if index == 0:
+            return base
+        suffix = str(index)
+        max_base_len = max(1, 10 - len(suffix))
+        return f"{base[:max_base_len]}{suffix}"
+
+    result = None
+    for attempt in range(0, 20):
+        candidate = _candidate_key(base_key, attempt)
+        if candidate in used_keys:
+            continue
+
+        try:
+            result = create_jira_project(
+                name=project.name,
+                key=candidate,
+                description=project.description or "",
+            )
+            break
+        except RuntimeError as exc:
+            message = str(exc)
+            lower_message = message.lower()
+
+            # Jira validates key uniqueness globally in the Jira site.
+            # If the key is already taken, try another candidate key.
+            key_conflict = (
+                ("project key" in lower_message or "projectkey" in lower_message)
+                and (
+                    "exists" in lower_message
+                    or "already" in lower_message
+                    or "in use" in lower_message
+                    or "duplicate" in lower_message
+                    or "uses this project key" in lower_message
+                    or "uses" in lower_message
+                )
+            )
+            if key_conflict:
+                used_keys.add(candidate)
+                continue
+
+            from fastapi import HTTPException
+            if "jira api error (4" in lower_message:
+                raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code=502, detail=message)
+
+    if result is None:
         from fastapi import HTTPException
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Unable to allocate a unique Jira project key after multiple attempts. "
+                "Please rename the project or connect manually in Jira once and retry."
+            ),
+        )
 
     # — Persist mapping —
     config = ProjectJiraConfig(
