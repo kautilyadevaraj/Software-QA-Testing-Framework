@@ -406,10 +406,19 @@ class Recorder:
 
     async def record_scenario(self, scenario: dict, context: BrowserContext) -> None:
         scenario_id: str = scenario["id"]
+        target_url = scenario.get("url")
 
         # Guard: if the browser context is dead, signal the outer loop to restart
         try:
-            page = context.pages[0] if context.pages else await context.new_page()
+            # Create a fresh page to avoid expose_binding conflicts across sessions
+            page = await context.new_page()
+            # Close any old pages
+            for p in context.pages:
+                if p != page:
+                    try:
+                        await p.close()
+                    except Exception:
+                        pass
         except Exception:
             print("  [INFO] Browser context is gone — will relaunch on next trigger.")
             self._browser_dead = True
@@ -432,6 +441,12 @@ class Recorder:
         await page.expose_binding("__sqat_action__", on_action)
         await page.add_init_script(ACTION_CAPTURE_JS)
         await self.start_session(session_id)
+
+        if target_url:
+            try:
+                await page.goto(target_url, wait_until="domcontentloaded")
+            except Exception:
+                pass
 
         print(f"\n  ┌─ Recording: \"{scenario['title']}\"")
         print(f"  │  Navigate the application as a user would.")
@@ -477,7 +492,24 @@ class Recorder:
                 else:
                     await asyncio.sleep(0.2)
 
+        async def status_poller() -> None:
+            while not self._stop_event.is_set():
+                try:
+                    res = await self._get(f"/api/v1/recorder/{PROJECT_ID}/sessions/{session_id}/status")
+                    if res.get("status") in ("completed", "failed"):
+                        print(f"\n  [INFO] Stop signal received from Web UI.")
+                        self._stop_event.set()
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(2)
+
         processor_task = asyncio.create_task(action_processor())
+        poller_task = asyncio.create_task(status_poller())
 
         try:
             await page.wait_for_event("close", timeout=0)
@@ -486,9 +518,16 @@ class Recorder:
         finally:
             self._stop_event.set()
             processor_task.cancel()
+            poller_task.cancel()
             try:
                 await processor_task
+                await poller_task
             except asyncio.CancelledError:
+                pass
+            try:
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
                 pass
 
         try:
@@ -518,6 +557,8 @@ class Recorder:
 
         print(f"  ✓ Connected — Project: {info['project_name']}")
 
+        pending_scenario = None
+
         # Outer restart loop — re-enters async_playwright if driver connection dies
         while True:
             self._browser_dead = False
@@ -540,38 +581,48 @@ class Recorder:
                     print("  └─────────────────────────────────────────────────────┘\n")
 
                     while True:
-                        try:
-                            pulse = await self._get(f"/api/v1/recorder/{PROJECT_ID}/pulse")
-                        except Exception as e:
-                            print(f"  [WARN] Pulse check failed: {e} — retrying...")
-                            await asyncio.sleep(3)
-                            continue
+                        if pending_scenario:
+                            scenario_id = pending_scenario["id"]
+                            scenario_title = pending_scenario["title"]
+                            project_url = pending_scenario.get("url")
+                            pending_scenario = None
+                        else:
+                            try:
+                                pulse = await self._get(f"/api/v1/recorder/{PROJECT_ID}/pulse")
+                            except Exception as e:
+                                print(f"  [WARN] Pulse check failed: {e} — retrying...")
+                                await asyncio.sleep(3)
+                                continue
 
-                        scenario_id = pulse.get("scenario_id")
-                        if not scenario_id:
-                            await asyncio.sleep(1)
-                            continue
+                            scenario_id = pulse.get("scenario_id")
+                            if not scenario_id:
+                                await asyncio.sleep(1)
+                                continue
 
-                        scenario_title = pulse.get("scenario_title") or scenario_id
-                        print(f"\n  ⚡ Launch signal received → \"{scenario_title}\"")
+                            scenario_title = pulse.get("scenario_title") or scenario_id
+                            project_url = pulse.get("project_url")
+                            print(f"\n  ⚡ Launch signal received → \"{scenario_title}\"")
 
                         try:
                             await self.record_scenario(
-                                {"id": scenario_id, "title": scenario_title, "description": ""},
+                                {"id": scenario_id, "title": scenario_title, "url": project_url, "description": ""},
                                 context,
                             )
                         except RuntimeError as e:
                             if str(e) == "browser_dead":
+                                pending_scenario = {"id": scenario_id, "title": scenario_title, "url": project_url}
                                 break  # exit inner loop → re-enter async_playwright
                             print(f"\n  [ERR] Recording interrupted: {e}")
                         except Exception as e:
                             dead = ("Target closed", "Browser has been closed", "Connection closed", "driver")
                             if any(s in str(e) for s in dead):
                                 print("\n  Browser connection lost — restarting playwright...")
+                                pending_scenario = {"id": scenario_id, "title": scenario_title, "url": project_url}
                                 break
                             print(f"\n  [ERR] Recording interrupted: {e}")
 
-                        print("\n  Idle — waiting for next launch signal from Web UI...\n")
+                        if not self._browser_dead:
+                            print("\n  Idle — waiting for next launch signal from Web UI...\n")
 
             except KeyboardInterrupt:
                 print("\n  Recorder closed. Goodbye!\n")
@@ -579,7 +630,7 @@ class Recorder:
             except Exception as e:
                 print(f"\n  [ERR] Playwright crashed: {e}")
 
-            if self._browser_dead:
+            if self._browser_dead or pending_scenario:
                 print("  Restarting browser in 2 seconds...\n")
                 await asyncio.sleep(2)
 

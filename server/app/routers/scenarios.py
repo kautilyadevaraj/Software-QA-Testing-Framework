@@ -341,3 +341,43 @@ def get_scenario_recording_status(
     ).scalars().first()
     session_status = latest_session.status if latest_session else "none"
     return {"session_status": session_status}
+
+
+@router.post("/{project_id}/scenarios/{scenario_id}/stop-recording")
+@limiter.limit(settings.rate_limit_api)
+def stop_scenario_recording(
+    request: Request,
+    project_id: uuid.UUID,
+    scenario_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Marks the active recording session for a scenario as completed.
+    The daemon polls the session status and will automatically close the browser
+    when it sees the completed status.
+    """
+    get_project_or_404(db, current_user.id, project_id)
+    
+    session = db.execute(
+        select(RecordingSession).where(
+            RecordingSession.project_id == project_id,
+            RecordingSession.scenario_id == scenario_id,
+            RecordingSession.status.in_(["pending", "in_progress"])
+        )
+    ).scalar_one_or_none()
+    
+    if session:
+        from sqlalchemy.sql import func
+        session.status = "completed"
+        session.completed_at = func.now()
+        
+        scenario = db.get(HighLevelScenario, scenario_id)
+        if scenario:
+            scenario.status = "completed"
+            scenario.completed_by = current_user.id
+            
+        db.commit()
+        
+    return {"status": "stopped"}
+

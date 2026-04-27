@@ -593,3 +593,12 @@ export async function getScenarioRecordingStatus(
     method: "GET",
   });
 }
+
+export async function stopScenarioRecording(
+  projectId: string,
+  scenarioId: string,
+): Promise<{ status: string }> {
+  return request(`/projects/${projectId}/scenarios/${scenarioId}/stop-recording`, {
+    method: "POST",
+  });
+}

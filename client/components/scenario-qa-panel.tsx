@@ -23,6 +23,7 @@ import {
   type PreviewScenario,
   type RecordingSetupResponse,
   type ScenarioSource,
+  stopScenarioRecording,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -205,7 +206,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     try {
       await triggerScenarioLaunch(projectId, scenario.id);
       setRecordingScenarioId(scenario.id);
-      toast.success(`⚡ Launch triggered — daemon is now recording "${scenario.title}"`);
+      toast.success(`Launch triggered — daemon is now recording "${scenario.title}"`);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Failed to trigger launch.");
     } finally {
@@ -213,9 +214,13 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     }
   };
 
-  const handleStopRecording = (scenario: HighLevelScenario) => {
-    setRecordingScenarioId(null);
-    toast.info(`Stopped tracking recording for "${scenario.title}". Press Ctrl+C in the daemon terminal to finish.`);
+  const handleStopRecording = async (scenario: HighLevelScenario) => {
+    try {
+      await stopScenarioRecording(projectId, scenario.id);
+      toast.info(`Stopping recording for "${scenario.title}"...`);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Failed to stop recording.");
+    }
   };
 
   const handleOpenSetup = async () => {
@@ -246,14 +251,17 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   // Poll recording status while a scenario is being recorded
   useEffect(() => {
     if (!recordingScenarioId) return;
+    let hasStarted = false;
     const interval = setInterval(async () => {
       try {
         const { session_status } = await getScenarioRecordingStatus(projectId, recordingScenarioId);
-        if (session_status === "completed" || session_status === "failed") {
+        if (session_status === "in_progress") {
+          hasStarted = true;
+        } else if (hasStarted && (session_status === "completed" || session_status === "failed")) {
           setRecordingScenarioId(null);
           await loadApprovedScenarios();
           if (session_status === "completed") {
-            toast.success("✅ Recording finished — session saved.");
+            toast.success("Recording finished — session saved.");
           } else {
             toast.warning("Recording session ended with errors.");
           }
@@ -785,7 +793,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                   <th className="w-32 px-4 py-3">Tags</th>
                   <th className="w-32 px-4 py-3">Status</th>
                   <th className="w-[112px] px-4 py-3 text-right">Actions</th>
-                  <th className="w-[180px] px-4 py-3 text-right">Launch</th>
+                  <th className="w-[240px] px-4 py-3 text-right">Launch</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-black/10">

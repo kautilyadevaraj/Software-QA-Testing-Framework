@@ -136,6 +136,21 @@ def fail_session(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/{project_id}/sessions/{session_id}/status", response_model=RecorderSessionResponse)
+def get_session_status(
+    project_id: uuid.UUID,
+    session_id: uuid.UUID,
+    x_recorder_token: str = Header(...),
+    db: Session = Depends(get_db),
+) -> RecorderSessionResponse:
+    project = _get_project_by_token(project_id, x_recorder_token, db)
+    try:
+        return recorder_service.get_session_status(db, project, session_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 @router.post("/{project_id}/routes", response_model=RecorderRouteResponse)

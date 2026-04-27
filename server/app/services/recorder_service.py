@@ -207,6 +207,21 @@ def fail_session(
     return RecorderSessionResponse(id=session.id, status=session.status)
 
 
+def get_session_status(
+    db: Session, project: Project, session_id: uuid.UUID
+) -> RecorderSessionResponse:
+    session = db.execute(
+        select(RecordingSession).where(
+            RecordingSession.id == session_id,
+            RecordingSession.project_id == project.id,
+        )
+    ).scalar_one_or_none()
+    if session is None:
+        raise ValueError("Session not found")
+
+    return RecorderSessionResponse(id=session.id, status=session.status)
+
+
 def upsert_route(
     db: Session, project: Project, payload: RecorderRouteUpsert
 ) -> RecorderRouteResponse:
