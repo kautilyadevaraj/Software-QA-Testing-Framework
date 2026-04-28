@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     jira_email: str | None = None
     jira_api_token: str | None = None
     jira_lead_account_id: str | None = None
+    
+    PUBLIC_API_URL: str = "http://localhost:8000"   # override with actual VM URL in .env
+    RECORDINGS_BASE_PATH: str = "uploads/recordings"
 
     @field_validator("cookie_samesite")
     @classmethod
@@ -100,4 +103,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings() # type: ignore
+
+settings = get_settings()

@@ -1039,6 +1039,7 @@ export default function ProjectDetailsPage() {
             <ScenarioQaPanel projectId={projectId} currentUserId={currentUserId} />
           </CardContent>
         </Card>
+
       ) : (
         <Card className="border-black/10 bg-white">
           <CardHeader>

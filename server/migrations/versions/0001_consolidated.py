@@ -64,7 +64,7 @@ def upgrade() -> None:
         sa.Column("description", sa.Text, nullable=False, server_default=""),
         sa.Column(
             "status",
-            sa.Enum("Active", "Draft", "Blocked", name="project_status"),
+            project_status,
             nullable=False,
             server_default="Draft",
         ),
@@ -105,7 +105,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "role",
-            sa.Enum("OWNER", "TESTER", name="project_role"),
+            project_role,
             nullable=False,
             server_default="TESTER",
         ),
@@ -130,10 +130,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "file_type",
-            sa.Enum(
-                "brd", "fsd", "wbs", "assumption", "credentials", "swagger_docs",
-                name="project_file_type",
-            ),
+            file_type_enum,
             nullable=False,
             index=True,
         ),

@@ -80,12 +80,6 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
     )
-    op.create_index(
-        "ix_jira_tickets_project_id",
-        "jira_tickets",
-        ["project_id"],
-    )
-
 
 def downgrade() -> None:
     op.drop_index("ix_jira_tickets_project_id", table_name="jira_tickets")

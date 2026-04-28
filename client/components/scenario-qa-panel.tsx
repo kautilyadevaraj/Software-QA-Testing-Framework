@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Trash2, WandSparkles, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Square, Trash2, WandSparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,14 +11,19 @@ import {
   createHighLevelScenario,
   deleteHighLevelScenario,
   generateHighLevelScenarios,
+  getRecordingSetup,
+  getScenarioRecordingStatus,
   listHighLevelScenarios,
+  triggerScenarioLaunch,
   updateHighLevelScenario,
   type ScenarioAccessMode,
   type ScenarioLevel,
   type ScenarioGenerationType,
   type HighLevelScenario,
   type PreviewScenario,
+  type RecordingSetupResponse,
   type ScenarioSource,
+  stopScenarioRecording,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -175,6 +180,14 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   const [scenarioLevel, setScenarioLevel] = useState<ScenarioLevel>("HLS");
   const [isOptionsGuideOpen, setIsOptionsGuideOpen] = useState(false);
   const [expandedDescriptionIds, setExpandedDescriptionIds] = useState<string[]>([]);
+  // Trigger / Launch state
+  const [launchingScenarioId, setLaunchingScenarioId] = useState<string | null>(null);
+  const [recordingScenarioId, setRecordingScenarioId] = useState<string | null>(null);
+  // Setup Recorder popover
+  const [showSetupModal, setShowSetupModal] = useState(false);
+  const [setupInfo, setSetupInfo] = useState<RecordingSetupResponse | null>(null);
+  const [isLoadingSetup, setIsLoadingSetup] = useState(false);
+  const [copiedSetup, setCopiedSetup] = useState(false);
 
   const loadApprovedScenarios = useCallback(async () => {
     setIsLoadingApproved(true);
@@ -188,9 +201,77 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     }
   }, [projectId]);
 
+  const handleLaunch = async (scenario: HighLevelScenario) => {
+    setLaunchingScenarioId(scenario.id);
+    try {
+      await triggerScenarioLaunch(projectId, scenario.id);
+      setRecordingScenarioId(scenario.id);
+      toast.success(`Launch triggered — daemon is now recording "${scenario.title}"`);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Failed to trigger launch.");
+    } finally {
+      setLaunchingScenarioId(null);
+    }
+  };
+
+  const handleStopRecording = async (scenario: HighLevelScenario) => {
+    try {
+      await stopScenarioRecording(projectId, scenario.id);
+      toast.info(`Stopping recording for "${scenario.title}"...`);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Failed to stop recording.");
+    }
+  };
+
+  const handleOpenSetup = async () => {
+    setShowSetupModal(true);
+    if (setupInfo) return; // already loaded
+    setIsLoadingSetup(true);
+    try {
+      const info = await getRecordingSetup(projectId);
+      setSetupInfo(info);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Failed to load setup info.");
+    } finally {
+      setIsLoadingSetup(false);
+    }
+  };
+
+  const handleCopySetup = () => {
+    if (!setupInfo) return;
+    void navigator.clipboard.writeText(setupInfo.setup_command);
+    setCopiedSetup(true);
+    setTimeout(() => setCopiedSetup(false), 2000);
+  };
+
   useEffect(() => {
     void loadApprovedScenarios();
   }, [loadApprovedScenarios]);
+
+  // Poll recording status while a scenario is being recorded
+  useEffect(() => {
+    if (!recordingScenarioId) return;
+    let hasStarted = false;
+    const interval = setInterval(async () => {
+      try {
+        const { session_status } = await getScenarioRecordingStatus(projectId, recordingScenarioId);
+        if (session_status === "in_progress") {
+          hasStarted = true;
+        } else if (hasStarted && (session_status === "completed" || session_status === "failed")) {
+          setRecordingScenarioId(null);
+          await loadApprovedScenarios();
+          if (session_status === "completed") {
+            toast.success("Recording finished — session saved.");
+          } else {
+            toast.warning("Recording session ended with errors.");
+          }
+        }
+      } catch {
+        // silently ignore poll errors
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [recordingScenarioId, projectId, loadApprovedScenarios]);
 
   const startPreviewEdit = (index: number) => {
     const scenario = previewScenarios[index];
@@ -577,7 +658,8 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   }
 
   return (
-    <div className="space-y-6">
+    <>
+      <div className="space-y-6">
       {generationSettingsCard}
 
       {previewScenarios.length > 0 ? (
@@ -691,10 +773,16 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
               <h2 className="text-base font-semibold text-black">Approved Scenarios</h2>
               <p className="text-sm text-black/60">{approvedScenarios.length} scenarios ready for tester review.</p>
             </div>
-            <Button variant="outline" onClick={() => setIsAddingApproved(true)}>
-              <Plus className="h-4 w-4" />
-              Add Scenario
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => void handleOpenSetup()}>
+                <Info className="h-4 w-4" />
+                Setup Recorder
+              </Button>
+              <Button variant="outline" onClick={() => setIsAddingApproved(true)}>
+                <Plus className="h-4 w-4" />
+                Add Scenario
+              </Button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] table-fixed text-left text-sm">
@@ -705,7 +793,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                   <th className="w-32 px-4 py-3">Tags</th>
                   <th className="w-32 px-4 py-3">Status</th>
                   <th className="w-[112px] px-4 py-3 text-right">Actions</th>
-                  <th className="w-[180px] px-4 py-3 text-right">Launch</th>
+                  <th className="w-[240px] px-4 py-3 text-right">Launch</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-black/10">
@@ -788,17 +876,40 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-2">
-                            <Button
-                              size="sm"
-                              className="min-w-24"
-                              onClick={() => {
-                                toast.info(`Launching scenario: ${scenario.title}`);
-                                console.log({ scenario_id: scenario.id, project_id: projectId });
-                              }}
-                            >
-                              <Play className="h-4 w-4" />
-                              Launch
-                            </Button>
+                            {recordingScenarioId === scenario.id ? (
+                              <>
+                                <span className="flex items-center gap-1.5 rounded-md bg-red-50 border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700">
+                                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
+                                  Recording…
+                                </span>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-red-200 text-red-600 hover:bg-red-50 gap-1.5"
+                                  onClick={() => handleStopRecording(scenario)}
+                                  title="Stop tracking this recording"
+                                  aria-label="Stop recording"
+                                >
+                                  <Square className="h-3.5 w-3.5" />
+                                  Stop
+                                </Button>
+                              </>
+                            ) : (
+                              <Button
+                                size="sm"
+                                className="min-w-24"
+                                disabled={launchingScenarioId === scenario.id || recordingScenarioId !== null}
+                                onClick={() => void handleLaunch(scenario)}
+                                title={recordingScenarioId !== null ? "Another scenario is currently recording" : undefined}
+                              >
+                                {launchingScenarioId === scenario.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Play className="h-4 w-4" />
+                                )}
+                                {launchingScenarioId === scenario.id ? "Sending…" : "Launch"}
+                              </Button>
+                            )}
                             <Button
                               size="icon"
                               variant="outline"
@@ -874,5 +985,59 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
         </div>
       ) : null}
     </div>
+
+      {/* ── Setup Recorder Modal ──────────────────────────────────────────── */}
+      {showSetupModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowSetupModal(false); }}
+        >
+          <div className="relative w-full max-w-2xl rounded-xl border border-black/10 bg-white p-6 shadow-xl">
+            <button
+              type="button"
+              className="absolute right-4 top-4 rounded-md p-1 text-black/50 hover:text-black"
+              onClick={() => setShowSetupModal(false)}
+              aria-label="Close"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <h2 className="text-lg font-semibold text-black">Start the Recorder Daemon</h2>
+            <p className="mt-1 text-sm text-black/60">
+              Run this command on your local machine. It downloads the recorder script, installs
+              Playwright, and starts the daemon — which will listen for Launch signals from this
+              dashboard.
+            </p>
+
+            {isLoadingSetup ? (
+              <div className="mt-6 flex justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-[#2a63f5]" />
+              </div>
+            ) : setupInfo ? (
+              <>
+                <div className="mt-4 rounded-lg border border-black/10 bg-black/[0.03] p-4">
+                  <p className="break-all font-mono text-sm text-black">{setupInfo.setup_command}</p>
+                </div>
+                <div className="mt-3 flex items-center gap-3">
+                  <Button onClick={handleCopySetup} className="gap-2">
+                    {copiedSetup ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+                    {copiedSetup ? "Copied!" : "Copy Command"}
+                  </Button>
+                  <p className="text-xs text-black/50">
+                    Token: <span className="font-mono">{setupInfo.recorder_token.slice(0, 8)}…</span>
+                  </p>
+                </div>
+                <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  <strong>After starting the daemon,</strong> click <strong>Launch</strong> next to any
+                  scenario in this table. Chromium will open on your machine within ~1 second.
+                </div>
+              </>
+            ) : (
+              <p className="mt-4 text-sm text-red-600">Failed to load setup information. Please try again.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

@@ -39,13 +39,34 @@ class Project(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    status: Mapped[ProjectStatus] = mapped_column(Enum(ProjectStatus, name="project_status"), nullable=False, default=ProjectStatus.DRAFT)
+    status: Mapped[ProjectStatus] = mapped_column(
+        Enum(
+            ProjectStatus,
+            name="project_status",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=ProjectStatus.DRAFT,
+    )
     url: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    
+    recorder_token: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    phase_2_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Messaging bus: set by the Web UI "Launch" button, cleared atomically by /pulse
+    active_launch_scenario_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        default=None,
+    )
 
     owner = relationship("User", back_populates="projects")
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
@@ -70,7 +91,15 @@ class ProjectFile(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid6.uuid7)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    file_type: Mapped[FileType] = mapped_column(Enum(FileType, name="project_file_type"), nullable=False, index=True)
+    file_type: Mapped[FileType] = mapped_column(
+        Enum(
+            FileType,
+            name="project_file_type",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        index=True,
+    )
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     content_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(nullable=False, default=0)
@@ -224,3 +253,12 @@ class HighLevelScenario(Base):
 
     project = relationship("Project")
     completed_by_user = relationship("User", foreign_keys=[completed_by])
+    recording_sessions = relationship(
+        "RecordingSession", back_populates="scenario", cascade="all, delete-orphan"
+    )
+    route_variants = relationship(
+        "RouteVariant", back_populates="scenario", cascade="all, delete-orphan"
+    )
+    steps = relationship(
+        "ScenarioStep", back_populates="scenario", cascade="all, delete-orphan"
+    )
