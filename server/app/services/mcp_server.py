@@ -91,15 +91,35 @@ def save_test_case(
 ) -> str:
     """Persist a test case to the database. Idempotent — skips if test_id already exists.
 
+    Also guards against (project_id, tc_number) duplicates that arise when a
+    planning run is retried after a crash (new UUID, same TC-001 number).
+
     Args:
         hls_id:              UUID string of the parent High-Level Scenario (Phase 2).
         tc_number:           Human-readable number e.g. 'TC-001' for RTM traceability.
         acceptance_criteria: List of verifiable pass conditions shown in TC document.
     """
     with SessionLocal() as db:
+        # Guard 1: identical test_id (normal idempotency)
         existing = db.get(TestCase, uuid.UUID(test_id))
         if existing:
             return test_id
+
+        # Guard 2: same (project_id, tc_number) from a crashed/retried plan run
+        if tc_number:
+            dup = db.execute(
+                select(TestCase).where(
+                    TestCase.project_id == uuid.UUID(project_id),
+                    TestCase.tc_number == tc_number,
+                )
+            ).scalar_one_or_none()
+            if dup:
+                logger.warning(
+                    "save_test_case: duplicate (project_id=%s, tc_number=%s) — skipping new test_id=%s, keeping %s",
+                    project_id, tc_number, test_id, dup.test_id,
+                )
+                return str(dup.test_id)
+
         valid_deps: list[uuid.UUID] = []
         for d in depends_on:
             try:

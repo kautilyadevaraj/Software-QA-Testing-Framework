@@ -496,6 +496,41 @@ def update_test_case_content(
         "update_test_case_content: test_id=%s changed=%s approval_status=%s",
         test_id, changed, tc.approval_status,
     )
+
+    # ── Regenerate the tc_document_{run_id}.md so the downloaded markdown
+    #    always reflects human edits, not just the original AI-generated version.
+    if changed:
+        try:
+            from app.agents.agent3_planner import generate_tc_document
+            latest_plan_run = db.execute(
+                select(TestRun)
+                .where(TestRun.project_id == project_id, TestRun.run_type == "plan")
+                .order_by(TestRun.created_at.desc())
+                .limit(1)
+            ).scalars().first()
+            if latest_plan_run:
+                tc_rows = mcp_server.get_test_cases_for_run(
+                    project_id=str(project_id), run_id=str(latest_plan_run.run_id)
+                )
+                tid_map = {r["test_id"]: r["title"] for r in tc_rows}
+                for row in tc_rows:
+                    row["depends_on_titles"] = [
+                        tid_map.get(dep, dep) for dep in row.get("depends_on", [])
+                    ]
+                project_obj = db.get(Project, project_id)
+                project_name = project_obj.name if project_obj else "Project"
+                markdown = generate_tc_document(tc_rows, project_name=project_name)
+                doc_path = Path(settings.generated_scripts_dir) / f"tc_document_{latest_plan_run.run_id}.md"
+                doc_path.write_text(markdown, encoding="utf-8")
+                logger.info(
+                    "update_test_case_content: regenerated tc_document at %s", doc_path
+                )
+        except Exception as regen_exc:
+            # Non-fatal — DB is already updated; just log the failure
+            logger.warning(
+                "update_test_case_content: failed to regenerate tc_document: %s", regen_exc
+            )
+
     return TestCaseApprovalResponse(
         test_id=tc.test_id,
         tc_number=tc.tc_number,
@@ -508,6 +543,7 @@ def update_test_case_content(
         approval_status=tc.approval_status,
         depends_on_titles=depends_on_titles,
     )
+
 
 
 # ── GET /tc-document ─────────────────────────────────────────────────────────────────

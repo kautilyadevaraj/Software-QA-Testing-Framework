@@ -280,6 +280,9 @@ export function Phase3Panel({ projectId }: Props) {
   const [execState, setExecState] = useState<Phase3TestState[]>([]);
   const [approvingAll, setApprovingAll] = useState(false);
 
+  // Ref mirror of testCases so callbacks can read length without stale closure
+  const testCasesRef = useRef<Phase3TestCase[]>([]);
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const execPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -323,7 +326,18 @@ export function Phase3Panel({ projectId }: Props) {
       }
 
       if (s.run_type === "plan" && s.status === "planned") {
-        // Planning is done but execute hasn't started — show review phase
+        // Planning is done but execute hasn't started — show review phase.
+        // Also hydrate planRunId from the run-status response so that a page
+        // refresh can restore the accordion without needing a re-generate.
+        const restoredRunId = s.run_id;
+        setPlanRunId(prev => {
+          const resolved = prev ?? restoredRunId;
+          // Fetch TCs immediately if we haven't loaded them yet
+          if (resolved && testCasesRef.current.length === 0) {
+            fetchTcDoc(resolved);
+          }
+          return resolved;
+        });
         if (tcPollRef.current) { clearInterval(tcPollRef.current); tcPollRef.current = null; }
         setPhase(prev => (prev === "review" ? prev : "review"));
       }
@@ -335,7 +349,10 @@ export function Phase3Panel({ projectId }: Props) {
   const fetchTcDoc = useCallback(async (runId: string) => {
     try {
       const rows = await getPhase3TcDocumentJson(projectId, runId);
-      if (rows.length > 0) setTestCases(rows);
+      if (rows.length > 0) {
+        setTestCases(rows);
+        testCasesRef.current = rows;
+      }
     } catch { /* not ready yet */ }
   }, [projectId]);
 
@@ -357,7 +374,10 @@ export function Phase3Panel({ projectId }: Props) {
     if (runStatus.run_type === "plan" && runStatus.status === "planned") {
       if (tcPollRef.current) { clearInterval(tcPollRef.current); tcPollRef.current = null; }
       setPhase("review");
-      if (planRunId) fetchTcDoc(planRunId);
+      // planRunId may already be set from the fetchRunStatus effect above;
+      // fall back to run_id from the status response.
+      const resolvedRunId = planRunId ?? runStatus.run_id;
+      if (resolvedRunId && testCasesRef.current.length === 0) fetchTcDoc(resolvedRunId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runStatus?.status, runStatus?.run_type]);
@@ -462,7 +482,11 @@ export function Phase3Panel({ projectId }: Props) {
   }, {});
 
   function updateTc(updated: Phase3TestCase) {
-    setTestCases(prev => prev.map(t => t.test_id === updated.test_id ? updated : t));
+    setTestCases(prev => {
+      const next = prev.map(t => t.test_id === updated.test_id ? updated : t);
+      testCasesRef.current = next;
+      return next;
+    });
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
