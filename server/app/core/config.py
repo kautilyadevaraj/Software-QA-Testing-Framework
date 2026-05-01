@@ -44,9 +44,25 @@ class Settings(BaseSettings):
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
 
+    # LLM provider: "groq" or "nim" or "openrouter"
+    llm_provider: str = "groq"
+
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
     groq_max_tokens: int = 1024
+
+    # NVIDIA NIM (OpenAI-compatible)
+    nim_api_key: str | None = None
+    nim_model: str = "qwen/qwen2.5-coder-32b-instruct"
+    nim_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nim_max_tokens: int = 2048
+
+    # OpenRouter (OpenAI-compatible, free tier available)
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "qwen/qwen3-coder:free"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_max_tokens: int = 1500
+
     scenario_agent_batch_chars: int = 4500
     scenario_agent_batch_size: int = 4
     scenario_agent_max_scenarios_per_batch: int = 5
@@ -65,6 +81,31 @@ class Settings(BaseSettings):
     
     PUBLIC_API_URL: str = "http://localhost:8000"   # override with actual VM URL in .env
     RECORDINGS_BASE_PATH: str = "uploads/recordings"
+
+    # Playwright test credentials (passed as env vars to test subprocess)
+    base_url: str = "http://localhost:3000"
+    user_email: str = ""
+    user_password: str = ""
+    admin_email: str = ""
+    admin_password: str = ""
+
+    # Phase 3 — Test Execution
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
+    rabbitmq_queue: str = "phase3_test_jobs"
+    chromium_workers: int = 3
+    requeue_delay_ms: int = 15000
+    test_timeout_ms: int = 60000
+    vision_fallback: bool = False
+    playwright_headed: bool = False
+    state_json_path: str = "state.json"
+    generated_scripts_dir: str = "tests/generated"
+
+    # Seconds to sleep between grouped A5 LLM calls (rate-limit for free-tier models)
+    # 8s = safe default for qwen3-coder:free (8 RPM) and groq (6 RPM)
+    llm_rate_limit_sleep: float = 8.0
+
+    # Path to Playwright auth storage state (created by auth.setup.ts before each run)
+    auth_json_path: str = "tests/auth.json"
 
     @field_validator("cookie_samesite")
     @classmethod

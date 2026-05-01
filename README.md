@@ -1,390 +1,394 @@
-# SQAT - Software QA Testing Framework
+# SQAT — Software QA Testing Framework
 
-Autonomous QA pipeline: upload project documents, verify the target URL, configure credentials, and raise Jira tickets - all from a single unified interface.
+> Autonomous QA pipeline: upload project documents → generate AI-powered test scenarios → execute Playwright scripts → classify results → raise Jira tickets. All from a single unified interface.
+
+---
+
+## Table of Contents
+
+1. [Tech Stack](#tech-stack)
+2. [Project Structure](#project-structure)
+3. [Prerequisites](#prerequisites)
+4. [Quick Start (TL;DR)](#quick-start-tldr)
+5. [Detailed Setup](#detailed-setup)
+   - [1. Database](#1-database-setup)
+   - [2. Backend (FastAPI)](#2-backend-fastapi-setup)
+   - [3. Frontend (Next.js)](#3-frontend-nextjs-setup)
+   - [4. RabbitMQ (Docker)](#4-rabbitmq-docker)
+6. [Environment Variables Reference](#environment-variables-reference)
+7. [Database Migrations (Alembic)](#database-migrations-alembic)
+8. [Phase Pipeline Overview](#phase-pipeline-overview)
+9. [API Reference](#api-reference)
+10. [Jira Integration](#jira-integration)
+11. [Groq API Setup](#groq-api-setup)
+12. [Contributing](#contributing)
+
+---
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| **Frontend** | Next.js 16 (App Router), TypeScript, Vanilla CSS |
+| **Frontend** | Next.js 15 (App Router), TypeScript, Tailwind CSS |
 | **Backend** | FastAPI (Python 3.11+), SQLAlchemy 2, Alembic |
 | **Database** | PostgreSQL 14+ |
-| **Extraction** | PyMuPDF (PDF), Prance (Swagger/OpenAPI), Playwright (Auth/E2E) |
-| **Auth** | JWT (access + refresh tokens, HTTP-only cookies) |
+| **Message Queue** | RabbitMQ (via Docker) |
+| **LLM / Agents** | Groq (LLaMA 3.3 70B) via LangChain |
 | **Vector DB** | Qdrant Cloud |
-| **Embeddings** | Hugging Face (Sentence Transformers) |
+| **Embeddings** | HuggingFace Sentence Transformers |
+| **Test Execution** | Playwright (Chromium workers) |
+| **Auth** | JWT (access + refresh tokens, HTTP-only cookies) |
 | **Ticketing** | Jira Cloud REST API v3 |
-| **File Storage** | Local filesystem (`server/uploads/`) |
+| **Doc Parsing** | PyMuPDF (PDF), Prance (Swagger/OpenAPI) |
+| **MCP Server** | FastMCP — tool bus for agent pipeline |
 
-## Prerequisites
-
-- **Node.js** 18+
-- **Python** 3.11+
-- **PostgreSQL** 14+ running locally
-- **uv** (Python package manager) - install with `pip install uv` or see [uv docs](https://docs.astral.sh/uv/)
+---
 
 ## Project Structure
 
 ```
 Software-QA-Testing-Framework/
-├── client/                          # Next.js frontend
-│   ├── app/                         # App Router pages
+├── docker-compose.yml               # RabbitMQ (one-command infra)
+│
+├── client/                          # Next.js 15 frontend
+│   ├── app/
 │   │   ├── login/
 │   │   ├── signup/
-│   │   └── projects/
-│   │       └── [projectId]/         # Project detail page
-│   ├── components/                  # Shared UI components
-│   │   └── raise-ticket-modal.tsx   # Jira ticket creation modal
+│   │   └── projects/[projectId]/    # Project detail (3 tabs)
+│   ├── components/
+│   │   ├── ui/                      # Shared UI primitives (Button, Card…)
+│   │   ├── phase3-panel.tsx         # Phase 3 — Generate → Approve → Execute
+│   │   ├── phase3-review-queue.tsx  # Phase 3 — live SSE review queue
+│   │   ├── scenario-qa-panel.tsx    # Phase 2 — scenario QA panel
+│   │   └── raise-ticket-modal.tsx   # Jira ticket modal
 │   ├── lib/
 │   │   ├── api.ts                   # Typed API client (all endpoints)
 │   │   └── projects.ts              # Project domain types & helpers
-│   ├── .env                         # Local env (gitignored)
-│   ├── .env.example                 # Template (tracked)
-│   └── proxy.ts                     # Auth guard (Next.js 16)
+│   ├── .env.example                 # ← copy to .env and fill in values
+│   └── package.json
 │
 └── server/                          # FastAPI backend
-      ├── app/
-      │   ├── core/                    # Config (settings), JWT, bcrypt
-      │   ├── db/                      # SQLAlchemy engine & session
-      │   ├── models/                  # ORM models
-      │   │   └── project.py           # Project, ProjectJiraConfig, JiraTicket
-      │   ├── routers/                 # API route handlers
-      │   │   └── projects.py          # Includes Jira connect & ticket endpoints
-      │   ├── schemas/                 # Pydantic request/response models
-      │   ├── services/                # Business logic
-      │   │   └── jira_service.py      # Jira Cloud REST API integration
-      │   └── utils/                   # Rate limiter
-      ├── migrations/                  # Alembic migration files
-      │   └── versions/
-      │       ├── 0001_consolidated.py
-      │       ├── 0002_add_jira_tables.py
-      │       └── 0003_add_high_level_scenarios.py
-      ├── uploads/                     # User-uploaded files (gitignored)
-      ├── .env                         # Local env (gitignored)
-      ├── .env.example                 # Template (tracked)
-      ├── alembic.ini
-      ├── init_db.py                   # Dev utility: creates DB + all tables
-      └── pyproject.toml
+    ├── app/
+    │   ├── agents/                  # AI agent pipeline (A3–A7)
+    │   ├── core/                    # Config, JWT, bcrypt
+    │   ├── db/                      # SQLAlchemy engine & session
+    │   ├── graph/                   # LangGraph orchestrator
+    │   ├── models/                  # SQLAlchemy ORM models
+    │   ├── routers/                 # FastAPI route handlers
+    │   ├── schemas/                 # Pydantic request/response models
+    │   ├── services/                # Business logic (Jira, RabbitMQ, etc.)
+    │   └── utils/
+    ├── migrations/                  # Alembic migration versions
+    ├── tests/generated/             # Auto-generated Playwright .spec.ts (gitignored)
+    ├── .env.example                 # ← copy to .env and fill in values
+    ├── alembic.ini
+    ├── pyproject.toml
+    ├── requirements.txt
+    └── init_db.py                   # One-shot DB bootstrap (alternative to Alembic)
 ```
 
-## 1 - Database Setup
+---
 
-### Option A - pgAdmin (GUI)
+## Prerequisites
+
+| Tool | Version | Notes |
+|---|---|---|
+| **Node.js** | 18+ | [nodejs.org](https://nodejs.org) |
+| **Python** | 3.11+ | [python.org](https://python.org) |
+| **PostgreSQL** | 14+ | Running locally or via Docker |
+| **Docker Desktop** | Latest | Required for RabbitMQ |
+| **uv** | Latest | `pip install uv` — fast Python package manager |
+| **Playwright** | Bundled | Installed via `playwright install chromium` |
+
+---
+
+## Quick Start (TL;DR)
+
+```bash
+# 1. Clone the repo
+git clone <repo-url>
+cd Software-QA-Testing-Framework
+
+# 2. Start RabbitMQ
+docker compose up -d
+
+# 3. Backend
+cd server
+uv venv && .venv\Scripts\activate        # Windows
+# source .venv/bin/activate              # macOS/Linux
+uv pip install -r requirements.txt
+playwright install chromium
+copy .env.example .env                   # then fill in required values
+alembic upgrade head
+uvicorn app.main:app --reload --port 8000
+
+# 4. Frontend (new terminal)
+cd client
+npm install
+copy .env.example .env                   # already has the right default
+npm run dev
+```
+
+Open **http://localhost:3000** — register an account and you're in.
+
+---
+
+## Detailed Setup
+
+### 1. Database Setup
+
+Create the `sqat_db` database in PostgreSQL:
+
+**pgAdmin (GUI):**
 1. Open pgAdmin → right-click **Databases** → **Create** → **Database**
 2. Name it `sqat_db` → **Save**
 
-### Option B - psql (terminal)
+**psql (terminal):**
 ```bash
 psql -U postgres -c "CREATE DATABASE sqat_db;"
 ```
 
-## 2 - Backend (FastAPI) Setup
+---
+
+### 2. Backend (FastAPI) Setup
 
 ```bash
 cd server
 
-# Create and activate the virtual environment
+# Create and activate virtualenv
 uv venv
-.venv\Scripts\activate      # Windows
-# source .venv/bin/activate # macOS/Linux
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
 
-# Install dependencies
+# Install Python dependencies
 uv pip install -r requirements.txt
-# OR (reads from pyproject.toml)
-uv sync
+# OR: uv sync  (reads from pyproject.toml)
 
-# Install Playwright browsers (required for E2E Auth features)
-playwright install
+# Install Playwright Chromium browser
+playwright install chromium
 ```
 
-### 2a - Configure `server/.env`
+#### 2a — Configure `server/.env`
 
 ```bash
 copy server\.env.example server\.env   # Windows
 # cp server/.env.example server/.env   # macOS/Linux
 ```
 
-Edit `server/.env` and fill in required and commonly used optional values:
+Open `server/.env` and set **at minimum**:
 
 ```env
-# Required
 DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/sqat_db
-JWT_SECRET_KEY=at_least_24_characters_long_random_string
-FRONTEND_ORIGINS=http://localhost:3000
-
-# Optional: Scenario generation (Groq)
-GROQ_API_KEY=gsk_key_one,gsk_key_two
-GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_MAX_TOKENS=1024
-
-# Optional: RAG and semantic search
-HF_TOKEN=your_huggingface_token
-HF_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
-HF_MODELS_DIR=models
-QDRANT_URL=your_qdrant_cloud_url
-QDRANT_API_KEY=your_qdrant_api_key
-
-# Optional: Jira integration
-JIRA_BASE_URL=https://yourcompany.atlassian.net
-JIRA_EMAIL=you@yourcompany.com
-JIRA_API_TOKEN=your_jira_api_token
-JIRA_LEAD_ACCOUNT_ID=your_jira_account_id
+JWT_SECRET_KEY=some_random_string_at_least_32_chars
+GROQ_API_KEY=gsk_your_groq_key_here
 ```
 
-> `GROQ_API_KEY` supports comma-separated keys for rotation and failover. All other values in `.env.example` are fine as defaults for local development.
+See the full [Environment Variables Reference](#environment-variables-reference) below for all options.
 
-### 2b - Run Database Migrations
+#### 2b — Run Database Migrations
 
-**Fresh installation** (no tables yet):
+**Fresh install** (no tables yet):
 ```bash
-cd server
 alembic upgrade head
 ```
 
-**Existing database** (tables already created by a previous `init_db.py` run):
+**Existing DB** (tables already created by a previous `init_db.py` run):
 ```bash
-cd server
-alembic stamp head
+alembic stamp head   # marks existing schema as up-to-date
 ```
 
 > After stamping, all future schema changes use `alembic upgrade head`.
 
-### 2c - Alternative: Initialise Database Without Alembic
-
-If you prefer not to use Alembic for a fresh local setup:
-
+**Alternative — skip Alembic entirely** (one-shot local setup):
 ```bash
-cd server
 python init_db.py
 ```
 
-This creates `sqat_db` (if it doesn't exist) and all tables from the SQLAlchemy models.  
-No seed data is inserted - register your first user via the UI or `POST /api/v1/auth/signup`.
-
-### 2d - Start the Server
+#### 2c — Start the Server
 
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
 - API base: `http://localhost:8000`
-- Interactive docs: `http://localhost:8000/docs`
+- Swagger UI: `http://localhost:8000/docs`
 
-## 3 - Frontend (Next.js) Setup
+---
+
+### 3. Frontend (Next.js) Setup
 
 ```bash
 cd client
 npm install
 ```
 
-### 3a - Configure `client/.env`
+#### 3a — Configure `client/.env`
 
 ```bash
 copy client\.env.example client\.env   # Windows
 # cp client/.env.example client/.env   # macOS/Linux
 ```
 
+The default value works for local dev:
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-### 3b - Start the Frontend
+#### 3b — Start the Frontend
 
 ```bash
 npm run dev
 ```
 
-App is available at: `http://localhost:3000`
+App available at: **http://localhost:3000**
 
-## 4 - Full Startup Checklist
+---
 
-```
-1. PostgreSQL is running
-2. sqat_db database exists
-3. server/.env is configured (DATABASE_URL, JWT_SECRET_KEY)
-4. cd server && alembic upgrade head
-5. cd server && uvicorn app.main:app --reload --port 8000
-6. cd client && npm run dev
-7. Open http://localhost:3000
-```
+### 4. RabbitMQ (Docker)
 
-## 5 - Jira Integration Setup
+Required for Phase 3 Playwright test execution.
 
-The Jira integration allows you to raise Jira tickets directly from the URL verification and credentials verification sections of any project.
-
-### 5a - Get Your Credentials
-
-| Variable | Where to Find It |
-|---|---|
-| `JIRA_BASE_URL` | Your Atlassian workspace URL, e.g. `https://yourcompany.atlassian.net` |
-| `JIRA_EMAIL` | The email address you use to log in to Jira |
-| `JIRA_API_TOKEN` | [Manage API tokens](https://id.atlassian.com/manage-profile/security/api-tokens) → **Create API token** |
-| `JIRA_LEAD_ACCOUNT_ID` | Visit `https://yourcompany.atlassian.net/rest/api/3/myself` while logged in → copy the `accountId` field |
-
-### 5b - Add to `.env`
-
-```env
-JIRA_BASE_URL=https://yourcompany.atlassian.net
-JIRA_EMAIL=you@yourcompany.com
-JIRA_API_TOKEN=your_api_token_here
-JIRA_LEAD_ACCOUNT_ID=712020:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```bash
+# From the repo root
+docker compose up -d
 ```
 
-> Restart the backend server after editing `.env` to reload the cached settings.
+RabbitMQ management UI: **http://localhost:15672** (guest / guest)
 
-### 5c - Connect a Project to Jira
+To stop:
+```bash
+docker compose down
+```
 
-1. Open any project → **Project Configuration** tab
-2. Click **"Connect to Jira"** in the top-right of the card
-3. SQAT auto-generates a Jira project key from the project name (e.g. `My Shopping App → MSA`) and creates the Jira project
-4. The button changes to a green badge: `● Connected · Key: MSA`
-5. This is a **one-time action per project** - clicking again returns the existing key without creating duplicates
+---
 
-### 5d - Raise a Ticket
+## Full Startup Checklist
 
-**From the URL section:**
-- Launch a URL → click **"Raise Ticket"**
-- The modal opens pre-filled with URL verification context
+```
+☐ 1. PostgreSQL is running
+☐ 2. sqat_db database exists
+☐ 3. Docker Desktop is running
+☐ 4. docker compose up -d              ← starts RabbitMQ
+☐ 5. server/.env is configured (DATABASE_URL, JWT_SECRET_KEY, GROQ_API_KEY)
+☐ 6. cd server && alembic upgrade head
+☐ 7. cd server && uvicorn app.main:app --reload --port 8000
+☐ 8. cd client && npm install && npm run dev
+☐ 9. Open http://localhost:3000
+```
 
-**From the Credentials section:**
-- Each credential card has its own **"Raise Ticket"** button
-- The modal opens pre-filled with that credential's username, role, auth type, and endpoint
+> **Windows tip:** Always use `alembic` and `uvicorn` from inside the activated `.venv` — not system-level commands.
 
-Both modals let you edit: **Title**, **Description**, **Issue Type** (Bug / Task / Story), **Priority** (High / Medium / Low).
+---
 
-On submit: the ticket is created in Jira AND saved locally to the `jira_tickets` database table.
+## Environment Variables Reference
 
-> The "Raise Ticket" buttons are **disabled** until the project is connected to Jira.
+### `server/.env`
 
-## Alembic - DB Migration Cheatsheet
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | ✅ | — | PostgreSQL connection string |
+| `JWT_SECRET_KEY` | ✅ | — | Min 32-char random string for signing JWTs |
+| `FRONTEND_ORIGINS` | ✅ | `http://localhost:3000` | CORS allowed origins |
+| `GROQ_API_KEY` | ✅ | — | Groq API key(s), comma-separated for rotation |
+| `GROQ_MODEL` | — | `llama-3.3-70b-versatile` | LLM model used by agents |
+| `GROQ_MAX_TOKENS` | — | `1024` | Max tokens per LLM call |
+| `HF_TOKEN` | — | — | HuggingFace token for embeddings |
+| `QDRANT_URL` | — | — | Qdrant cloud cluster URL |
+| `QDRANT_API_KEY` | — | — | Qdrant cloud API key |
+| `RABBITMQ_URL` | — | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
+| `CHROMIUM_WORKERS` | — | `3` | Parallel Playwright worker count |
+| `TEST_TIMEOUT_MS` | — | `60000` | Playwright test timeout (ms) |
+| `JIRA_BASE_URL` | — | — | Atlassian workspace URL |
+| `JIRA_EMAIL` | — | — | Jira account email |
+| `JIRA_API_TOKEN` | — | — | Jira API token |
+| `JIRA_LEAD_ACCOUNT_ID` | — | — | Jira account ID (not email) |
 
-Run all commands from the `server/` directory with the venv activated.
+> Copy `server/.env.example` — it has every variable documented with inline comments.
+
+### `client/.env`
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `NEXT_PUBLIC_API_BASE_URL` | ✅ | `http://localhost:8000` | Backend API URL |
+
+---
+
+## Database Migrations (Alembic)
+
+Run all commands from the `server/` directory with the venv **activated**.
 
 | Task | Command |
 |---|---|
 | Apply all pending migrations | `alembic upgrade head` |
-| Roll back one migration | `alembic downgrade -1` |
-| Roll back to the very beginning | `alembic downgrade base` |
-| Create a new migration (auto-detect changes) | `alembic revision --autogenerate -m "your description"` |
-| Create a blank migration | `alembic revision -m "your description"` |
+| Roll back one step | `alembic downgrade -1` |
+| Roll back to baseline | `alembic downgrade base` |
+| Generate migration from model changes | `alembic revision --autogenerate -m "description"` |
+| Create blank migration | `alembic revision -m "description"` |
 | Show migration history | `alembic history` |
-| Show current DB revision | `alembic current` |
-| Mark existing DB as up-to-date (no SQL run) | `alembic stamp head` |
+| Show current revision | `alembic current` |
+| Mark existing DB as up-to-date | `alembic stamp head` |
 
-### Adding a New Column
-
-```bash
-# 1. Edit the SQLAlchemy model in server/app/models/
-# 2. Auto-generate the migration
-alembic revision --autogenerate -m "add column to table"
-# 3. Review the generated file in server/migrations/versions/
-# 4. Apply it
-alembic upgrade head
-```
-
-### Team Collaboration with DB Changes
-
-1. **Teammate modifies a model** → runs `alembic revision --autogenerate` → commits both the model change and the migration file
-2. **You pull their code** → your local DB doesn't have the new table yet
-3. **You sync** → run `alembic upgrade head` - done
-
-> Roll back safely at any time with `alembic downgrade -1`.
-
-## Document Upload Rules
-
-| Category | Format | Max Files | Required |
-|---|---|---|---|
-| BRD | PDF | Multiple | ✅ |
-| FSD | PDF | Multiple | - |
-| WBS | PDF | Multiple | - |
-| Assumptions | PDF | 1 | - |
-| Credentials | PDF or TXT | 1 | ✅ |
-| Swagger Docs | YAML or JSON | 1 | ✅ |
-
-> **Max file size:** 20 MB per file
-
-### File Storage Convention
-
-Files are stored under `server/uploads/` using the layout:
+### Team workflow for schema changes
 
 ```
-server/uploads/
-└── {ProjectID}/
-      └── {ProjectID}_{FileID}_{FileType}_{Number}
+Teammate:
+  1. Edit SQLAlchemy model in server/app/models/
+  2. alembic revision --autogenerate -m "add column"
+  3. Review generated file in server/migrations/versions/
+  4. Commit both the model change AND the migration file
+
+You (after pulling):
+  5. alembic upgrade head   ← applies any new migrations
 ```
 
-`{Number}` is the sequential count of files of the same category within the project (1-based). The original filename is preserved in `project_files.original_filename`.
+---
 
-Example - 2 BRDs + 1 Swagger file:
+## Phase Pipeline Overview
+
 ```
-server/uploads/
-└── 018e1a2b-.../
-      ├── 018e1a2b-..._019f3c4d-..._brd_1
-      ├── 018e1a2b-..._019f3c4e-..._brd_2
-      └── 018e1a2b-..._019f3c4f-..._swagger_docs_1
-```
+Phase 1 — Project Setup
+  Upload BRD / FSD / Swagger → ingest → extract → embed into Qdrant
 
-### Upload Prerequisites
+Phase 2 — Scenario Generation
+  Agent 1 (BRD) + Agent 2 (Swagger) → Agent 3 (dedup)
+  → High-Level Scenarios → Human review & approval
 
-File uploads are only enabled after:
-1. Entering a Project URL and clicking **Launch**
-2. Clicking **Proceed** to confirm
-
-## 6 - GROQ API Setup
-
-Use Groq API keys for scenario generation agents used by the backend.
-
-### 6a - Create a Groq API Key
-
-1. Open https://console.groq.com/
-2. Sign in or create an account
-3. Go to API Keys
-4. Click Create API Key
-5. Copy the key and store it safely
-
-### 6b - Add GROQ values to `server/.env`
-
-```env
-GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_MAX_TOKENS=1024
+Phase 3 — Test Generation & Execution
+  A3 Planner  → test cases (from approved HLS)
+  A4 Context  → DOM snapshots + execution context
+  A5 Generator → .spec.ts Playwright scripts (Groq)
+  ↓ RabbitMQ queue → Chromium Workers (parallel)
+  A6 Classifier → PASS / SCRIPT_ERROR / APP_ERROR
+  A7 Retry     → repairs SCRIPT_ERROR scripts (max 3 retries)
+  → Review Queue (APP_ERROR / exhausted retries)
+  → Raise Jira ticket from Review Queue
 ```
 
-You can also configure multiple keys for failover and rotation.
+### Phase 3 UI (Generate → Approve → Execute tab)
 
-```env
-GROQ_API_KEY=gsk_key_one,gsk_key_two,gsk_key_three
-```
+1. **Generate Test Cases** — calls A3 Planner, streams test cases as they appear
+2. **Review & Edit** — expand each test case, edit steps/AC inline, approve individually
+3. **Approve All** — bulk-approve all test cases
+4. **Execute** — triggers A4 → A5 → RabbitMQ → Chromium workers
+5. **Live Execution Log** — polls every 2 s, shows PASS / FAIL / HUMAN_REVIEW per test
+6. **Review Queue** — items needing human attention stream via SSE; raise Jira directly
 
-### 6c - Restart backend after env change
+---
 
-After updating `server/.env`, restart the backend server so new settings are loaded.
+## API Reference
 
-### 6d - Verify configuration
-
-- Start backend normally.
-- Trigger scenario generation from the UI.
-- If key is missing, backend raises: `GROQ_API_KEY is not configured`.
-
-### 6e - Common notes
-
-- `GROQ_API_KEY` is required for scenario generation.
-- `GROQ_MODEL` is optional. Default is `llama-3.3-70b-versatile`.
-- `GROQ_MAX_TOKENS` is optional. Default is `1024`.
-
-## 8 - API Reference
-
-Base URL: `http://localhost:8000/api/v1`  
-Full interactive docs: `http://localhost:8000/docs`
+Base URL: `http://localhost:8000/api/v1`
+Interactive docs: `http://localhost:8000/docs`
 
 ### Auth
 
 | Method | Path | Description |
 |---|---|---|
 | POST | `/auth/signup` | Register a new user |
-| POST | `/auth/login` | Login and receive auth cookies |
+| POST | `/auth/login` | Login → receive auth cookies |
 | POST | `/auth/logout` | Clear auth cookies |
-| GET | `/auth/me` | Get current authenticated user |
+| GET | `/auth/me` | Get current user |
+| POST | `/auth/refresh` | Refresh access token via refresh cookie |
 
 ### Projects
 
@@ -396,147 +400,138 @@ Full interactive docs: `http://localhost:8000/docs`
 | PUT | `/projects/{id}` | Update project |
 | DELETE | `/projects/{id}` | Delete project |
 | GET | `/projects/{id}/members` | List project members |
-| POST | `/projects/{id}/members` | Add a member by email |
-| DELETE | `/projects/{id}/members/{memberId}` | Remove a member |
+| POST | `/projects/{id}/members` | Add member by email |
+| DELETE | `/projects/{id}/members/{memberId}` | Remove member |
 | POST | `/projects/{id}/members/{memberId}/transfer` | Transfer ownership |
+| POST | `/projects/{id}/launch` | Launch project URL context |
+| POST | `/projects/{id}/verify` | Mark project as verified |
 | GET | `/projects/{id}/documents` | List uploaded documents |
 | POST | `/projects/{id}/documents` | Upload document(s) |
 | DELETE | `/projects/{id}/documents/{docId}` | Delete a document |
 | POST | `/projects/{id}/ingest` | Start ingestion pipeline |
 | GET | `/projects/{id}/status` | Poll extraction status |
 
+### High-Level Scenarios (Phase 2)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/projects/{id}/scenarios/generate` | Generate scenario preview |
+| POST | `/projects/{id}/scenarios/approve` | Save selected scenarios |
+| GET | `/projects/{id}/scenarios` | List saved scenarios |
+| POST | `/projects/{id}/scenarios` | Create manual scenario |
+| PATCH | `/projects/{id}/scenarios/{scenarioId}` | Update scenario |
+| DELETE | `/projects/{id}/scenarios/{scenarioId}` | Delete scenario |
+
+### Phase 3 — Test Automation
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/projects/{id}/phase3/plan` | Generate test cases (A3 Planner) |
+| POST | `/projects/{id}/phase3/execute` | Execute a planned run |
+| POST | `/projects/{id}/phase3/cancel` | Cancel running execution |
+| POST | `/projects/{id}/phase3/reset` | Delete all Phase 3 data for project |
+| GET | `/projects/{id}/phase3/run-status` | Poll run counters & status |
+| GET | `/projects/{id}/phase3/execution-state` | Live per-test state |
+| GET | `/projects/{id}/phase3/test-cases/{runId}` | List test cases for a run |
+| PATCH | `/projects/{id}/phase3/test-cases/{testId}` | Edit test case |
+| PATCH | `/projects/{id}/phase3/test-cases/{testId}/approval` | Set approval status |
+| POST | `/projects/{id}/phase3/approve-all/{runId}` | Bulk-approve all test cases |
+| GET | `/projects/{id}/phase3/review-queue` | List review queue items |
+| GET | `/projects/{id}/phase3/review-queue/stream` | SSE stream of new items |
+| PATCH | `/projects/{id}/phase3/review-queue/{itemId}` | Update review item |
+| POST | `/projects/{id}/phase3/raise-jira` | Raise Jira issue from review item |
+
 ### Jira Integration
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/projects/{id}/jira/connect` | Connect project to Jira (creates Jira project, idempotent) |
-| GET | `/projects/{id}/jira/config` | Get current Jira connection status & project key |
-| POST | `/projects/{id}/tickets` | Raise a Jira ticket and save locally |
+| POST | `/projects/{id}/jira/connect` | Connect project to Jira (idempotent) |
+| GET | `/projects/{id}/jira/config` | Get Jira connection status & key |
+| POST | `/projects/{id}/tickets` | Raise Jira ticket & save locally |
 
-## 9 - Additional and New Endpoints
+---
 
-Base URL: `http://localhost:8000/api/v1`
+## Jira Integration
 
-### 9a - Project Runtime and Verification Endpoints
+### Get Your Credentials
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/projects/{id}/launch` | Launch project URL context and reset verification state |
-| POST | `/projects/{id}/verify` | Mark launched project as verified |
-| POST | `/projects/{id}/ingest` | Start ingestion workflow |
-| GET | `/projects/{id}/credentials` | Read credential rows from uploaded Credentials file |
-| POST | `/projects/{id}/mark-verified` | Toggle credential verified flag |
-| POST | `/projects/{id}/run-playwright` | Open Playwright browser helper for credential testing |
-| POST | `/projects/{id}/extract-pdfs` | Start extraction processing job |
-| GET | `/projects/{id}/extract-status` | Poll extraction progress and logs |
+| Variable | Where to Find |
+|---|---|
+| `JIRA_BASE_URL` | Your Atlassian URL, e.g. `https://yourcompany.atlassian.net` |
+| `JIRA_EMAIL` | Email you log in to Jira with |
+| `JIRA_API_TOKEN` | [Manage API tokens](https://id.atlassian.com/manage-profile/security/api-tokens) → Create |
+| `JIRA_LEAD_ACCOUNT_ID` | Visit `https://yourcompany.atlassian.net/rest/api/3/myself` → copy `accountId` |
 
-### 9b - Jira Endpoints
+### Connect a Project
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/projects/{id}/jira/connect` | Create and connect Jira project for SQAT project |
-| GET | `/projects/{id}/jira/config` | Get Jira connection state and Jira key |
-| POST | `/projects/{id}/tickets` | Create Jira issue and store local ticket record |
+1. Open any project → **Project Configuration** tab
+2. Click **"Connect to Jira"**
+3. SQAT auto-creates a Jira project and links it (e.g. `My Shopping App → MSA`)
+4. Button turns green: `● Connected · Key: MSA`
 
-### 9c - Scenario Endpoints (High Level Scenarios)
+> This is **idempotent** — clicking again returns the existing key without creating duplicates.
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/projects/{id}/scenarios/generate` | Generate preview scenarios using agent graph |
-| POST | `/projects/{id}/scenarios/approve` | Save selected generated scenarios to DB |
-| GET | `/projects/{id}/scenarios` | List saved scenarios |
-| POST | `/projects/{id}/scenarios` | Create manual scenario |
-| PATCH | `/projects/{id}/scenarios/{scenarioId}` | Update title/description/status/completed_by |
-| DELETE | `/projects/{id}/scenarios/{scenarioId}` | Delete scenario |
+### Raise a Ticket
 
-### 9d - Auth Endpoint to Note
+- From the **Review Queue**: click **Raise Jira** on any failed test item
+- From the **URL / Credentials** section: click **Raise Ticket**
+- Edit Title, Description, Issue Type, and Priority before submitting
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/auth/refresh` | Refresh access token using refresh cookie |
+---
 
-### 9e - Project Response Fields Added
+## Groq API Setup
 
-Project response includes:
+1. Sign in at [console.groq.com](https://console.groq.com)
+2. Go to **API Keys** → **Create API Key** → copy the key
+3. Add to `server/.env`:
 
-- `owner_id`
-- `tester_ids`
-- `tester_emails`
-
-These fields are used by frontend permission and display logic, including owner-only delete controls and tester email tags in project row expansion.
-
-## 10 - High Level Scenarios Generation and Agent Pipeline
-
-This feature generates tester-facing High Level Scenarios from ingested project documents and API documentation.
-
-### 10a - Prerequisites for Scenario Generation
-
-1. Configure Groq in `server/.env`:
-       - `GROQ_API_KEY`
-       - Optional: `GROQ_MODEL`, `GROQ_MAX_TOKENS`
-2. Configure Qdrant in `server/.env`:
-       - `QDRANT_URL`
-       - `QDRANT_API_KEY`
-3. Upload project documents and run ingestion/extraction so chunks are available.
-
-### 10b - Generation Flow
-
-1. Call `POST /projects/{id}/scenarios/generate` to produce preview scenarios.
-2. Review output in UI.
-3. Call `POST /projects/{id}/scenarios/approve` to save selected scenarios.
-4. Use `GET /projects/{id}/scenarios` for listing.
-5. Use `PATCH` and `DELETE` endpoints for maintenance.
-
-### 10c - Agent Graph Architecture
-
-The scenario graph runs three agents in sequence:
-
-1. `agent_1` (business docs)
-2. `agent_2` (Swagger/OpenAPI docs + endpoint fallback)
-3. `agent_3` (deduplication and canonicalization)
-
-Execution order:
-
-`agent_1 -> agent_2 -> agent_3 -> final scenarios`
-
-### 10d - Agent Responsibilities
-
-- `agent1_brd.py`
-      - Reads business-side chunks such as BRD/FSD/WBS/Assumptions
-      - Produces user-journey oriented HLS candidates
-
-- `agent2_swagger.py`
-      - Reads API documentation chunks (Swagger/OpenAPI)
-      - If chunks are unavailable, falls back to `api_endpoints` table
-      - Produces workflow-level HLS candidates grounded in API capabilities
-
-- `agent3_dedup.py`
-      - Combines outputs from agent 1 and agent 2
-      - Removes semantic duplicates
-      - Filters against existing scenarios
-      - Applies max scenario limit
-
-### 10e - Generate Request Example
-
-```json
-{
-      "max_scenarios": 20,
-      "scenario_types": ["ALL"],
-      "access_mode": "UI_ONLY_WEB",
-      "scenario_level": "HLS",
-      "existing_scenarios": []
-}
+```env
+GROQ_API_KEY=gsk_your_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MAX_TOKENS=1024
 ```
 
-### 10f - Scenario State and Sources
+**Multiple keys** (for rate-limit failover):
+```env
+GROQ_API_KEY=gsk_key_one,gsk_key_two,gsk_key_three
+```
 
-- `source` values: `agent_1`, `agent_2`, `manual`
-- `status` values: `pending`, `completed`
-- When marking completed via `PATCH`, `current_user_id` is required.
+Restart the backend after editing `.env` to reload settings.
 
-### 10g - Database Objects
+---
 
-- Table: `high_level_scenarios`
-- Migration: `0003_add_high_level_scenarios.py`
-- Includes indexes on `project_id`, `status`, `completed_by`
+## Document Upload Rules
 
+| Category | Format | Notes |
+|---|---|---|
+| BRD | PDF | Required — business requirements |
+| FSD | PDF | Functional specification |
+| WBS | PDF | Work breakdown structure |
+| Assumptions | PDF | Single file |
+| Credentials | PDF or TXT | Required — test user credentials |
+| Swagger Docs | YAML or JSON | Required — API specification |
+
+> **Max file size:** 20 MB per file
+
+Files are stored at `server/uploads/{ProjectID}/` (gitignored — never committed).
+
+---
+
+## Contributing
+
+1. **Branch naming:** `feat/<short-description>`, `fix/<short-description>`, `chore/<short-description>`
+2. **DB changes:** Always create an Alembic migration alongside your model change and commit both
+3. **Secrets:** Never commit `.env` files — use `.env.example` as the template
+4. **Generated files:** `server/tests/generated/` and `server/test-results/` are gitignored — don't force-add them
+5. **After pulling:** run `alembic upgrade head` if any new migration files were added
+
+```bash
+# Standard workflow after pulling
+cd server
+alembic upgrade head   # apply any new DB migrations
+uvicorn app.main:app --reload --port 8000
+
+cd ../client
+npm install            # in case new packages were added
+npm run dev
+```

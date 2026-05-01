@@ -1,0 +1,14 @@
+{
+  "name": "sqat-playwright-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright test runner for Phase 3 generated specs",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

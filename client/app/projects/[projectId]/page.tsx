@@ -71,8 +71,9 @@ import {
 import { cn } from "@/lib/utils";
 import { RaiseTicketModal } from "@/components/raise-ticket-modal";
 import { ScenarioQaPanel } from "@/components/scenario-qa-panel";
+import { Phase3Panel } from "@/components/phase3-panel";
 
-type ActiveTab = "qa" | "configuration";
+type ActiveTab = "qa" | "configuration" | "phase3";
 
 type ProjectFormState = {
   name: string;
@@ -718,7 +719,7 @@ export default function ProjectDetailsPage() {
                 All credentials verified
               </p>
             </div>
-            
+
             <p className="text-sm text-black/60 mb-6 text-center max-w-sm">
               Your test environment is secured and ready. You can now start the extraction process.
             </p>
@@ -731,138 +732,138 @@ export default function ProjectDetailsPage() {
               )}
 
               {status !== "idle" && (() => {
-                  const expectedDocs = [
-                    ...[...(documents.BRD || []), ...(documents.FSD || []), ...(documents.WBS || []), ...(documents.Assumptions || [])].map(d => d.name),
-                    ...(documents.SwaggerDocs || []).map(d => `Swagger ${d.name}`)
-                  ];
+                const expectedDocs = [
+                  ...[...(documents.BRD || []), ...(documents.FSD || []), ...(documents.WBS || []), ...(documents.Assumptions || [])].map(d => d.name),
+                  ...(documents.SwaggerDocs || []).map(d => `Swagger ${d.name}`)
+                ];
 
-                  const getDocStatus = (docName: string, logsList: string[]) => {
-                    const isSwagger = docName.startsWith("Swagger ");
-                    const baseName = docName.replace("Swagger ", "");
-                    
-                    const parseStr = isSwagger ? `Parsing Swagger ${baseName}` : `Parsing ${baseName}`;
-                    const successStr = isSwagger ? `Successfully parsed Swagger ${baseName}` : `Successfully parsed ${baseName}`;
-                    const failStr = isSwagger ? `Failed parsing Swagger ${baseName}` : `Failed ${baseName}`;
-                    const chunkingStr = `Generating chunks and embeddings for ${baseName}`;
+                const getDocStatus = (docName: string, logsList: string[]) => {
+                  const isSwagger = docName.startsWith("Swagger ");
+                  const baseName = docName.replace("Swagger ", "");
 
-                    const successLog = logsList.find(l => l.startsWith(successStr));
-                    if (successLog) return 'completed';
+                  const parseStr = isSwagger ? `Parsing Swagger ${baseName}` : `Parsing ${baseName}`;
+                  const successStr = isSwagger ? `Successfully parsed Swagger ${baseName}` : `Successfully parsed ${baseName}`;
+                  const failStr = isSwagger ? `Failed parsing Swagger ${baseName}` : `Failed ${baseName}`;
+                  const chunkingStr = `Generating chunks and embeddings for ${baseName}`;
 
-                    const failLog = logsList.find(l => l.startsWith(failStr));
-                    if (failLog) return 'failed';
+                  const successLog = logsList.find(l => l.startsWith(successStr));
+                  if (successLog) return 'completed';
 
-                    if (!isSwagger) {
-                      const chunkingLog = logsList.find(l => l.startsWith(chunkingStr));
-                      if (chunkingLog) return 'chunking';
-                    }
+                  const failLog = logsList.find(l => l.startsWith(failStr));
+                  if (failLog) return 'failed';
 
-                    const parseLog = logsList.find(l => l.startsWith(parseStr));
-                    if (parseLog) return 'processing';
+                  if (!isSwagger) {
+                    const chunkingLog = logsList.find(l => l.startsWith(chunkingStr));
+                    if (chunkingLog) return 'chunking';
+                  }
 
-                    return 'pending';
+                  const parseLog = logsList.find(l => l.startsWith(parseStr));
+                  if (parseLog) return 'processing';
+
+                  return 'pending';
+                };
+
+                const tasks = expectedDocs.map((docName, index) => {
+                  return {
+                    id: index + 1,
+                    label: docName,
+                    status: getDocStatus(docName, logs || [])
                   };
+                });
 
-                  const tasks = expectedDocs.map((docName, index) => {
-                    return {
-                      id: index + 1,
-                      label: docName,
-                      status: getDocStatus(docName, logs || [])
-                    };
-                  });
+                return (
+                  <div className="border rounded-xl p-8 bg-white shadow-sm flex flex-col items-start justify-center transition-all duration-500 w-full mt-4">
 
-                  return (
-                    <div className="border rounded-xl p-8 bg-white shadow-sm flex flex-col items-start justify-center transition-all duration-500 w-full mt-4">
-                      
-                      {/* Overall Progress Tracker */}
-                      <div className="w-full mb-8">
-                         <div className="flex items-center justify-between mb-2">
-                           <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                             {status === "completed" ? (
-                               <><CheckCircle2 className="text-emerald-500 h-6 w-6" /> Extraction Complete!</>
-                             ) : (
-                               <><Loader2 className="h-5 w-5 text-[#2a63f5] animate-spin" style={{ animationDuration: '1s' }} /> Processing Documents</>
-                             )}
-                           </h3>
-                           <span className="text-sm font-semibold text-gray-500">{progress}% Completed</span>
-                         </div>
-                         <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-                           <div
-                             className="h-full bg-[#2a63f5] transition-all duration-500 ease-out"
-                             style={{ width: `${progress}%` }}
-                           />
-                         </div>
+                    {/* Overall Progress Tracker */}
+                    <div className="w-full mb-8">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                          {status === "completed" ? (
+                            <><CheckCircle2 className="text-emerald-500 h-6 w-6" /> Extraction Complete!</>
+                          ) : (
+                            <><Loader2 className="h-5 w-5 text-[#2a63f5] animate-spin" style={{ animationDuration: '1s' }} /> Processing Documents</>
+                          )}
+                        </h3>
+                        <span className="text-sm font-semibold text-gray-500">{progress}% Completed</span>
                       </div>
-
-                      {/* Step-by-step Tasks Tracker */}
-                      <div className="flex flex-col gap-4 w-full text-left ml-2">
-                        {tasks.map((task) => (
-                           <div key={task.id} className="flex items-center gap-4">
-                              {task.status === 'completed' ? (
-                                 <div className="w-7 h-7 rounded-full bg-[#2a63f5] text-white flex items-center justify-center shrink-0 shadow-sm border border-transparent transition-all">
-                                   <svg className="w-4 h-4 animate-in zoom-in duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
-                                 </div>
-                              ) : task.status === 'processing' ? (
-                                 <div className="relative w-7 h-7 flex items-center justify-center shrink-0">
-                                    <div className="absolute inset-0 rounded-full border-[2.5px] border-[#2a63f5]/20 border-t-[#2a63f5] animate-spin" style={{ animationDuration: '1s' }}></div>
-                                    <span className="font-semibold text-xs text-[#2a63f5] z-10">{task.id}</span>
-                                 </div>
-                              ) : task.status === 'chunking' ? (
-                                 <div className="relative w-7 h-7 flex items-center justify-center shrink-0">
-                                    <div className="absolute inset-0 rounded-full border-[2.5px] border-[#8b5cf6]/20 border-t-[#8b5cf6] animate-spin" style={{ animationDuration: '1s' }}></div>
-                                    <span className="font-semibold text-xs text-[#8b5cf6] z-10">{task.id}</span>
-                                 </div>
-                              ) : task.status === 'failed' ? (
-                                 <div className="w-7 h-7 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 shadow-sm border border-transparent transition-all">
-                                   <span className="font-bold text-[10px]">X</span>
-                                 </div>
-                              ) : (
-                                 <div className="w-7 h-7 rounded-full border-2 border-gray-200 text-gray-400 flex items-center justify-center shrink-0 transition-all font-semibold text-xs bg-gray-50">
-                                   {task.id}
-                                 </div>
-                              )}
-                              <span className={`text-[15px] font-medium transition-all duration-300 ${task.status === 'completed' ? 'text-gray-500' : task.status === 'failed' ? 'text-red-500' : (task.status === 'processing' || task.status === 'chunking') ? 'text-gray-900' : 'text-gray-400'}`}>
-                                 {task.status === 'completed' ? `Successfully processed ${task.label}` :
-                                  task.status === 'failed' ? `Failed to process ${task.label}` :
-                                  task.status === 'chunking' ? `Chunking & generating embeddings for ${task.label}...` :
-                                  task.status === 'processing' ? `Parsing ${task.label}...` :
-                                  `Queued for parsing ${task.label}`}
-                              </span>
-                           </div>
-                        ))}
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                        <div
+                          className="h-full bg-[#2a63f5] transition-all duration-500 ease-out"
+                          style={{ width: `${progress}%` }}
+                        />
                       </div>
-
-                      {/* Final Redirection Indicator */}
-                      {status === "completed" && (
-                        <div className="mt-8 flex w-full flex-col items-center justify-between gap-3 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-600 transition-all fade-in zoom-in sm:flex-row">
-                          <div className="flex items-center gap-2">
-                            {isRedirectingToQa ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                            )}
-                            {isRedirectingToQa
-                              ? "Redirecting to QA page in 3 seconds..."
-                              : "QA page is ready. Reingest to refresh the latest documents."}
-                          </div>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void handleSaveAndIngest()}
-                            disabled={!canIngestAndAddDocuments || isSavingAndIngesting}
-                            className="w-full border-emerald-200 text-emerald-700 hover:bg-emerald-50 sm:w-auto"
-                          >
-                            {isSavingAndIngesting ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <DatabaseZap className="h-3.5 w-3.5" />
-                            )}
-                            {isSavingAndIngesting ? "Reingesting..." : "Reingest"}
-                          </Button>
-                        </div>
-                      )}
                     </div>
-                  );
+
+                    {/* Step-by-step Tasks Tracker */}
+                    <div className="flex flex-col gap-4 w-full text-left ml-2">
+                      {tasks.map((task) => (
+                        <div key={task.id} className="flex items-center gap-4">
+                          {task.status === 'completed' ? (
+                            <div className="w-7 h-7 rounded-full bg-[#2a63f5] text-white flex items-center justify-center shrink-0 shadow-sm border border-transparent transition-all">
+                              <svg className="w-4 h-4 animate-in zoom-in duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                            </div>
+                          ) : task.status === 'processing' ? (
+                            <div className="relative w-7 h-7 flex items-center justify-center shrink-0">
+                              <div className="absolute inset-0 rounded-full border-[2.5px] border-[#2a63f5]/20 border-t-[#2a63f5] animate-spin" style={{ animationDuration: '1s' }}></div>
+                              <span className="font-semibold text-xs text-[#2a63f5] z-10">{task.id}</span>
+                            </div>
+                          ) : task.status === 'chunking' ? (
+                            <div className="relative w-7 h-7 flex items-center justify-center shrink-0">
+                              <div className="absolute inset-0 rounded-full border-[2.5px] border-[#8b5cf6]/20 border-t-[#8b5cf6] animate-spin" style={{ animationDuration: '1s' }}></div>
+                              <span className="font-semibold text-xs text-[#8b5cf6] z-10">{task.id}</span>
+                            </div>
+                          ) : task.status === 'failed' ? (
+                            <div className="w-7 h-7 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 shadow-sm border border-transparent transition-all">
+                              <span className="font-bold text-[10px]">X</span>
+                            </div>
+                          ) : (
+                            <div className="w-7 h-7 rounded-full border-2 border-gray-200 text-gray-400 flex items-center justify-center shrink-0 transition-all font-semibold text-xs bg-gray-50">
+                              {task.id}
+                            </div>
+                          )}
+                          <span className={`text-[15px] font-medium transition-all duration-300 ${task.status === 'completed' ? 'text-gray-500' : task.status === 'failed' ? 'text-red-500' : (task.status === 'processing' || task.status === 'chunking') ? 'text-gray-900' : 'text-gray-400'}`}>
+                            {task.status === 'completed' ? `Successfully processed ${task.label}` :
+                              task.status === 'failed' ? `Failed to process ${task.label}` :
+                                task.status === 'chunking' ? `Chunking & generating embeddings for ${task.label}...` :
+                                  task.status === 'processing' ? `Parsing ${task.label}...` :
+                                    `Queued for parsing ${task.label}`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Final Redirection Indicator */}
+                    {status === "completed" && (
+                      <div className="mt-8 flex w-full flex-col items-center justify-between gap-3 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-600 transition-all fade-in zoom-in sm:flex-row">
+                        <div className="flex items-center gap-2">
+                          {isRedirectingToQa ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                          )}
+                          {isRedirectingToQa
+                            ? "Redirecting to QA page in 3 seconds..."
+                            : "QA page is ready. Reingest to refresh the latest documents."}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleSaveAndIngest()}
+                          disabled={!canIngestAndAddDocuments || isSavingAndIngesting}
+                          className="w-full border-emerald-200 text-emerald-700 hover:bg-emerald-50 sm:w-auto"
+                        >
+                          {isSavingAndIngesting ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <DatabaseZap className="h-3.5 w-3.5" />
+                          )}
+                          {isSavingAndIngesting ? "Reingesting..." : "Reingest"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
               })()}
             </div>
           </div>
@@ -960,512 +961,520 @@ export default function ProjectDetailsPage() {
 
   return (
     <>
-    <div className="space-y-4 px-4 py-4 sm:px-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Button asChild variant="ghost" className="-ml-3">
-            <Link href="/projects">
-              <ArrowLeft className="h-4 w-4" />
-              Back to Projects
-            </Link>
-          </Button>
-          <h1 className="text-2xl font-semibold text-black">{project.name}</h1>
-          <p className="text-sm text-black/70">
-            {project.id} | Created {formatDate(project.createdAt)}
-          </p>
-        </div>
-
-        <div className="flex flex-col items-start gap-2 sm:items-end">
-          <div className="inline-flex items-center">
-            <Label htmlFor="project-status" className="mr-2 text-xs font-semibold uppercase tracking-wide text-black/60">
-              Status
-            </Label>
-            <div className={cn("relative rounded-lg border border-black/15", getStatusTone(formState.status).wrapper)}>
-              <span
-                className={cn(
-                  "pointer-events-none absolute left-2.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full",
-                  getStatusTone(formState.status).dot,
-                )}
-              />
-              <select
-                id="project-status"
-                value={formState.status}
-                onChange={(event) =>
-                  setFormState((current) =>
-                    current
-                      ? {
-                          ...current,
-                          status: event.target.value as ProjectStatus,
-                        }
-                      : current,
-                  )
-                }
-                className="h-8 min-w-32 appearance-none bg-transparent py-1 pl-7 pr-8 text-sm font-semibold text-black focus-visible:outline-none"
-              >
-                <option value="Draft">Draft</option>
-                <option value="Active">Active</option>
-                <option value="Blocked">Blocked</option>
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-black/60" />
-            </div>
+      <div className="space-y-4 px-4 py-4 sm:px-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <Button asChild variant="ghost" className="-ml-3">
+              <Link href="/projects">
+                <ArrowLeft className="h-4 w-4" />
+                Back to Projects
+              </Link>
+            </Button>
+            <h1 className="text-2xl font-semibold text-black">{project.name}</h1>
+            <p className="text-sm text-black/70">
+              {project.id} | Created {formatDate(project.createdAt)}
+            </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant={activeTab === "configuration" ? "default" : "outline"}
-              onClick={() => setActiveTab("configuration")}
-            >
-              Project Configuration
-            </Button>
-            <Button
-              variant={activeTab === "qa" ? "default" : "outline"}
-              onClick={() => setActiveTab("qa")}
-            >
-              QA Testing
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {activeTab === "qa" ? (
-        <Card className="border-black/10 bg-white">
-          <CardHeader>
-            <CardTitle className="text-black">QA Testing</CardTitle>
-            <CardDescription>
-              Generate, review, and launch high-level test scenarios.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ScenarioQaPanel projectId={projectId} currentUserId={currentUserId} />
-          </CardContent>
-        </Card>
-
-      ) : (
-        <Card className="border-black/10 bg-white">
-          <CardHeader>
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <CardTitle className="text-black">Project Configuration</CardTitle>
-                <CardDescription>
-                  Edit name, description, testing team, and documents.
-                </CardDescription>
-              </div>
-
-              {/* Connect to Jira — 3-state button */}
-              {jiraConfig?.connected ? (
-                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  Connected · Key:{" "}
-                  <span className="font-bold">{jiraConfig.jira_project_key}</span>
-                </div>
-              ) : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleConnectJira()}
-                  disabled={isConnectingJira}
-                  className="gap-2 border-[#2a63f5]/30 text-[#2a63f5] hover:bg-[#2a63f5]/5"
-                >
-                  {isConnectingJira ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Link2 className="h-3.5 w-3.5" />
+          <div className="flex flex-col items-start gap-2 sm:items-end">
+            <div className="inline-flex items-center">
+              <Label htmlFor="project-status" className="mr-2 text-xs font-semibold uppercase tracking-wide text-black/60">
+                Status
+              </Label>
+              <div className={cn("relative rounded-lg border border-black/15", getStatusTone(formState.status).wrapper)}>
+                <span
+                  className={cn(
+                    "pointer-events-none absolute left-2.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full",
+                    getStatusTone(formState.status).dot,
                   )}
-                  {isConnectingJira ? "Connecting…" : "Connect to Jira"}
-                </Button>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            <div className="grid grid-cols-1 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="project-name">Project Name</Label>
-                <Input
-                  id="project-name"
-                  value={formState.name}
+                />
+                <select
+                  id="project-status"
+                  value={formState.status}
                   onChange={(event) =>
                     setFormState((current) =>
                       current
-                        ? { ...current, name: event.target.value }
+                        ? {
+                          ...current,
+                          status: event.target.value as ProjectStatus,
+                        }
                         : current,
                     )
                   }
-                />
+                  className="h-8 min-w-32 appearance-none bg-transparent py-1 pl-7 pr-8 text-sm font-semibold text-black focus-visible:outline-none"
+                >
+                  <option value="Draft">Draft</option>
+                  <option value="Active">Active</option>
+                  <option value="Blocked">Blocked</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-black/60" />
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="project-description">Project Description</Label>
-              <textarea
-                id="project-description"
-                rows={4}
-                value={formState.description}
-                onChange={(event) =>
-                  setFormState((current) =>
-                    current
-                      ? { ...current, description: event.target.value }
-                      : current,
-                  )
-                }
-                className="flex w-full resize-none rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black placeholder:text-black/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
-                placeholder="Describe project scope"
-              />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant={activeTab === "configuration" ? "default" : "outline"}
+                onClick={() => setActiveTab("configuration")}
+              >
+                Project Configuration
+              </Button>
+              <Button
+                variant={activeTab === "qa" ? "default" : "outline"}
+                onClick={() => setActiveTab("qa")}
+              >
+                QA Testing
+              </Button>
+              <Button
+                variant={activeTab === "phase3" ? "default" : "outline"}
+                onClick={() => setActiveTab("phase3")}
+              >
+                Automation
+              </Button>
             </div>
+          </div>
+        </div>
 
-            <div className="space-y-3 rounded-lg border border-black/10 p-4">
-              <div className="space-y-2">
-                <Label>Testing Team Members</Label>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Input
-                    placeholder="Search by email..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void handleSearchUsers();
-                      }
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    onClick={() => void handleSearchUsers()}
-                    disabled={isSearching}
-                  >
-                    {isSearching ? "Searching..." : "Search"}
-                  </Button>
+        {activeTab === "phase3" ? (
+          <Phase3Panel projectId={projectId} />
+        ) : activeTab === "qa" ? (
+          <Card className="border-black/10 bg-white">
+            <CardHeader>
+              <CardTitle className="text-black">QA Testing</CardTitle>
+              <CardDescription>
+                Generate, review, and launch high-level test scenarios.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ScenarioQaPanel projectId={projectId} currentUserId={currentUserId} />
+            </CardContent>
+          </Card>
+
+        ) : (
+          <Card className="border-black/10 bg-white">
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-black">Project Configuration</CardTitle>
+                  <CardDescription>
+                    Edit name, description, testing team, and documents.
+                  </CardDescription>
                 </div>
-                {searchResults.length > 0 && (
-                  <div className="rounded-md border border-black/10 bg-white p-2">
-                    <p className="mb-2 text-xs font-semibold text-black/60">
-                      Search Results
-                    </p>
-                    <ul className="space-y-1">
-                      {searchResults.map((u) => (
-                        <li
-                          key={u.id}
-                          className="flex items-center justify-between rounded bg-[#2a63f5]/5 px-2 py-1 text-sm"
-                        >
-                          <span>{u.email}</span>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => void handleAddMember(u.email)}
-                            className="h-7 text-[#2a63f5]"
-                          >
-                            Add
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
+
+                {/* Connect to Jira — 3-state button */}
+                {jiraConfig?.connected ? (
+                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                    Connected · Key:{" "}
+                    <span className="font-bold">{jiraConfig.jira_project_key}</span>
                   </div>
-                )}
-
-                {/* Derive whether the current logged-in user is the OWNER of this project */}
-                {(() => {
-                  const isCurrentUserOwner = members.some(
-                    (m) => m.email === currentUserEmail && m.role === "OWNER",
-                  );
-                  return (
-                    <div className="mt-4 space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-black/60">
-                        Current Members
-                      </p>
-                      {members.map((member) => (
-                        <div
-                          key={member.id}
-                          className="flex items-center justify-between rounded-md border border-black/10 px-3 py-2 text-sm bg-white"
-                        >
-                          <div>
-                            <span className="font-medium text-black">
-                              {member.email}
-                            </span>
-                            <span
-                              className={cn(
-                                "ml-2 inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                                member.role === "OWNER"
-                                  ? "bg-amber-100 text-amber-700"
-                                  : "bg-blue-100 text-[#2a63f5]",
-                              )}
-                            >
-                              {member.role}
-                            </span>
-                          </div>
-                          {/* Only the OWNER can manage other members */}
-                          {isCurrentUserOwner && member.role === "TESTER" && (
-                            <div className="flex items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  void handleTransferOwnership(member.id)
-                                }
-                                className="h-7 text-xs"
-                              >
-                                Make Owner
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  void handleRemoveMember(member.id)
-                                }
-                                className="h-7 text-red-600 border-red-200 hover:bg-red-50"
-                              >
-                                Remove
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-
-            <div className="space-y-3 rounded-lg border border-black/10 p-4">
-              <div className="space-y-2">
-                <Label htmlFor="project-url">Project URL</Label>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Input
-                    id="project-url"
-                    type="url"
-                    value={formState.url}
-                    onChange={(event) => {
-                      const nextUrl = event.target.value;
-                      setFormState((current) =>
-                        current ? { ...current, url: nextUrl } : current,
-                      );
-                      setIsLaunched(false);
-                      setIsProceedConfirmed(false);
-                    }}
-                    placeholder="https://your-app.com"
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    onClick={() => void handleLaunch()}
-                    className="sm:min-w-28"
-                  >
-                    <Play className="h-4 w-4" />
-                    Launch
-                  </Button>
-                </div>
-              </div>
-
-              {isLaunched ? (
-                <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#2a63f5]/25 bg-[#2a63f5]/10 p-3">
+                ) : (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={!jiraConfig?.connected}
-                    title={
-                      !jiraConfig?.connected
-                        ? "Connect to Jira first to raise tickets"
-                        : "Raise a ticket for this URL verification issue"
-                    }
-                    onClick={() =>
-                      openRaiseTicket(
-                        "url_section",
-                        `URL Verification Issue — ${project.name}`,
-                        `The project URL ${project.url || formState.url} was launched and requires attention. Raised from URL verification step.`,
+                    onClick={() => void handleConnectJira()}
+                    disabled={isConnectingJira}
+                    className="gap-2 border-[#2a63f5]/30 text-[#2a63f5] hover:bg-[#2a63f5]/5"
+                  >
+                    {isConnectingJira ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Link2 className="h-3.5 w-3.5" />
+                    )}
+                    {isConnectingJira ? "Connecting…" : "Connect to Jira"}
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="grid grid-cols-1 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="project-name">Project Name</Label>
+                  <Input
+                    id="project-name"
+                    value={formState.name}
+                    onChange={(event) =>
+                      setFormState((current) =>
+                        current
+                          ? { ...current, name: event.target.value }
+                          : current,
                       )
                     }
-                    className="gap-2 disabled:opacity-40"
-                  >
-                    <Ticket className="h-4 w-4" />
-                    Raise Ticket
-                  </Button>
-                  {!isProceedConfirmed ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={async () => {
-                        try {
-                          const res = await verifyProject(project.id, true);
-                          setIsProceedConfirmed(res.is_verified);
-                          toast.success("Verified");
-                        } catch {
-                          toast.error("Verification failed");
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="project-description">Project Description</Label>
+                <textarea
+                  id="project-description"
+                  rows={4}
+                  value={formState.description}
+                  onChange={(event) =>
+                    setFormState((current) =>
+                      current
+                        ? { ...current, description: event.target.value }
+                        : current,
+                    )
+                  }
+                  className="flex w-full resize-none rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black placeholder:text-black/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                  placeholder="Describe project scope"
+                />
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-black/10 p-4">
+                <div className="space-y-2">
+                  <Label>Testing Team Members</Label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Input
+                      placeholder="Search by email..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleSearchUsers();
                         }
                       }}
-                    >
-                      <ArrowRight className="h-4 w-4" />
-                      Proceed
-                    </Button>
-                  ) : (
+                    />
                     <Button
                       type="button"
-                      size="sm"
-                      disabled
-                      className="bg-green-600 text-white"
+                      onClick={() => void handleSearchUsers()}
+                      disabled={isSearching}
                     >
-                      ✔ Verified
+                      {isSearching ? "Searching..." : "Search"}
                     </Button>
+                  </div>
+                  {searchResults.length > 0 && (
+                    <div className="rounded-md border border-black/10 bg-white p-2">
+                      <p className="mb-2 text-xs font-semibold text-black/60">
+                        Search Results
+                      </p>
+                      <ul className="space-y-1">
+                        {searchResults.map((u) => (
+                          <li
+                            key={u.id}
+                            className="flex items-center justify-between rounded bg-[#2a63f5]/5 px-2 py-1 text-sm"
+                          >
+                            <span>{u.email}</span>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => void handleAddMember(u.email)}
+                              className="h-7 text-[#2a63f5]"
+                            >
+                              Add
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
-                </div>
-              ) : null}
-            </div>
 
-            <div className="space-y-4 rounded-lg border border-black/10 p-4">
-              <div>
-                <p className="text-sm font-semibold text-black">
-                  Uploaded Documents
-                </p>
-                <p className="text-xs text-black/60">
-                  Uploads are category-wise. BRD/FSD/WBS/Credentials/Assumptions
-                  accept PDF. Swagger Docs accept YAML or JSON. Max{" "}
-                  {MAX_DOCUMENT_SIZE_MB}MB per file.
-                </p>
-                {!canIngestAndAddDocuments ? (
-                  <p className="mt-1 text-xs font-medium text-[#2a63f5]">
-                    Launch URL and click Proceed to enable document upload and
-                    ingestion.
-                  </p>
+                  {/* Derive whether the current logged-in user is the OWNER of this project */}
+                  {(() => {
+                    const isCurrentUserOwner = members.some(
+                      (m) => m.email === currentUserEmail && m.role === "OWNER",
+                    );
+                    return (
+                      <div className="mt-4 space-y-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-black/60">
+                          Current Members
+                        </p>
+                        {members.map((member) => (
+                          <div
+                            key={member.id}
+                            className="flex items-center justify-between rounded-md border border-black/10 px-3 py-2 text-sm bg-white"
+                          >
+                            <div>
+                              <span className="font-medium text-black">
+                                {member.email}
+                              </span>
+                              <span
+                                className={cn(
+                                  "ml-2 inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                  member.role === "OWNER"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-blue-100 text-[#2a63f5]",
+                                )}
+                              >
+                                {member.role}
+                              </span>
+                            </div>
+                            {/* Only the OWNER can manage other members */}
+                            {isCurrentUserOwner && member.role === "TESTER" && (
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    void handleTransferOwnership(member.id)
+                                  }
+                                  className="h-7 text-xs"
+                                >
+                                  Make Owner
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    void handleRemoveMember(member.id)
+                                  }
+                                  className="h-7 text-red-600 border-red-200 hover:bg-red-50"
+                                >
+                                  Remove
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-black/10 p-4">
+                <div className="space-y-2">
+                  <Label htmlFor="project-url">Project URL</Label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Input
+                      id="project-url"
+                      type="url"
+                      value={formState.url}
+                      onChange={(event) => {
+                        const nextUrl = event.target.value;
+                        setFormState((current) =>
+                          current ? { ...current, url: nextUrl } : current,
+                        );
+                        setIsLaunched(false);
+                        setIsProceedConfirmed(false);
+                      }}
+                      placeholder="https://your-app.com"
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      onClick={() => void handleLaunch()}
+                      className="sm:min-w-28"
+                    >
+                      <Play className="h-4 w-4" />
+                      Launch
+                    </Button>
+                  </div>
+                </div>
+
+                {isLaunched ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#2a63f5]/25 bg-[#2a63f5]/10 p-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={!jiraConfig?.connected}
+                      title={
+                        !jiraConfig?.connected
+                          ? "Connect to Jira first to raise tickets"
+                          : "Raise a ticket for this URL verification issue"
+                      }
+                      onClick={() =>
+                        openRaiseTicket(
+                          "url_section",
+                          `URL Verification Issue — ${project.name}`,
+                          `The project URL ${project.url || formState.url} was launched and requires attention. Raised from URL verification step.`,
+                        )
+                      }
+                      className="gap-2 disabled:opacity-40"
+                    >
+                      <Ticket className="h-4 w-4" />
+                      Raise Ticket
+                    </Button>
+                    {!isProceedConfirmed ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            const res = await verifyProject(project.id, true);
+                            setIsProceedConfirmed(res.is_verified);
+                            toast.success("Verified");
+                          } catch {
+                            toast.error("Verification failed");
+                          }
+                        }}
+                      >
+                        <ArrowRight className="h-4 w-4" />
+                        Proceed
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled
+                        className="bg-green-600 text-white"
+                      >
+                        ✔ Verified
+                      </Button>
+                    )}
+                  </div>
                 ) : null}
               </div>
 
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {DOCUMENT_CATEGORIES.map((category) => {
-                  const files = documents[category];
+              <div className="space-y-4 rounded-lg border border-black/10 p-4">
+                <div>
+                  <p className="text-sm font-semibold text-black">
+                    Uploaded Documents
+                  </p>
+                  <p className="text-xs text-black/60">
+                    Uploads are category-wise. BRD/FSD/WBS/Credentials/Assumptions
+                    accept PDF. Swagger Docs accept YAML or JSON. Max{" "}
+                    {MAX_DOCUMENT_SIZE_MB}MB per file.
+                  </p>
+                  {!canIngestAndAddDocuments ? (
+                    <p className="mt-1 text-xs font-medium text-[#2a63f5]">
+                      Launch URL and click Proceed to enable document upload and
+                      ingestion.
+                    </p>
+                  ) : null}
+                </div>
 
-                  return (
-                    <div
-                      key={category}
-                      className="rounded-lg border border-black/10 bg-white p-3"
-                    >
-                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-semibold text-black">
-                            {formatCategoryLabel(category)}
-                          </p>
-                          <p className="text-xs text-black/55">
-                            {getAcceptedFormatLabel(category)}
-                            {SINGLE_UPLOAD_CATEGORIES.includes(category)
-                              ? " | Single file"
-                              : " | Multiple files"}{" "}
-                            | Max {MAX_DOCUMENT_SIZE_MB}MB each
-                          </p>
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  {DOCUMENT_CATEGORIES.map((category) => {
+                    const files = documents[category];
+
+                    return (
+                      <div
+                        key={category}
+                        className="rounded-lg border border-black/10 bg-white p-3"
+                      >
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-black">
+                              {formatCategoryLabel(category)}
+                            </p>
+                            <p className="text-xs text-black/55">
+                              {getAcceptedFormatLabel(category)}
+                              {SINGLE_UPLOAD_CATEGORIES.includes(category)
+                                ? " | Single file"
+                                : " | Multiple files"}{" "}
+                              | Max {MAX_DOCUMENT_SIZE_MB}MB each
+                            </p>
+                          </div>
+
+                          <label
+                            className={cn(
+                              "inline-flex items-center gap-2 rounded-md border border-black/20 bg-white px-2.5 py-1.5 text-xs",
+                              canIngestAndAddDocuments
+                                ? "cursor-pointer text-black hover:bg-[#2a63f5]/10"
+                                : "cursor-not-allowed text-black/45 opacity-60",
+                            )}
+                          >
+                            <Upload className="h-3.5 w-3.5" />
+                            Upload
+                            <input
+                              type="file"
+                              accept={
+                                category === "SwaggerDocs"
+                                  ? ".yaml,.yml,.json,application/yaml,text/yaml,application/json"
+                                  : category === "Credentials"
+                                    ? ".csv,text/csv"
+                                    : "application/pdf,.pdf"
+                              }
+                              multiple={
+                                !SINGLE_UPLOAD_CATEGORIES.includes(category)
+                              }
+                              disabled={!canIngestAndAddDocuments}
+                              className="hidden"
+                              onChange={(event) =>
+                                void handleDocumentUpload(category, event)
+                              }
+                            />
+                          </label>
                         </div>
 
-                        <label
-                          className={cn(
-                            "inline-flex items-center gap-2 rounded-md border border-black/20 bg-white px-2.5 py-1.5 text-xs",
-                            canIngestAndAddDocuments
-                              ? "cursor-pointer text-black hover:bg-[#2a63f5]/10"
-                              : "cursor-not-allowed text-black/45 opacity-60",
-                          )}
-                        >
-                          <Upload className="h-3.5 w-3.5" />
-                          Upload
-                          <input
-                            type="file"
-                            accept={
-                              category === "SwaggerDocs"
-                                ? ".yaml,.yml,.json,application/yaml,text/yaml,application/json"
-                                : category === "Credentials"
-                                  ? ".csv,text/csv"
-                                  : "application/pdf,.pdf"
-                            }
-                            multiple={
-                              !SINGLE_UPLOAD_CATEGORIES.includes(category)
-                            }
-                            disabled={!canIngestAndAddDocuments}
-                            className="hidden"
-                            onChange={(event) =>
-                              void handleDocumentUpload(category, event)
-                            }
-                          />
-                        </label>
-                      </div>
-
-                      {files.length === 0 ? (
-                        <p className="rounded-md border border-dashed border-black/15 bg-[#2a63f5]/5 px-3 py-2 text-xs text-black/55">
-                          No files uploaded.
-                        </p>
-                      ) : (
-                        <ul className="space-y-2">
-                          {files.map((document) => (
-                            <li
-                              key={document.id}
-                              className="flex items-center justify-between rounded-md border border-black/10 bg-[#2a63f5]/5 px-3 py-2 text-sm"
-                            >
-                              <span className="inline-flex min-w-0 items-center gap-2">
-                                <FileText className="h-4 w-4 shrink-0 text-[#2a63f5]" />
-                                <span className="truncate text-black">
-                                  {document.name}
-                                </span>
-                              </span>
-
-                              <button
-                                type="button"
-                                className="inline-flex items-center rounded-md border border-red-200 bg-white p-1.5 text-red-600 hover:bg-red-50"
-                                onClick={() =>
-                                  void removeDocument(
-                                    category,
-                                    document.id,
-                                    document.name,
-                                  )
-                                }
-                                aria-label={`Delete ${document.name}`}
+                        {files.length === 0 ? (
+                          <p className="rounded-md border border-dashed border-black/15 bg-[#2a63f5]/5 px-3 py-2 text-xs text-black/55">
+                            No files uploaded.
+                          </p>
+                        ) : (
+                          <ul className="space-y-2">
+                            {files.map((document) => (
+                              <li
+                                key={document.id}
+                                className="flex items-center justify-between rounded-md border border-black/10 bg-[#2a63f5]/5 px-3 py-2 text-sm"
                               >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+                                <span className="inline-flex min-w-0 items-center gap-2">
+                                  <FileText className="h-4 w-4 shrink-0 text-[#2a63f5]" />
+                                  <span className="truncate text-black">
+                                    {document.name}
+                                  </span>
+                                </span>
 
-            {isIngestionStarted ? (
-              <div className="space-y-4 rounded-lg border border-black/10 p-4 bg-[#2a63f5]/5">
-                <h3 className="text-lg font-semibold text-black">Credentials Verification &amp; Ingestion</h3>
-                {renderCredentialsUI()}
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center rounded-md border border-red-200 bg-white p-1.5 text-red-600 hover:bg-red-50"
+                                  onClick={() =>
+                                    void removeDocument(
+                                      category,
+                                      document.id,
+                                      document.name,
+                                    )
+                                  }
+                                  aria-label={`Delete ${document.name}`}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            ) : (
-              <div className="flex justify-end gap-2">
-                <Button onClick={() => void handleSave()}>
-                  <Save className="h-4 w-4" />
-                  Save Changes
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => void handleSaveAndIngest()}
-                  disabled={!canIngestAndAddDocuments || isSavingAndIngesting}
-                  className="bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {isSavingAndIngesting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <DatabaseZap className="h-4 w-4" />
-                  )}
-                  {isSavingAndIngesting ? "Starting..." : "Save & Ingest"}
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-    </div>
 
-    {/* Raise Ticket Modal — shared across URL section and credentials section */}
-    <RaiseTicketModal
-      open={raiseTicketModal.open}
-      onClose={() =>
-        setRaiseTicketModal((prev) => ({ ...prev, open: false }))
-      }
-      projectId={projectId}
-      defaultTitle={raiseTicketModal.defaultTitle}
-      defaultDescription={raiseTicketModal.defaultDescription}
-      raisedFrom={raiseTicketModal.raisedFrom}
-    />
+              {isIngestionStarted ? (
+                <div className="space-y-4 rounded-lg border border-black/10 p-4 bg-[#2a63f5]/5">
+                  <h3 className="text-lg font-semibold text-black">Credentials Verification &amp; Ingestion</h3>
+                  {renderCredentialsUI()}
+                </div>
+              ) : (
+                <div className="flex justify-end gap-2">
+                  <Button onClick={() => void handleSave()}>
+                    <Save className="h-4 w-4" />
+                    Save Changes
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => void handleSaveAndIngest()}
+                    disabled={!canIngestAndAddDocuments || isSavingAndIngesting}
+                    className="bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {isSavingAndIngesting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <DatabaseZap className="h-4 w-4" />
+                    )}
+                    {isSavingAndIngesting ? "Starting..." : "Save & Ingest"}
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Raise Ticket Modal — shared across URL section and credentials section */}
+      <RaiseTicketModal
+        open={raiseTicketModal.open}
+        onClose={() =>
+          setRaiseTicketModal((prev) => ({ ...prev, open: false }))
+        }
+        projectId={projectId}
+        defaultTitle={raiseTicketModal.defaultTitle}
+        defaultDescription={raiseTicketModal.defaultDescription}
+        raisedFrom={raiseTicketModal.raisedFrom}
+      />
     </>
   );
 }

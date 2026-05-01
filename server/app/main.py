@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -19,10 +20,16 @@ from app.routers.members import router as members_router
 from app.routers.projects import router as projects_router
 from app.routers.scenarios import router as scenarios_router
 from app.routers.recorder import router as recorder_router
+from app.routers.phase3 import router as phase3_router
 from app.utils.rate_limiter import limiter
 
 
 settings = get_settings()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 app = FastAPI(title=settings.app_name)
 
@@ -48,6 +55,7 @@ def on_startup() -> None:
     # For production / schema changes, use: alembic upgrade head
     Base.metadata.create_all(bind=engine)
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.generated_scripts_dir).mkdir(parents=True, exist_ok=True)
 
 
 @app.exception_handler(RequestValidationError)
@@ -72,3 +80,4 @@ app.include_router(members_router, prefix=settings.api_prefix)
 app.include_router(files_router, prefix=settings.api_prefix)
 app.include_router(scenarios_router, prefix=settings.api_prefix)
 app.include_router(recorder_router, prefix=settings.api_prefix)
+app.include_router(phase3_router, prefix=settings.api_prefix)

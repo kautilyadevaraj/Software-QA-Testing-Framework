@@ -1,5 +1,3 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # ── Node / Next.js ─────────────────────────────────────────────────────────
 **/node_modules/
 /.pnp
@@ -31,7 +29,7 @@ next-env.d.ts
 *.pyo
 *.pyd
 
-# uv lock — uncomment to ignore if you don't want to pin deps in CI
+# uv lock — keep pinned deps (comment out if you don't want to pin in CI)
 # uv.lock
 
 # Pytest / coverage
@@ -45,20 +43,40 @@ next-env.d.ts
 **/.mypy_cache/
 
 # ── Environment & Secrets ───────────────────────────────────────────────────
-# All .env files are ignored EXCEPT .env.example files
+# All .env files are gitignored EXCEPT .env.example templates
 .env*
 !**/.env.example
 
 # ── Uploaded user files ─────────────────────────────────────────────────────
-# Never commit credentials CSVs, PDFs, swagger docs uploaded by users
+# Never commit user PDFs, Swagger docs, credentials CSVs, etc.
 uploads/
 **/uploads/
 
+# ── Generated Playwright scripts & test output ──────────────────────────────
+server/tests/generated/
+server/tests/tests/              # nested generated trace output folder
+server/test-results/
+server/test_docs/
+server/state.json
+*.spec.ts.tmp
+**/traces/
+**/.last-run.json
+**/error-context.md
+
+# ── Playwright auth state (contains credentials — never commit) ──────────────
+**/auth.json
+
+# ── Playwright (server-side Node install) ───────────────────────────────────
+server/node_modules/
+server/package-lock.json
+
+# ── JSON / text report dumps (dev artifacts) ────────────────────────────────
+server/report.json
+server/report_utf8.json
+server/test_output.txt
+
 # ── Local ML model cache ─────────────────────────────────────────────────────
 server/models/
-
-# ── Testing ─────────────────────────────────────────────────────────────────
-**/coverage/
 
 # ── Logs ────────────────────────────────────────────────────────────────────
 npm-debug.log*
@@ -77,9 +95,8 @@ Thumbs.db
 *.swp
 *.swo
 *.tmp
-c.py
 
-# ── Prisma (legacy — not used but kept for safety) ──────────────────────────
+# ── Prisma (legacy) ──────────────────────────────────────────────────────────
 /app/generated/prisma
 prisma/migrations
 *.db
@@ -87,4 +104,3 @@ prisma/migrations
 
 # ── Deployment ──────────────────────────────────────────────────────────────
 .vercel
-docs
