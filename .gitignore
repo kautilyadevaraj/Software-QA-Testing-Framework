@@ -88,3 +88,4 @@ prisma/migrations
 # ── Deployment ──────────────────────────────────────────────────────────────
 .vercel
 docs
+documents
