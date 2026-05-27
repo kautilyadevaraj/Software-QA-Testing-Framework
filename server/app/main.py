@@ -57,6 +57,16 @@ def on_startup() -> None:
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.generated_scripts_dir).mkdir(parents=True, exist_ok=True)
 
+    # Background: sweep expired auth_states (storageState files + DB rows)
+    from app.services.auth_state_cleanup_scheduler import start_scheduler
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    from app.services.auth_state_cleanup_scheduler import stop_scheduler
+    stop_scheduler()
+
 
 @app.exception_handler(RequestValidationError)
 def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

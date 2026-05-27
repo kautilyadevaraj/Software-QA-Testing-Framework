@@ -26,7 +26,12 @@ class ExecuteRequest(BaseModel):
 
 # Body for PATCH /phase3/test-cases/{test_id}/approval
 class ApprovalPatch(BaseModel):
-    status: Literal["APPROVED", "NEEDS_EDIT"]
+    status: Literal["APPROVED", "NEEDS_EDIT", "EXCLUDED"]
+    # Optional run_id guard. When supplied, the endpoint refuses the patch if
+    # it doesn't match the test_case's owning run — prevents a stale UI tab
+    # from approving an old run's test cases after the project was re-planned.
+    # Omitted by older clients; back-compat preserved.
+    run_id: uuid.UUID | None = None
 
 
 # Body for PATCH /phase3/approve-all
@@ -71,6 +76,9 @@ class RunStatusResponse(BaseModel):
     # Frontend uses this to know which UI panel to render.
     run_type: str = "execute"
     created_at: datetime
+    # In-memory progress (UI uses `headline` to render e.g. "Generating script — HLS 2/5")
+    # None once the run finishes or if no progress has been published yet.
+    progress: dict[str, Any] | None = None
 
 
 class ReviewQueueItem(BaseModel):
@@ -94,6 +102,21 @@ class ReviewQueuePatch(BaseModel):
 class ScriptResponse(BaseModel):
     test_id: str
     script_content: str
+
+
+class Phase3ArtifactResponse(BaseModel):
+    artifact_id: uuid.UUID
+    project_id: uuid.UUID
+    run_id: uuid.UUID
+    test_id: uuid.UUID | None
+    artifact_type: str
+    filename: str
+    mime_type: str | None
+    size_bytes: int | None
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class RerunRequest(BaseModel):

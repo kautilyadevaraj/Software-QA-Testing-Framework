@@ -5,7 +5,7 @@ and require JWT authentication.
 
 Endpoints (Generate → Approve → Execute flow):
   POST   /plan                          — A3 planning only, returns TC document
-  GET    /tc-document                   — download TC markdown for a run
+  GET    /tc-document                   — download X-Ray CSV for a run
   GET    /tc-document/json              — TC list as JSON for UI accordion
   PATCH  /approve-all                   — bulk-approve all TCs for a run
   PATCH  /test-cases/{test_id}/approval — per-TC approval status update
@@ -28,8 +28,9 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -38,14 +39,15 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
-from app.models.phase3 import ReviewQueueItem, TestCase, TestResult, TestRun
-from app.models.project import HighLevelScenario, Project, ProjectJiraConfig
+from app.models.phase3 import Phase3Artifact, Phase3ExecutionState, ReviewQueueItem, TestCase, TestResult, TestRun
+from app.models.project import CredentialProfile, HighLevelScenario, Project, ProjectJiraConfig
 from app.models.user import User
 from app.schemas.phase3 import (
     ApprovalPatch,
     ApproveAllRequest,
     ExecuteRequest,
     PlanRunResponse,
+    Phase3ArtifactResponse,
     RaiseJiraRequest,
     RerunRequest,
     ReviewQueueItem as ReviewQueueItemSchema,
@@ -57,6 +59,8 @@ from app.schemas.phase3 import (
     UpdateTestCaseRequest,
 )
 from app.services import mcp_server, state_store
+from app.services.artifact_paths import legacy_tc_document_path, tc_document_path
+from app.services.artifact_registry import register_artifact
 from app.services.jira_service import create_jira_issue, is_jira_configured
 from app.utils.rate_limiter import limiter
 
@@ -93,6 +97,157 @@ def _get_active_run(db: Session, project_id: uuid.UUID) -> TestRun | None:
     ).scalars().first()
 
 
+def _resolve_scenario_title(db: Session, hls_id: uuid.UUID | None) -> str | None:
+    """Look up the parent HLS title for a test case.
+
+    Used by PATCH /test-cases/{id}/approval and /content so the response carries
+    the same scenario_title the GET endpoint produces. Without this, the UI's
+    groupBy(scenario_title) collapses the bucket header to a generic placeholder
+    after every approval/edit.
+    """
+    if not hls_id:
+        return None
+    hls = db.get(HighLevelScenario, hls_id)
+    return hls.title if hls else None
+
+
+def _regenerate_xray_csv_for_latest_plan(db: Session, project_id: uuid.UUID) -> None:
+    """Best-effort CSV refresh after testcase review actions.
+
+    EXCLUDED cases stay visible in the UI but are omitted from the default
+    X-Ray CSV export and execution scope.
+    """
+    from app.agents.agent3_planner import plan_xray_metadata_for_cases
+    from app.agents.xray_csv_generator import fallback_xray_rows_from_a3, render_xray_csv
+
+    latest_plan_run = db.execute(
+        select(TestRun)
+        .where(TestRun.project_id == project_id, TestRun.run_type == "plan")
+        .order_by(TestRun.created_at.desc())
+        .limit(1)
+    ).scalars().first()
+    if not latest_plan_run:
+        return
+
+    tc_rows = mcp_server.get_test_cases_for_run(
+        project_id=str(project_id), run_id=str(latest_plan_run.run_id)
+    )
+    tc_rows = [
+        row for row in tc_rows
+        if str(row.get("approval_status") or "PENDING").upper() != "EXCLUDED"
+    ]
+    project_obj = db.get(Project, project_id)
+    project_name = project_obj.name if project_obj else "Project"
+    jira_config = db.execute(
+        select(ProjectJiraConfig).where(ProjectJiraConfig.project_id == project_id)
+    ).scalars().first()
+    csv_project_key = (
+        jira_config.jira_project_key
+        if jira_config
+        else "".join(ch for ch in project_name.upper() if ch.isalnum())[:10] or "TBD"
+    )
+    hls_rows = db.execute(
+        select(HighLevelScenario.title, HighLevelScenario.description).where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.status == "completed",
+        )
+    ).all()
+    xray_metadata, xray_diag = plan_xray_metadata_for_cases(
+        project_id=str(project_id),
+        hls_items=[(title, description) for title, description in hls_rows],
+        tc_rows=tc_rows,
+    )
+    xray_rows = fallback_xray_rows_from_a3(
+        tc_rows,
+        project_key=csv_project_key,
+        requirement="TBD",
+        metadata_by_title=xray_metadata,
+    )
+    csv_text = render_xray_csv(xray_rows)
+    doc_path = tc_document_path(str(project_id), str(latest_plan_run.run_id))
+    doc_path.write_text(csv_text, encoding="utf-8", newline="")
+    register_artifact(
+        project_id=str(project_id),
+        run_id=str(latest_plan_run.run_id),
+        artifact_type="XRAY_CSV",
+        path=doc_path,
+    )
+    logger.info(
+        "regenerated X-Ray CSV at %s source=%s chunks_found=%s rows_generated=%s",
+        doc_path,
+        xray_diag.get("source"),
+        xray_diag.get("chunks_found"),
+        len(xray_rows),
+    )
+
+
+def _get_review_item_for_project_or_404(
+    db: Session,
+    project_id: uuid.UUID,
+    item_id: uuid.UUID,
+) -> ReviewQueueItem:
+    item = db.execute(
+        select(ReviewQueueItem)
+        .join(TestCase, ReviewQueueItem.test_id == TestCase.test_id)
+        .where(
+            ReviewQueueItem.id == item_id,
+            TestCase.project_id == project_id,
+        )
+    ).scalars().first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review queue item not found")
+    return item
+
+
+def _backfill_review_queue_for_human_review(
+    db: Session,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID | None,
+) -> None:
+    """Ensure every HUMAN_REVIEW execution-state row has a review_queue item."""
+    state_query = (
+        select(Phase3ExecutionState)
+        .join(TestCase, Phase3ExecutionState.test_id == TestCase.test_id)
+        .where(
+            TestCase.project_id == project_id,
+            Phase3ExecutionState.status == "HUMAN_REVIEW",
+        )
+    )
+    if run_id:
+        state_query = state_query.where(Phase3ExecutionState.run_id == run_id)
+
+    states = db.execute(state_query).scalars().all()
+    created = 0
+    for state in states:
+        existing = db.execute(
+            select(ReviewQueueItem.id).where(
+                ReviewQueueItem.test_id == state.test_id,
+                ReviewQueueItem.run_id == state.run_id,
+            ).limit(1)
+        ).scalar_one_or_none()
+        if existing:
+            continue
+        db.add(ReviewQueueItem(
+            test_id=state.test_id,
+            run_id=state.run_id,
+            review_type="TASK",
+            status="pending",
+            evidence={
+                "category": "AUTOMATION_REVIEW",
+                "reason": "Execution state is HUMAN_REVIEW but no review item was recorded by the failing stage.",
+                "action": "Review the testcase/script generation reason, edit if needed, and rerun.",
+            },
+        ))
+        created += 1
+
+    if created:
+        db.commit()
+        logger.info(
+            "Backfilled %d review_queue item(s) for project_id=%s run_id=%s",
+            created, project_id, run_id,
+        )
+
+
 # ── POST /trigger ────────────────────────────────────────────────────────────
 
 
@@ -105,8 +260,15 @@ def trigger_phase3(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TriggerRunResponse:
-    """Start a Phase 3 test run. 409 if a run is already in progress."""
+    """Deprecated one-shot Phase 3 entrypoint."""
     _get_project_or_404(db, current_user.id, project_id)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Phase 3 one-shot trigger is disabled for production. "
+            "Use POST /phase3/plan, approve test cases, then POST /phase3/execute."
+        ),
+    )
 
     # Guard: no concurrent runs
     if _get_active_run(db, project_id):
@@ -182,7 +344,7 @@ def plan_phase3(
     """Step 1 of 3: Run A3 for all completed HLS. Creates test cases in PENDING state.
 
     Returns a run_id that the client stores and passes to /execute when ready.
-    The TC document (markdown + JSON) is generated and written to disk;
+    The TC document (X-Ray CSV + JSON) is generated and written to disk;
     poll GET /tc-document/json to populate the approval accordion.
 
     Errors:
@@ -219,14 +381,6 @@ def plan_phase3(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="All Phase 2 scenarios must be completed before planning Phase 3",
         )
-
-    # Delete stale test cases from a previous planning run for this project
-    old_tcs = db.execute(
-        select(TestCase).where(TestCase.project_id == project_id)
-    ).scalars().all()
-    for tc in old_tcs:
-        db.delete(tc)
-    db.commit()
 
     run = TestRun(
         run_id=uuid.uuid4(),
@@ -278,10 +432,10 @@ def execute_phase3(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TriggerRunResponse:
-    """Step 3 of 3: Start Playwright execution. All TCs must be APPROVED.
+    """Step 3 of 3: Start Playwright execution. Active TCs must be APPROVED.
 
     Guards:
-      400 — unapproved test cases exist (approval gate)
+      400 — unapproved active test cases exist (approval gate)
       404 — project not found
       409 — an execution run is already in progress
     """
@@ -294,12 +448,42 @@ def execute_phase3(
             detail="An execution run is already in progress",
         )
 
-    # Guard: approval gate — ALL test cases must be APPROVED
+    # Guard: approval gate — EXCLUDED cases are intentionally skipped.
+    planned_case = db.execute(
+        select(TestCase)
+        .where(
+            TestCase.project_id == project_id,
+            TestCase.run_id == payload.run_id,
+        )
+        .limit(1)
+    ).scalars().first()
+    if not planned_case:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No test cases found for the selected planning run.",
+        )
+
+    approved_case = db.execute(
+        select(TestCase)
+        .where(
+            TestCase.project_id == project_id,
+            TestCase.run_id == payload.run_id,
+            TestCase.approval_status == "APPROVED",
+        )
+        .limit(1)
+    ).scalars().first()
+    if not approved_case:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No approved test cases available for execution. Approve or restore at least one test case.",
+        )
+
     unapproved = db.execute(
         select(TestCase)
         .where(
             TestCase.project_id == project_id,
-            TestCase.approval_status != "APPROVED",
+            TestCase.run_id == payload.run_id,
+            TestCase.approval_status.notin_(["APPROVED", "EXCLUDED"]),
         )
         .limit(1)
     ).scalars().first()
@@ -308,8 +492,18 @@ def execute_phase3(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"Test case '{unapproved.title}' (status: {unapproved.approval_status}) "
-                "is not approved. All test cases must be APPROVED before execution."
+                "is not approved. Approve it or exclude it before execution."
             ),
+        )
+
+    # Unified preflight: env vars (BASE_URL/USER_EMAIL/USER_PASSWORD) + credentials.
+    # Prevents the demo-failure case where all tests die on env('USER_EMAIL').
+    from app.services.phase3_preflight import check_execution_preflight, format_issues
+    preflight_issues = check_execution_preflight(db, project_id, payload.run_id)
+    if preflight_issues:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_issues(preflight_issues),
         )
 
     run = TestRun(
@@ -330,7 +524,7 @@ def execute_phase3(
         from app.graph.phase3_graph import run_phase3
         from sqlalchemy import update
         try:
-            await run_phase3(project_id_str, run_id_str)
+            await run_phase3(project_id_str, run_id_str, str(payload.run_id))
         except Exception as exc:
             logger.exception(
                 "Phase 3 execution failed: project_id=%s run_id=%s: %s",
@@ -360,9 +554,9 @@ def approve_all_test_cases(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Step 2a of 3: Bulk-approve all PENDING test cases for the given planning run.
+    """Step 2a of 3: Bulk-approve active pending/needs-edit test cases for the run.
 
-    Sets approval_status = 'APPROVED' on all test cases in the project.
+    EXCLUDED test cases are intentionally left untouched.
     Returns {approved_count: N}.
     """
     _get_project_or_404(db, current_user.id, project_id)
@@ -370,7 +564,9 @@ def approve_all_test_cases(
     tcs = db.execute(
         select(TestCase).where(
             TestCase.project_id == project_id,
+            TestCase.run_id == payload.run_id,
             TestCase.approval_status != "APPROVED",
+            TestCase.approval_status != "EXCLUDED",
         )
     ).scalars().all()
 
@@ -400,7 +596,7 @@ def set_test_case_approval(
 ) -> TestCaseApprovalResponse:
     """Step 2b of 3: Set approval status on a single test case.
 
-    status must be 'APPROVED' or 'NEEDS_EDIT'.
+    status must be 'APPROVED', 'NEEDS_EDIT', or 'EXCLUDED'.
     """
     _get_project_or_404(db, current_user.id, project_id)
 
@@ -413,9 +609,28 @@ def set_test_case_approval(
     if not tc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test case not found")
 
+    # Run-scope guard: when client supplies run_id, it must match this
+    # test_case's owning run. Defends against stale-UI patches after re-plan.
+    if payload.run_id is not None and tc.run_id != payload.run_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Test case belongs to run {tc.run_id}, not {payload.run_id}. "
+                "Refresh the page — this run was likely re-planned."
+            ),
+        )
+
     tc.approval_status = payload.status
     db.commit()
     db.refresh(tc)
+    if payload.status == "EXCLUDED":
+        try:
+            _regenerate_xray_csv_for_latest_plan(db, project_id)
+        except Exception as regen_exc:
+            logger.warning(
+                "set_test_case_approval: failed to regenerate X-Ray CSV after exclude: %s",
+                regen_exc,
+            )
 
     # Resolve depends_on UUIDs to titles
     all_tcs = db.execute(
@@ -423,6 +638,10 @@ def set_test_case_approval(
     ).scalars().all()
     title_map = {str(t.test_id): t.title for t in all_tcs}
     depends_on_titles = [title_map.get(str(d), str(d)) for d in (tc.depends_on or [])]
+
+    # Preserve scenario_title so the UI's groupBy(scenario_title) doesn't collapse
+    # the bucket header to a generic placeholder after this PATCH.
+    scenario_title = _resolve_scenario_title(db, tc.hls_id)
 
     return TestCaseApprovalResponse(
         test_id=tc.test_id,
@@ -432,7 +651,7 @@ def set_test_case_approval(
         acceptance_criteria=tc.acceptance_criteria or [],
         target_page=tc.target_page,
         hls_id=tc.hls_id,
-        scenario_title=None,
+        scenario_title=scenario_title,
         approval_status=tc.approval_status,
         depends_on_titles=depends_on_titles,
     )
@@ -497,11 +716,13 @@ def update_test_case_content(
         test_id, changed, tc.approval_status,
     )
 
-    # ── Regenerate the tc_document_{run_id}.md so the downloaded markdown
-    #    always reflects human edits, not just the original AI-generated version.
+    # Regenerate the downloadable X-Ray CSV so fallback A3 exports reflect
+    # human edits. BRD/Qdrant generation remains the preferred source when
+    # document chunks are available.
     if changed:
         try:
-            from app.agents.agent3_planner import generate_tc_document
+            from app.agents.agent3_planner import plan_xray_metadata_for_cases
+            from app.agents.xray_csv_generator import fallback_xray_rows_from_a3, render_xray_csv
             latest_plan_run = db.execute(
                 select(TestRun)
                 .where(TestRun.project_id == project_id, TestRun.run_type == "plan")
@@ -512,6 +733,10 @@ def update_test_case_content(
                 tc_rows = mcp_server.get_test_cases_for_run(
                     project_id=str(project_id), run_id=str(latest_plan_run.run_id)
                 )
+                tc_rows = [
+                    row for row in tc_rows
+                    if str(row.get("approval_status") or "PENDING").upper() != "EXCLUDED"
+                ]
                 tid_map = {r["test_id"]: r["title"] for r in tc_rows}
                 for row in tc_rows:
                     row["depends_on_titles"] = [
@@ -519,9 +744,49 @@ def update_test_case_content(
                     ]
                 project_obj = db.get(Project, project_id)
                 project_name = project_obj.name if project_obj else "Project"
-                markdown = generate_tc_document(tc_rows, project_name=project_name)
-                doc_path = Path(settings.generated_scripts_dir) / f"tc_document_{latest_plan_run.run_id}.md"
-                doc_path.write_text(markdown, encoding="utf-8")
+                jira_config = db.execute(
+                    select(ProjectJiraConfig).where(ProjectJiraConfig.project_id == project_id)
+                ).scalars().first()
+                csv_project_key = (
+                    jira_config.jira_project_key
+                    if jira_config
+                    else "".join(ch for ch in project_name.upper() if ch.isalnum())[:10] or "TBD"
+                )
+                hls_rows = db.execute(
+                    select(HighLevelScenario.title, HighLevelScenario.description).where(
+                        HighLevelScenario.project_id == project_id,
+                        HighLevelScenario.status == "completed",
+                    )
+                ).all()
+                xray_metadata, xray_diag = plan_xray_metadata_for_cases(
+                    project_id=str(project_id),
+                    hls_items=[(title, description) for title, description in hls_rows],
+                    tc_rows=tc_rows,
+                )
+                xray_rows = fallback_xray_rows_from_a3(
+                    tc_rows,
+                    project_key=csv_project_key,
+                    requirement="TBD",
+                    metadata_by_title=xray_metadata,
+                )
+                xray_diag["rows_generated"] = len(xray_rows)
+                logger.info(
+                    "update_test_case_content: X-Ray CSV source=%s chunks_found=%s rows_generated=%s automation_cases=%s fallback_reason=%s",
+                    xray_diag.get("source"),
+                    xray_diag.get("chunks_found"),
+                    xray_diag.get("rows_generated"),
+                    len(tc_rows),
+                    xray_diag.get("fallback_reason") or "",
+                )
+                csv_text = render_xray_csv(xray_rows)
+                doc_path = tc_document_path(str(project_id), str(latest_plan_run.run_id))
+                doc_path.write_text(csv_text, encoding="utf-8", newline="")
+                register_artifact(
+                    project_id=str(project_id),
+                    run_id=str(latest_plan_run.run_id),
+                    artifact_type="XRAY_CSV",
+                    path=doc_path,
+                )
                 logger.info(
                     "update_test_case_content: regenerated tc_document at %s", doc_path
                 )
@@ -531,6 +796,10 @@ def update_test_case_content(
                 "update_test_case_content: failed to regenerate tc_document: %s", regen_exc
             )
 
+    # Preserve scenario_title so the UI's groupBy(scenario_title) doesn't collapse
+    # the bucket header to a generic placeholder after this PATCH.
+    scenario_title = _resolve_scenario_title(db, tc.hls_id)
+
     return TestCaseApprovalResponse(
         test_id=tc.test_id,
         tc_number=tc.tc_number,
@@ -539,7 +808,7 @@ def update_test_case_content(
         acceptance_criteria=tc.acceptance_criteria or [],
         target_page=tc.target_page,
         hls_id=tc.hls_id,
-        scenario_title=None,
+        scenario_title=scenario_title,
         approval_status=tc.approval_status,
         depends_on_titles=depends_on_titles,
     )
@@ -558,19 +827,21 @@ def download_tc_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FileResponse:
-    """Download the TC markdown document for a planning run."""
+    """Download the X-Ray CSV document for a planning run."""
     _get_project_or_404(db, current_user.id, project_id)
 
-    doc_path = Path(settings.generated_scripts_dir) / f"tc_document_{run_id}.md"
+    doc_path = tc_document_path(str(project_id), run_id)
+    if not doc_path.exists():
+        doc_path = legacy_tc_document_path(run_id)
     if not doc_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="TC document not generated yet. Wait for /plan to complete.",
+            detail="X-Ray CSV document not generated yet. Wait for /plan to complete.",
         )
     return FileResponse(
         str(doc_path),
-        media_type="text/markdown",
-        filename=f"test_cases_{run_id}.md",
+        media_type="text/csv",
+        filename=f"test_cases_{run_id}.csv",
     )
 
 
@@ -620,6 +891,7 @@ def get_tc_document_json(
 def get_run_status(
     request: Request,
     project_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> RunStatusResponse:
@@ -627,13 +899,21 @@ def get_run_status(
 
     run = db.execute(
         select(TestRun)
-        .where(TestRun.project_id == project_id)
+        .where(
+            TestRun.project_id == project_id,
+            *((TestRun.run_id == run_id,) if run_id else ()),
+        )
         .order_by(TestRun.created_at.desc())
         .limit(1)
     ).scalars().first()
 
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No Phase 3 run found for this project")
+
+    # Attach in-memory progress (populated by phase3_graph via phase3_progress).
+    # Returns None once the run finishes or if nothing has been published yet.
+    from app.services import phase3_progress
+    progress = phase3_progress.get_progress(str(run.run_id))
 
     return RunStatusResponse(
         run_id=run.run_id,
@@ -647,7 +927,51 @@ def get_run_status(
         status=run.status,
         run_type=run.run_type if run.run_type else "execute",
         created_at=run.created_at,
+        progress=progress,
     )
+
+
+# ── GET /runs ────────────────────────────────────────────────────────────────
+
+
+@router.get("/runs")
+@limiter.limit(settings.rate_limit_api)
+def list_phase3_runs(
+    request: Request,
+    project_id: uuid.UUID,
+    run_type: Literal["plan", "execute", "all"] = Query(default="all"),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    """List recent Phase 3 runs for a project, newest first.
+
+    Backs the UI history dropdown so a user can switch between prior
+    plan runs without losing review/approval context. Filter by run_type to
+    show only planning runs or only execution runs.
+    """
+    _get_project_or_404(db, current_user.id, project_id)
+
+    query = select(TestRun).where(TestRun.project_id == project_id)
+    if run_type != "all":
+        query = query.where(TestRun.run_type == run_type)
+    query = query.order_by(TestRun.created_at.desc()).limit(limit)
+
+    runs = db.execute(query).scalars().all()
+    return [
+        {
+            "run_id":           str(r.run_id),
+            "run_type":         r.run_type or "execute",
+            "status":           r.status,
+            "total":            r.total,
+            "passed":           r.passed,
+            "failed":           r.failed,
+            "human_review":     r.human_review,
+            "duration_seconds": r.duration_seconds,
+            "created_at":       r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in runs
+    ]
 
 
 # ── GET /execution-state ──────────────────────────────────────────────────────
@@ -658,18 +982,22 @@ def get_run_status(
 def get_execution_state(
     request: Request,
     project_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    """Return live per-test execution state from the in-process state_store.
+    """Return live per-test execution state.
 
-    Joins live status (PENDING/PASS/FAIL/BLOCKED/SCRIPT_ERROR/APP_ERROR/HUMAN_REVIEW)
-    with TestCase title from the DB so the frontend can display a real-time
-    execution log without waiting for the run to complete.
-
-    Returns [] when no run is in progress (state_store is empty).
+    Production path reads durable DB execution state written by workers.
+    Falls back to legacy state_store JSON only when no DB state exists yet.
     """
     _get_project_or_404(db, current_user.id, project_id)
+
+    from app.services.execution_state_service import list_execution_state
+
+    db_state = list_execution_state(db, project_id, run_id=run_id)
+    if db_state:
+        return db_state
 
     live_state = state_store.get_all()
     if not live_state:
@@ -698,6 +1026,8 @@ def get_execution_state(
 
     result = []
     for test_id, state in live_state.items():
+        if test_id not in title_by_id:
+            continue
         result.append({
             "test_id": test_id,
             "title": title_by_id.get(test_id, f"Test {test_id[:8]}"),
@@ -723,10 +1053,12 @@ def list_review_queue(
     request: Request,
     project_id: uuid.UUID,
     item_status: str | None = None,
+    run_id: uuid.UUID | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[ReviewQueueItemSchema]:
     _get_project_or_404(db, current_user.id, project_id)
+    _backfill_review_queue_for_human_review(db, project_id, run_id)
 
     query = (
         select(ReviewQueueItem)
@@ -736,6 +1068,8 @@ def list_review_queue(
     )
     if item_status:
         query = query.where(ReviewQueueItem.status == item_status)
+    if run_id:
+        query = query.where(ReviewQueueItem.run_id == run_id)
 
     items = db.execute(query).scalars().all()
     return [ReviewQueueItemSchema.model_validate(i) for i in items]
@@ -756,9 +1090,7 @@ def patch_review_queue_item(
 ) -> ReviewQueueItemSchema:
     _get_project_or_404(db, current_user.id, project_id)
 
-    item = db.get(ReviewQueueItem, item_id)
-    if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review queue item not found")
+    item = _get_review_item_for_project_or_404(db, project_id, item_id)
 
     if payload.jira_ref is not None:
         item.jira_ref = payload.jira_ref
@@ -778,11 +1110,17 @@ def patch_review_queue_item(
 @router.get("/review-queue/stream")
 async def stream_review_queue(
     project_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> EventSourceResponse:
     """Server-Sent Events stream of new review queue items for this project."""
     _get_project_or_404(db, current_user.id, project_id)
+
+    # Import SessionLocal for fresh sessions inside the long-lived generator.
+    # The request-scoped `db` session goes stale after the HTTP response is sent,
+    # so worker-committed review_queue rows would never appear.
+    from app.db.session import SessionLocal as _SL
 
     seen_ids: set[str] = set()
 
@@ -792,21 +1130,28 @@ async def stream_review_queue(
             await asyncio.sleep(1)
             heartbeat_counter += 1
 
-            new_items = db.execute(
-                select(ReviewQueueItem)
-                .join(TestCase, ReviewQueueItem.test_id == TestCase.test_id)
-                .where(TestCase.project_id == project_id)
-                .order_by(ReviewQueueItem.created_at.asc())
-            ).scalars().all()
+            try:
+                with _SL() as fresh_db:
+                    query = (
+                        select(ReviewQueueItem)
+                        .join(TestCase, ReviewQueueItem.test_id == TestCase.test_id)
+                        .where(TestCase.project_id == project_id)
+                        .order_by(ReviewQueueItem.created_at.asc())
+                    )
+                    if run_id:
+                        query = query.where(ReviewQueueItem.run_id == run_id)
+                    new_items = fresh_db.execute(query).scalars().all()
 
-            for item in new_items:
-                key = str(item.id)
-                if key not in seen_ids:
-                    seen_ids.add(key)
-                    yield {
-                        "event": "review_item",
-                        "data": ReviewQueueItemSchema.model_validate(item).model_dump_json(),
-                    }
+                    for item in new_items:
+                        key = str(item.id)
+                        if key not in seen_ids:
+                            seen_ids.add(key)
+                            yield {
+                                "event": "review_item",
+                                "data": ReviewQueueItemSchema.model_validate(item).model_dump_json(),
+                            }
+            except Exception:
+                pass  # transient DB errors — retry on next iteration
 
             if heartbeat_counter >= 30:
                 yield {"event": "heartbeat", "data": "ping"}
@@ -846,6 +1191,55 @@ def get_script(
     return ScriptResponse(test_id=test_id, script_content=content)
 
 
+@router.get("/artifacts", response_model=list[Phase3ArtifactResponse])
+@limiter.limit(settings.rate_limit_api)
+def list_phase3_artifacts(
+    request: Request,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
+    test_id: uuid.UUID | None = Query(default=None),
+    artifact_type: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[Phase3ArtifactResponse]:
+    _get_project_or_404(db, current_user.id, project_id)
+    query = select(Phase3Artifact).where(
+        Phase3Artifact.project_id == project_id,
+        Phase3Artifact.status == "ACTIVE",
+    )
+    if run_id:
+        query = query.where(Phase3Artifact.run_id == run_id)
+    if test_id:
+        query = query.where(Phase3Artifact.test_id == test_id)
+    if artifact_type:
+        query = query.where(Phase3Artifact.artifact_type == artifact_type.upper())
+    rows = db.execute(query.order_by(Phase3Artifact.created_at.desc())).scalars().all()
+    return [Phase3ArtifactResponse.model_validate(row) for row in rows]
+
+
+@router.get("/artifacts/{artifact_id}/download")
+@limiter.limit(settings.rate_limit_api)
+def download_phase3_artifact(
+    request: Request,
+    project_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    _get_project_or_404(db, current_user.id, project_id)
+    artifact = db.get(Phase3Artifact, artifact_id)
+    if not artifact or artifact.project_id != project_id or artifact.status != "ACTIVE":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    path = Path(artifact.path)
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file missing")
+    return FileResponse(
+        path=str(path),
+        media_type=artifact.mime_type or "application/octet-stream",
+        filename=artifact.filename,
+    )
+
+
 # ── POST /review-queue/{id}/rerun ────────────────────────────────────────────
 
 
@@ -862,58 +1256,98 @@ def rerun_review_item(
 ) -> ReviewQueueItemSchema:
     _get_project_or_404(db, current_user.id, project_id)
 
-    item = db.get(ReviewQueueItem, item_id)
-    if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review queue item not found")
+    item = _get_review_item_for_project_or_404(db, project_id, item_id)
 
     test_id_str = str(item.test_id)
+    run_id_str = str(item.run_id)
 
-    mcp_server.write_script(test_id_str, payload.script_content)
+    # Write under the multi-tenant layout so the rerun script lives next to
+    # the original (instead of orphaning a copy in the legacy flat dir).
+    script_path = mcp_server.write_script(
+        test_id_str,
+        payload.script_content,
+        project_id=str(project_id),
+        run_id=run_id_str,
+    )
+    mcp_server.update_script_path(test_id_str, script_path)
 
     item.status = "rerunning"
+    # The original run is `completed` by now — worker would discard any job
+    # whose run isn't `running`. Flip it back so the rerun can be consumed.
+    # The spawned worker_loop below drains the job, then we restore the
+    # completed status (see _run_rerun_worker).
+    run = db.get(TestRun, item.run_id)
+    if run is not None and run.status != "running":
+        run.status = "running"
     db.commit()
     db.refresh(item)
 
-    background_tasks.add_task(_execute_rerun, test_id_str, str(item_id))
+    from app.services.phase3_jobs import build_single_test_job
+
+    queued = mcp_server.enqueue(
+        build_single_test_job(
+            project_id=str(project_id),
+            run_id=run_id_str,
+            test_id=test_id_str,
+            script_path=script_path,
+            review_item_id=str(item.id),
+        )
+    )
+    if not queued:
+        item.status = "pending"
+        if run is not None:
+            run.status = "completed"
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to queue rerun job. Please try again.",
+        )
+
+    # In embedded-worker mode (dev/local default) the worker_loop spawned by
+    # the original run has already exited. Spawn a one-off worker just for
+    # this rerun so the job gets consumed instead of sitting in the queue.
+    # External-worker deployments don't need this — the standalone worker
+    # consumes any active run; the run-status flip above is sufficient.
+    if get_settings().phase3_embedded_workers:
+        background_tasks.add_task(_run_rerun_worker, run_id_str)
 
     return ReviewQueueItemSchema.model_validate(item)
 
 
-# ── Rerun background task ────────────────────────────────────────────────────
-
-
-def _execute_rerun(test_id_str: str, item_id_str: str) -> None:
-    """Run the edited Playwright spec, update TestResult and ReviewQueueItem."""
-    from app.db.session import SessionLocal
-    from app.services.phase3_worker import run_playwright_spec
-    from app.services import state_store as ss
-
-    ss.init_test(test_id_str)
+def _run_rerun_worker(run_id: str) -> None:
+    """Spawn a one-off worker_loop for a single rerun job, then refresh the
+    dashboard counters and restore `completed` status. Runs in a FastAPI
+    BackgroundTasks thread so the HTTP response returns immediately."""
+    from app.services.phase3_worker import worker_loop
+    from app.graph.phase3_graph import recompute_run_counters
     try:
-        result = run_playwright_spec(test_id_str)
-        final_status = "PASS" if result.get("status") == "PASS" else "SCRIPT_ERROR"
-        if final_status == "SCRIPT_ERROR":
-            err = result.get("error_message") or result.get("stderr") or ""
-            logger.warning("rerun: SCRIPT_ERROR for test_id=%s: %s", test_id_str, err[:400])
-    except Exception as exc:
-        logger.exception("rerun: playwright failed for test_id=%s: %s", test_id_str, exc)
-        final_status = "SCRIPT_ERROR"
-
-    ss.update_state(test_id_str, final_status)
-
-    with SessionLocal() as db:
-        from sqlalchemy import update as sa_update
-        db.execute(
-            sa_update(TestResult)
-            .where(TestResult.test_id == uuid.UUID(test_id_str))
-            .values(status=final_status)
-        )
-        rqi = db.get(ReviewQueueItem, uuid.UUID(item_id_str))
-        if rqi:
-            rqi.status = "resolved" if final_status == "PASS" else "pending"
-        db.commit()
-        logger.info("rerun: test_id=%s → %s", test_id_str, final_status)
-
+        # Short idle timeout — the rerun is already in the queue when this
+        # task fires. 30s is enough for the worker to claim, run Playwright,
+        # classify, and then idle out.
+        worker_loop(run_id, idle_timeout_s=30)
+    except Exception:
+        logger.exception("rerun worker_loop failed for run_id=%s", run_id)
+    finally:
+        # Reflect the rerun's PASS/FAIL in TestRun.passed/failed/human_review
+        # so the dashboard summary stays consistent with the per-test grid.
+        try:
+            counts = recompute_run_counters(run_id)
+            logger.info("rerun: recomputed counters for run_id=%s → %s", run_id, counts)
+        except Exception:
+            logger.exception("rerun: failed to recompute counters for run_id=%s", run_id)
+        # Restore completed status regardless of outcome — the original run
+        # is logically done; the rerun is a side-channel job.
+        try:
+            from app.db.session import SessionLocal
+            with SessionLocal() as db:
+                run = db.execute(
+                    select(TestRun).where(TestRun.run_id == uuid.UUID(run_id))
+                ).scalar_one_or_none()
+                if run is not None and run.status == "running":
+                    run.status = "completed"
+                    db.commit()
+        except Exception:
+            logger.exception("rerun: failed to restore run status for run_id=%s", run_id)
 
 # ── POST /raise-jira ─────────────────────────────────────────────────────────
 
@@ -950,9 +1384,7 @@ def raise_jira(
             detail="No Jira project linked to this project",
         )
 
-    item = db.get(ReviewQueueItem, payload.review_queue_id)
-    if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review queue item not found")
+    item = _get_review_item_for_project_or_404(db, project_id, payload.review_queue_id)
 
     # ── RTM: prefix summary with [TC-XXX] ────────────────────────────────────
     tc = db.get(TestCase, item.test_id)
@@ -998,6 +1430,7 @@ def get_trace(
     request: Request,
     project_id: uuid.UUID,
     test_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FileResponse:
@@ -1008,14 +1441,19 @@ def get_trace(
     """
     _get_project_or_404(db, current_user.id, project_id)
 
-    result = db.execute(
+    result_query = (
         select(TestResult)
         .join(TestCase, TestResult.test_id == TestCase.test_id)
         .where(
             TestResult.test_id == test_id,
             TestCase.project_id == project_id,
         )
-    ).scalar_one_or_none()
+        .order_by(TestResult.created_at.desc())
+        .limit(1)
+    )
+    if run_id:
+        result_query = result_query.where(TestResult.run_id == run_id)
+    result = db.execute(result_query).scalar_one_or_none()
 
     if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test result not found")
@@ -1034,6 +1472,80 @@ def get_trace(
     )
 
 
+# ── GET /network-logs/{test_id} ──────────────────────────────────────────────
+
+
+@router.get("/network-logs/{test_id}")
+@limiter.limit(settings.rate_limit_api)
+def get_network_logs(
+    request: Request,
+    project_id: uuid.UUID,
+    test_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
+    failures_only: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    """List captured network requests for a test result.
+
+    Used by the live-log "X 4xx/5xx" badge — clicking it expands an inline
+    panel showing the failing requests so demo viewers see *why* a test was
+    flagged without leaving the page.
+
+    Defaults to ``failures_only=True`` because the badge counts failures; pass
+    ``failures_only=false`` to include all captured requests.
+    """
+    from app.models.phase3 import NetworkLog
+
+    _get_project_or_404(db, current_user.id, project_id)
+
+    # Verify the test_id belongs to this project before exposing logs.
+    tc = db.execute(
+        select(TestCase).where(
+            TestCase.test_id == test_id,
+            TestCase.project_id == project_id,
+        )
+    ).scalars().first()
+    if not tc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test case not found")
+
+    # Pin to the most recent test_result for this (test_id, run_id) pair so the
+    # caller gets logs from the run currently displayed in the UI.
+    result_query = (
+        select(TestResult)
+        .where(TestResult.test_id == test_id)
+        .order_by(TestResult.created_at.desc())
+        .limit(1)
+    )
+    if run_id:
+        result_query = result_query.where(TestResult.run_id == run_id)
+    result = db.execute(result_query).scalar_one_or_none()
+
+    if not result:
+        return []
+
+    log_query = (
+        select(NetworkLog)
+        .where(NetworkLog.test_result_id == result.id)
+        .order_by(NetworkLog.created_at.asc())
+    )
+    if failures_only:
+        log_query = log_query.where(NetworkLog.is_failure.is_(True))
+
+    logs = db.execute(log_query).scalars().all()
+    return [
+        {
+            "id":          str(log.id),
+            "url":         log.url,
+            "method":      log.method,
+            "status_code": log.status_code,
+            "is_failure":  log.is_failure,
+            "created_at":  log.created_at.isoformat() if log.created_at else None,
+        }
+        for log in logs
+    ]
+
+
 # ── DELETE /reset ─────────────────────────────────────────────────────────────
 
 
@@ -1042,27 +1554,103 @@ def get_trace(
 def reset_phase3(
     request: Request,
     project_id: uuid.UUID,
+    scope: Literal["current_run", "all"] = Query(
+        default="all",
+        description="'current_run' wipes only the latest run; 'all' wipes every Phase 3 record for the project.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Hard-reset Phase 3 for a project.
+    """Reset Phase 3 data for a project.
 
-    Deletes ALL test_cases, test_results, review_queue_items, and test_runs
-    belonging to this project, and clears the in-memory state_store and
-    RabbitMQ queue. Use this to start fresh before a new planning run.
+    scope='all' (default, backward compatible):
+        Deletes ALL test_cases, test_results, review_queue_items, and test_runs
+        for the project. Use this to fully reset the project before a fresh demo.
+
+    scope='current_run':
+        Deletes only the most-recent test_run plus its test_cases, results, and
+        review items. Earlier runs (e.g. an approved plan-run a user wants to
+        keep) are preserved. Returns {deleted_runs: 0, ...} if no runs exist.
+
+    Queued jobs are never purged from RabbitMQ — workers discard deleted/inactive
+    run jobs by run_id when they pick them up.
     """
     _get_project_or_404(db, current_user.id, project_id)
-
-    # Cascade order: dependents first, then parents
-    # test_results and review_queue_items FK → test_cases
-    tc_ids = db.execute(
-        select(TestCase.test_id).where(TestCase.project_id == project_id)
-    ).scalars().all()
 
     deleted_results  = 0
     deleted_reviews  = 0
     deleted_tcs      = 0
     deleted_runs     = 0
+
+    if scope == "current_run":
+        # Find the most recent run; if none, nothing to do.
+        latest_run = db.execute(
+            select(TestRun)
+            .where(TestRun.project_id == project_id)
+            .order_by(TestRun.created_at.desc())
+            .limit(1)
+        ).scalars().first()
+
+        if not latest_run:
+            logger.info("reset_phase3(current_run): no run found for project_id=%s", project_id)
+            return {
+                "scope": scope,
+                "deleted_test_cases":   0,
+                "deleted_test_results": 0,
+                "deleted_review_items": 0,
+                "deleted_runs":         0,
+            }
+
+        run_id = latest_run.run_id
+        tc_ids = db.execute(
+            select(TestCase.test_id).where(
+                TestCase.project_id == project_id,
+                TestCase.run_id == run_id,
+            )
+        ).scalars().all()
+
+        if tc_ids:
+            deleted_results = db.query(TestResult).filter(
+                TestResult.test_id.in_(tc_ids)
+            ).delete(synchronize_session=False)
+            deleted_reviews = db.query(ReviewQueueItem).filter(
+                ReviewQueueItem.test_id.in_(tc_ids)
+            ).delete(synchronize_session=False)
+            deleted_tcs = db.query(TestCase).filter(
+                TestCase.test_id.in_(tc_ids)
+            ).delete(synchronize_session=False)
+
+        # Also drop review items attached to this run that may not share a tc_id
+        # (defensive; e.g. orphaned reviews from a prior crash).
+        deleted_reviews += db.query(ReviewQueueItem).filter(
+            ReviewQueueItem.run_id == run_id
+        ).delete(synchronize_session=False)
+
+        deleted_runs = db.query(TestRun).filter(
+            TestRun.run_id == run_id
+        ).delete(synchronize_session=False)
+
+        db.commit()
+        state_store.clear_tests({str(tid) for tid in tc_ids})
+
+        logger.info(
+            "reset_phase3(current_run): project_id=%s run_id=%s deleted tcs=%d results=%d reviews=%d runs=%d",
+            project_id, run_id, deleted_tcs, deleted_results, deleted_reviews, deleted_runs,
+        )
+        return {
+            "scope":                 scope,
+            "run_id":                str(run_id),
+            "deleted_test_cases":    deleted_tcs,
+            "deleted_test_results":  deleted_results,
+            "deleted_review_items":  deleted_reviews,
+            "deleted_runs":          deleted_runs,
+        }
+
+    # scope == "all" — full nuke (legacy behaviour).
+    # Cascade order: dependents first, then parents.
+    tc_ids = db.execute(
+        select(TestCase.test_id).where(TestCase.project_id == project_id)
+    ).scalars().all()
 
     if tc_ids:
         deleted_results = db.query(TestResult).filter(
@@ -1082,19 +1670,14 @@ def reset_phase3(
     ).delete(synchronize_session=False)
 
     db.commit()
-
-    # Clear in-memory state and RabbitMQ queue
-    state_store.clear()
-    try:
-        mcp_server.purge_queue()
-    except Exception as exc:
-        logger.warning("reset_phase3: purge_queue failed: %s", exc)
+    state_store.clear_tests({str(tid) for tid in tc_ids})
 
     logger.info(
-        "reset_phase3: project_id=%s deleted tcs=%d results=%d reviews=%d runs=%d",
+        "reset_phase3(all): project_id=%s deleted tcs=%d results=%d reviews=%d runs=%d",
         project_id, deleted_tcs, deleted_results, deleted_reviews, deleted_runs,
     )
     return {
+        "scope":                 scope,
         "deleted_test_cases":    deleted_tcs,
         "deleted_test_results":  deleted_results,
         "deleted_review_items":  deleted_reviews,
@@ -1115,9 +1698,9 @@ def cancel_phase3_run(
 ) -> dict:
     """Cancel an active Phase 3 run.
 
-    - Purges the RabbitMQ queue so workers stop receiving new jobs.
     - Marks the latest running/planning run as 'cancelled' in the DB.
-    - Clears the in-memory state store.
+    - Clears only the cancelled run's local state entries.
+    - Leaves the shared RabbitMQ queue intact; workers discard cancelled run jobs.
 
     Safe to call even if no run is active (returns 'no_active_run').
     """
@@ -1141,14 +1724,14 @@ def cancel_phase3_run(
         cancelled_run_id = str(active_run.run_id)
         logger.info("cancel_phase3_run: marked run %s as cancelled", cancelled_run_id)
 
-    # Stop workers by purging the queue
-    try:
-        mcp_server.purge_queue()
-    except Exception as exc:
-        logger.warning("cancel_phase3_run: purge_queue failed (workers may still be running): %s", exc)
-
-    # Clear in-memory state
-    state_store.clear()
+    # Clear only this run's local state entries.
+    if cancelled_run_id:
+        cancelled_test_ids = db.execute(
+            select(Phase3ExecutionState.test_id).where(
+                Phase3ExecutionState.run_id == uuid.UUID(cancelled_run_id)
+            )
+        ).scalars().all()
+        state_store.clear_tests({str(tid) for tid in cancelled_test_ids})
 
     return {
         "cancelled": cancelled_run_id is not None,

@@ -1,7 +1,7 @@
-# Normalize all text files to LF on checkout (consistent across Windows/macOS/Linux)
+# Normalize text files to LF across Windows/macOS/Linux.
 * text=auto eol=lf
 
-# Explicitly binary — no line ending conversion
+# Binary files should not receive line-ending conversion.
 *.png binary
 *.jpg binary
 *.jpeg binary
@@ -15,7 +15,7 @@
 *.ttf binary
 *.eot binary
 
-# Windows batch/powershell — keep CRLF
+# Windows scripts should keep CRLF.
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf

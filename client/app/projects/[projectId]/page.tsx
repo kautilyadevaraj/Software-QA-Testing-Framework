@@ -477,7 +477,7 @@ export default function ProjectDetailsPage() {
 
   const handleMarkVerified = async (cred: ProjectCredential) => {
     try {
-      await markProjectVerified(projectId, cred.username);
+      await markProjectVerified(projectId, cred.username, cred.id);
 
       toast.success("Updated verification status");
 

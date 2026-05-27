@@ -398,6 +398,11 @@ export type RaiseTicketPayload = {
 
 export type ProjectCredential = {
 
+  /** CredentialProfile UUID when the credential is a DB profile; absent for
+   *  CSV-only fallback rows. Required for POST /mark-verified to toggle the
+   *  correct table (see markProjectVerified). */
+  id?: string;
+
   username: string;
 
   role: string | null;
@@ -944,13 +949,21 @@ export async function getProjectCredentials(projectId: string) {
 
 
 
-export async function markProjectVerified(projectId: string, username: string) {
+export async function markProjectVerified(
+  projectId: string,
+  username: string,
+  credentialId?: string,
+) {
 
+  // Include credential_id whenever available so the server toggles
+  // CredentialProfile.is_verified (the field the GET /credentials endpoint
+  // actually returns). Without it the server silently updates a different
+  // table and the UI appears unresponsive.
   return request<{ status: string }>(`/projects/${projectId}/mark-verified`, {
 
     method: "POST",
 
-    body: { username },
+    body: credentialId ? { username, credential_id: credentialId } : { username },
 
   });
 
@@ -1237,6 +1250,44 @@ export type Phase3RunStatus = {
 
   created_at: string;
 
+  /** Live in-memory progress published by the graph (null when run is finished). */
+  progress?: Phase3RunProgress | null;
+
+};
+
+
+
+export type Phase3RunProgress = {
+
+  run_id: string;
+
+  /** Stage tag — see server/app/services/phase3_progress.py for full set. */
+  stage:
+    | "planning"
+    | "preflight"
+    | "building_context"
+    | "generating_script"
+    | "queuing"
+    | "running_tests"
+    | "done";
+
+  message: string;
+
+  current_hls_index: number | null;
+
+  total_hls: number | null;
+
+  current_hls_title: string;
+
+  current_test_id: string | null;
+
+  current_test_title: string;
+
+  /** One-line summary the UI can render verbatim. */
+  headline: string;
+
+  updated_at: number;
+
 };
 
 
@@ -1271,10 +1322,33 @@ export async function triggerPhase3Run(projectId: string): Promise<{ run_id: str
 
 
 
-export async function getPhase3RunStatus(projectId: string): Promise<Phase3RunStatus> {
+export async function getPhase3RunStatus(projectId: string, runId?: string): Promise<Phase3RunStatus> {
+  const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
 
-  return request(`/projects/${projectId}/phase3/run-status`);
+  return request(`/projects/${projectId}/phase3/run-status${qs}`);
 
+}
+
+export type Phase3RunSummary = {
+  run_id: string;
+  run_type: "plan" | "execute";
+  status: string;
+  total: number;
+  passed: number;
+  failed: number;
+  human_review: number;
+  duration_seconds: number | null;
+  created_at: string | null;
+};
+
+/** Recent Phase 3 runs for a project, newest first. Drives the history dropdown. */
+export async function listPhase3Runs(
+  projectId: string,
+  runType: "plan" | "execute" | "all" = "all",
+  limit = 20,
+): Promise<Phase3RunSummary[]> {
+  const params = new URLSearchParams({ run_type: runType, limit: String(limit) });
+  return request(`/projects/${projectId}/phase3/runs?${params.toString()}`);
 }
 
 
@@ -1284,10 +1358,14 @@ export async function listPhase3ReviewQueue(
   projectId: string,
 
   itemStatus?: string,
+  runId?: string,
 
 ): Promise<Phase3ReviewItem[]> {
 
-  const qs = itemStatus ? `?item_status=${itemStatus}` : "";
+  const params = new URLSearchParams();
+  if (itemStatus) params.set("item_status", itemStatus);
+  if (runId) params.set("run_id", runId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
 
   return request(`/projects/${projectId}/phase3/review-queue${qs}`);
 
@@ -1384,21 +1462,53 @@ export async function raisePhase3JiraIssue(
 
 export type Phase3TestState = {
   test_id: string;
+  tc_number?: string | null;
   title: string;
+  scenario_title?: string | null;
   target_page: string;
   status: "PENDING" | "PASS" | "FAIL" | "SCRIPT_ERROR" | "APP_ERROR" | "BLOCKED" | "HUMAN_REVIEW";
   retries: number;
   blocked_by: string | null;
   network_logs_count: number;
+  failure_reason?: string | null;
+  review_category?: string | null;
+  review_type?: "BUG" | "TASK" | null;
+  review_status?: string | null;
+  jira_ref?: string | null;
+  trace_path?: string | null;
 };
 
-export async function getPhase3ExecutionState(projectId: string): Promise<Phase3TestState[]> {
-  return request(`/projects/${projectId}/phase3/execution-state`);
+export async function getPhase3ExecutionState(projectId: string, runId?: string): Promise<Phase3TestState[]> {
+  const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+  return request(`/projects/${projectId}/phase3/execution-state${qs}`);
+}
+
+export type Phase3NetworkLog = {
+  id: string;
+  url: string;
+  method: string;
+  status_code: number;
+  is_failure: boolean;
+  created_at: string | null;
+};
+
+/** Failing 4xx/5xx network requests for a test result; backs the click-to-expand badge. */
+export async function getPhase3NetworkLogs(
+  projectId: string,
+  testId: string,
+  runId?: string,
+  failuresOnly = true,
+): Promise<Phase3NetworkLog[]> {
+  const params = new URLSearchParams();
+  if (runId) params.set("run_id", runId);
+  if (!failuresOnly) params.set("failures_only", "false");
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return request(`/projects/${projectId}/phase3/network-logs/${testId}${qs}`);
 }
 
 // ─── Phase 3 — Generate → Approve → Execute ────────────────────────────────
 
-export type TestCaseApprovalStatus = "PENDING" | "APPROVED" | "NEEDS_EDIT";
+export type TestCaseApprovalStatus = "PENDING" | "APPROVED" | "NEEDS_EDIT" | "EXCLUDED";
 
 export type Phase3TestCase = {
   test_id: string;
@@ -1447,7 +1557,7 @@ export async function getPhase3TcDocumentJson(
   return request(`/projects/${projectId}/phase3/tc-document/json?run_id=${runId}`);
 }
 
-/** Download TC markdown document as a file. */
+/** Download X-Ray CSV test case document as a file. */
 export function getPhase3TcDocumentUrl(projectId: string, runId: string): string {
   return `${(process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "")}/api/v1/projects/${projectId}/phase3/tc-document?run_id=${runId}`;
 }
@@ -1467,7 +1577,7 @@ export async function approveAllPhase3TestCases(
 export async function setPhase3TestCaseApproval(
   projectId: string,
   testId: string,
-  approvalStatus: "APPROVED" | "NEEDS_EDIT",
+  approvalStatus: "APPROVED" | "NEEDS_EDIT" | "EXCLUDED",
 ): Promise<Phase3TestCase> {
   return request(`/projects/${projectId}/phase3/test-cases/${testId}/approval`, {
     method: "PATCH",
@@ -1487,14 +1597,21 @@ export async function updatePhase3TestCase(
   });
 }
 
-/** Hard-reset Phase 3: deletes all TCs, results, review items, and runs. */
-export async function resetPhase3(projectId: string): Promise<{
+/** Reset Phase 3 data. scope='current_run' wipes only the latest run; 'all' wipes everything for the project. */
+export async function resetPhase3(
+  projectId: string,
+  scope: "current_run" | "all" = "all",
+): Promise<{
+  scope: "current_run" | "all";
+  run_id?: string;
   deleted_test_cases: number;
   deleted_test_results: number;
   deleted_review_items: number;
   deleted_runs: number;
 }> {
-  return request(`/projects/${projectId}/phase3/reset`, { method: "DELETE" });
+  return request(`/projects/${projectId}/phase3/reset?scope=${scope}`, {
+    method: "DELETE",
+  });
 }
 
 /** Cancel an active Phase 3 run — purges RabbitMQ queue and marks run as cancelled. */

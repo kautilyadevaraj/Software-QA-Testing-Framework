@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 
 import uuid6
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -117,6 +117,46 @@ class ProjectCredentialVerification(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     project = relationship("Project")
+
+
+class CredentialProfile(Base):
+    __tablename__ = "credential_profiles"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "username",
+            "role",
+            name="uq_credential_profiles_project_username_role",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid6.uuid7)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_file_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("project_files.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_ciphertext: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    role: Mapped[str] = mapped_column(String(100), nullable=False, default="user")
+    auth_type: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    endpoint: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    project = relationship("Project")
+    source_file = relationship("ProjectFile")
 
 
 class ExtractedText(Base):

@@ -1,4 +1,4 @@
-# ── Node / Next.js ─────────────────────────────────────────────────────────
+# Node / Next.js
 **/node_modules/
 /.pnp
 .pnp.*
@@ -7,54 +7,43 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
-# Next.js build output
 **/.next/
 **/out/
-
-# Production build
 **/build/
 **/dist/
 **/.cache/
-
-# TypeScript
 *.tsbuildinfo
 next-env.d.ts
 
-# ── Python / FastAPI ────────────────────────────────────────────────────────
+# Python / FastAPI
 **/.venv/
 **/venv/
+**/env/
 **/__pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-
-# uv lock — keep pinned deps (comment out if you don't want to pin in CI)
-# uv.lock
-
-# Pytest / coverage
 .pytest_cache/
 **/.pytest_cache/
 .coverage
+**/.tracecov/
 **/htmlcov/
-
-# Mypy
 .mypy_cache/
 **/.mypy_cache/
 
-# ── Environment & Secrets ───────────────────────────────────────────────────
-# All .env files are gitignored EXCEPT .env.example templates
+# Environment and secrets
 .env*
 !**/.env.example
+*.pem
+**/auth.json
 
-# ── Uploaded user files ─────────────────────────────────────────────────────
-# Never commit user PDFs, Swagger docs, credentials CSVs, etc.
+# Uploaded user files
 uploads/
 **/uploads/
 
-# ── Generated Playwright scripts & test output ──────────────────────────────
+# Generated Playwright scripts and test output
 server/tests/generated/
-server/tests/tests/              # nested generated trace output folder
+server/tests/tests/
 server/test-results/
 server/test_docs/
 server/state.json
@@ -62,23 +51,16 @@ server/state.json
 **/traces/
 **/.last-run.json
 **/error-context.md
-
-# ── Playwright auth state (contains credentials — never commit) ──────────────
-**/auth.json
-
-# ── Playwright (server-side Node install) ───────────────────────────────────
-server/node_modules/
-server/package-lock.json
-
-# ── JSON / text report dumps (dev artifacts) ────────────────────────────────
 server/report.json
 server/report_utf8.json
 server/test_output.txt
 
-# ── Local ML model cache ─────────────────────────────────────────────────────
+# Local runtime/dependency caches
+server/node_modules/
+server/package-lock.json
 server/models/
 
-# ── Logs ────────────────────────────────────────────────────────────────────
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -86,21 +68,20 @@ yarn-error.log*
 *.log
 logs/
 
-# ── OS / Editor junk ────────────────────────────────────────────────────────
+# OS / editor junk
 .DS_Store
 Thumbs.db
-*.pem
 .vscode/
 .idea/
 *.swp
 *.swo
 *.tmp
 
-# ── Prisma (legacy) ──────────────────────────────────────────────────────────
+# Local DB / legacy generated output
 /app/generated/prisma
 prisma/migrations
 *.db
 *.db-journal
 
-# ── Deployment ──────────────────────────────────────────────────────────────
+# Deployment
 .vercel

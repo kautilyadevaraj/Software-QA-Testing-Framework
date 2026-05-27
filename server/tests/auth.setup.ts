@@ -1,17 +1,19 @@
 /**
  * auth.setup.ts — runs ONCE before Phase 3 workers start.
  *
- * Logs in with the configured credentials and saves browser
- * cookies + localStorage to tests/auth.json.  Every subsequent
- * generated test loads that file via playwright.config.ts so it
- * starts in an already-authenticated state.
+ * Logs in with one project credential and saves browser cookies +
+ * localStorage to AUTH_STATE_PATH. Phase 3 creates one auth state
+ * per project/run/credential profile.
  *
  * Auth tests (login/logout/locked-out) override storageState in
  * their own test.use() call so they still start unauthenticated.
  */
 import { test as setup } from "@playwright/test";
 
-const AUTH_FILE = "tests/auth.json";
+const AUTH_FILE = process.env.AUTH_STATE_PATH;
+if (!AUTH_FILE) {
+  throw new Error("AUTH_STATE_PATH is required for Phase 3 auth setup");
+}
 
 // Always start with a clean browser — no stored state from a
 // previous run should affect the login attempt.

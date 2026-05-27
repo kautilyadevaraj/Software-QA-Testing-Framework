@@ -1,21 +1,6 @@
-import csv
 from typing import List, Dict
-from pathlib import Path
+
+from app.services.credential_service import read_credential_rows
 
 def read_credentials_csv(file_path: str) -> List[Dict]:
-    credentials = []
-
-    with open(file_path, newline="", encoding="utf-8") as csvfile:
-        reader = csv.DictReader(csvfile)
-
-        for row in reader:
-            credentials.append({
-                "username": row.get("username"),
-                "password": row.get("password"),
-                "role": row.get("role"),
-                "auth_type": row.get("authtype"),
-                "endpoint": row.get("api endpoint"),
-                "verified": False
-            })
-
-    return credentials
+    return [{**row, "verified": False} for row in read_credential_rows(file_path)]

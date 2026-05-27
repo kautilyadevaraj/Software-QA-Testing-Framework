@@ -1,5 +1,5 @@
 services:
-  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  # PostgreSQL
   postgres:
     image: postgres:16-alpine
     container_name: sqat_postgres
@@ -18,7 +18,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── RabbitMQ ─────────────────────────────────────────────────────────────────
+  # RabbitMQ
   rabbitmq:
     image: rabbitmq:3-management
     container_name: sqat_rabbitmq
@@ -29,7 +29,7 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
     ports:
       - "5672:5672"
-      - "15672:15672"    # Management UI
+      - "15672:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 15s
@@ -37,7 +37,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── FastAPI Server ────────────────────────────────────────────────────────────
+  # FastAPI server
   server:
     build:
       context: ./server
@@ -51,10 +51,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://sqat:sqat_password@postgres:5432/sqat
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      # Override these via .env or docker-compose.override.yml for real credentials
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       NIM_API_KEY: ${NIM_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-groq,gemini,openrouter,nim}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-prod-use-32plus-chars}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       USER_EMAIL: ${USER_EMAIL:-}
@@ -62,6 +64,9 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+      PHASE3_EMBEDDED_WORKERS: ${PHASE3_EMBEDDED_WORKERS:-false}
+      PHASE3_EXTERNAL_RUN_TIMEOUT_S: ${PHASE3_EXTERNAL_RUN_TIMEOUT_S:-3600}
+      STATE_JSON_PATH: /app/state/state.json
     volumes:
       - ./server/uploads:/app/uploads
       - ./server/tests/generated:/app/tests/generated
@@ -75,17 +80,51 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── Next.js Client ───────────────────────────────────────────────────────────
+  # Phase 3 execution worker
+  phase3-worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "app.services.phase3_worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://sqat:sqat_password@postgres:5432/sqat
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-prod-use-32plus-chars}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      NIM_API_KEY: ${NIM_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-groq,gemini,openrouter,nim}
+      BASE_URL: ${BASE_URL:-http://localhost:3000}
+      PLAYWRIGHT_HEADED: ${PLAYWRIGHT_HEADED:-false}
+      PLAYWRIGHT_SLOW_MO_MS: ${PLAYWRIGHT_SLOW_MO_MS:-0}
+      TEST_TIMEOUT_MS: ${TEST_TIMEOUT_MS:-180000}
+      STATE_JSON_PATH: /app/state/state.json
+    volumes:
+      - ./server/uploads:/app/uploads
+      - ./server/tests:/app/tests
+      - server_state:/app/state
+    restart: unless-stopped
+
+  # Next.js client
   client:
     build:
       context: ./client
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:-http://localhost:8000}
     container_name: sqat_client
     depends_on:
       server:
         condition: service_healthy
     environment:
-      NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:-http://localhost:8000}
     ports:
       - "3000:3000"
     restart: unless-stopped

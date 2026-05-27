@@ -30,6 +30,7 @@ from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.schemas.project import ProjectCreateRequest, ProjectListResponse, ProjectResponse, ProjectUpdateRequest
 from app.services.project_service import create_project, delete_project, get_project_or_404, list_projects, update_project
+from app.services.credential_service import get_profile_password, list_project_profiles
 from app.utils.rate_limiter import limiter
 from app.services.pdf_extractor_service import start_pdf_extraction, PDF_PROGRESS
 import fitz
@@ -523,7 +524,20 @@ def get_project_credentials(
 ):
     project = get_project_or_404(db, current_user.id, project_id)
 
-    # 2. Find credentials file
+    profiles = list_project_profiles(db, project.id)
+    if profiles:
+        return [
+            {
+                "id": str(profile.id),
+                "username": profile.username,
+                "role": profile.role,
+                "auth_type": profile.auth_type,
+                "endpoint": profile.endpoint,
+                "verified": profile.is_verified,
+            }
+            for profile in profiles
+        ]
+
     file = (
         db.query(ProjectFile)
         .filter(
@@ -532,12 +546,10 @@ def get_project_credentials(
         )
         .first()
     )
-
     if not file:
         return []
 
     credentials = []
-
     verifications = db.query(ProjectCredentialVerification).filter_by(project_id=project.id).all()
     verified_map = {v.username: v.is_verified for v in verifications}
 
@@ -571,6 +583,16 @@ def mark_verified(
     current_user: User = Depends(get_current_user),
 ):
     username = payload.get("username")
+    profile_id = payload.get("credential_id") or payload.get("id")
+    if profile_id:
+        from app.models.project import CredentialProfile
+
+        profile = db.get(CredentialProfile, uuid.UUID(str(profile_id)))
+        if profile and profile.project_id == project_id:
+            profile.is_verified = not profile.is_verified
+            db.commit()
+            return {"status": "verified", "verified": profile.is_verified}
+
     verification = db.query(ProjectCredentialVerification).filter_by(project_id=project_id, username=username).first()
     if verification:
         verification.is_verified = not verification.is_verified
@@ -594,9 +616,23 @@ def run_playwright(
     auth_type = payload.get("auth_type")
 
     project = get_project_or_404(db, current_user.id, project_id)
-    file = db.query(ProjectFile).filter(ProjectFile.project_id == project.id, ProjectFile.file_type == FileType.CREDENTIALS).first()
     password = ""
-    if file:
+    profiles = list_project_profiles(db, project.id)
+    profile = next(
+        (
+            p for p in profiles
+            if p.username == username and (not role or p.role == role)
+        ),
+        None,
+    )
+    if profile:
+        password = get_profile_password(profile)
+        url = url or profile.endpoint
+        auth_type = auth_type or profile.auth_type
+        role = role or profile.role
+
+    file = db.query(ProjectFile).filter(ProjectFile.project_id == project.id, ProjectFile.file_type == FileType.CREDENTIALS).first()
+    if file and not password:
         with open(file.absolute_path, newline="", encoding="utf-8") as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:

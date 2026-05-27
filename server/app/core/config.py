@@ -44,12 +44,17 @@ class Settings(BaseSettings):
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
 
-    # LLM provider: "groq" or "nim" or "openrouter"
+    # LLM provider: "groq" | "gemini" | "openrouter" | "nim"
     llm_provider: str = "groq"
 
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
     groq_max_tokens: int = 1024
+
+    # Google Gemini (free tier 1500 RPD on 2.5-flash; better at structured prompts).
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_max_tokens: int = 2048
 
     # NVIDIA NIM (OpenAI-compatible)
     nim_api_key: str | None = None
@@ -92,20 +97,63 @@ class Settings(BaseSettings):
     # Phase 3 — Test Execution
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
     rabbitmq_queue: str = "phase3_test_jobs"
+    rabbitmq_dlx: str = "phase3.dlx"
+    rabbitmq_dlq: str = "phase3_test_jobs.dead"
+    phase3_max_attempts: int = 3
     chromium_workers: int = 3
+    phase3_embedded_workers: bool = True
+    phase3_external_run_timeout_s: int = 3600
     requeue_delay_ms: int = 15000
-    test_timeout_ms: int = 60000
+    # ── Timeouts ───────────────────────────────────────────────────────────────
+    # Historical setting: drove BOTH Playwright per-test timeout AND the worker
+    # subprocess kill timer from the same value. Keeping it as a fallback for
+    # legacy .env files; new code reads the split settings below.
+    test_timeout_ms: int = 180000
+    # Per-test Playwright timeout (a single test() invocation). Default 30s —
+    # bails fast on hung selectors so a 6-test serial suite can fit inside the
+    # subprocess wallclock. Falls back to test_timeout_ms when not explicitly
+    # set so existing .env files keep working.
+    playwright_test_timeout_ms: int = 0
+    # Total subprocess wallclock for ONE Playwright run (the whole .spec.ts).
+    # Default 600s. Must be ≥ playwright_test_timeout_ms × num_tests + buffer.
+    # Falls back to test_timeout_ms × 4 when not explicitly set.
+    worker_subprocess_timeout_ms: int = 0
     vision_fallback: bool = False
     playwright_headed: bool = False
+    # Demo/local visibility: when headed mode is enabled, slow each Playwright
+    # action so testers can actually watch the browser perform the flow.
+    playwright_slow_mo_ms: int = 3000
     state_json_path: str = "state.json"
     generated_scripts_dir: str = "tests/generated"
+
+    # Auth-state cleanup — expired storageState files + DB rows
+    auth_state_retention_hours: int = 24
+    auth_state_cleanup_interval_minutes: int = 60
+    auth_state_cleanup_enabled: bool = True
+
+    # Generated-script cleanup — per-project per-run .spec.ts directories
+    # under tests/generated/<project_id>/<run_id>/. Without this, disk fills
+    # up forever as new runs land in new subdirectories. Kept slightly longer
+    # than auth_state retention so traces / debug runs remain inspectable.
+    script_retention_hours: int = 72
+    script_cleanup_enabled: bool = True
+
+    # A4 strict-snapshot: when True, missing DOM snapshots cause build_context
+    # to raise instead of returning an empty stub. Empty-stub fallback masks a
+    # real Phase-1 gap: A5 then writes scripts grounded on nothing and
+    # hallucinates selectors. Enable in production. Default off for back-compat
+    # so existing dev runs without complete snapshots keep working.
+    a4_strict_snapshot: bool = False
 
     # Seconds to sleep between grouped A5 LLM calls (rate-limit for free-tier models)
     # 8s = safe default for qwen3-coder:free (8 RPM) and groq (6 RPM)
     llm_rate_limit_sleep: float = 8.0
 
-    # Path to Playwright auth storage state (created by auth.setup.ts before each run)
-    auth_json_path: str = "tests/auth.json"
+    # LLM resilience — max in-flight calls, fallback chain, and retry policy
+    llm_max_concurrent: int = 4
+    llm_fallback_chain: str = "groq,gemini,openrouter,nim"   # primary first, others as fallback
+    llm_retry_attempts: int = 3
+    llm_retry_backoff_base_s: float = 2.0
 
     @field_validator("cookie_samesite")
     @classmethod
@@ -140,6 +188,31 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.app_env.lower() in {"dev", "development", "local"}
+
+    @property
+    def resolved_playwright_test_timeout_ms(self) -> int:
+        """Per-test Playwright timeout. Prefers the explicit split setting;
+        falls back to the legacy `test_timeout_ms` so old .env files keep working,
+        and finally to a 30 000 ms (30 s) default."""
+        if self.playwright_test_timeout_ms > 0:
+            return self.playwright_test_timeout_ms
+        if self.test_timeout_ms and self.test_timeout_ms != 180000:
+            return self.test_timeout_ms
+        return 30000
+
+    @property
+    def resolved_worker_subprocess_timeout_ms(self) -> int:
+        """Subprocess-level kill timer for one Playwright run.
+
+        Default 600 000 ms (10 min). When only the legacy `test_timeout_ms` is
+        configured, scale it ×4 so a 180 s legacy value yields a 720 s budget —
+        big enough to hold the per-test bail × all tests in the suite.
+        """
+        if self.worker_subprocess_timeout_ms > 0:
+            return self.worker_subprocess_timeout_ms
+        if self.test_timeout_ms and self.test_timeout_ms != 180000:
+            return max(self.test_timeout_ms * 4, 600000)
+        return 600000
 
 
 @lru_cache

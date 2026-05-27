@@ -9,6 +9,7 @@ import {
   listPhase3ReviewQueue,
   patchPhase3ReviewItem,
   raisePhase3JiraIssue,
+  type Phase3TestCase,
   type Phase3ReviewItem,
 } from "@/lib/api";
 import { Phase3ScriptEditorModal } from "@/components/phase3-script-editor-modal";
@@ -18,6 +19,8 @@ const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:
 type Props = {
   projectId: string;
   active: boolean;
+  runId?: string | null;
+  testCases?: Phase3TestCase[];
 };
 
 function formatDate(iso: string) {
@@ -27,7 +30,21 @@ function formatDate(iso: string) {
   }).format(new Date(iso));
 }
 
-export function Phase3ReviewQueue({ projectId, active }: Props) {
+function asText(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function asStringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function reviewReason(evidence: Record<string, unknown>, fallback: "BUG" | "TASK") {
+  const category = asText(evidence.category) || fallback;
+  const reason = asText(evidence.reason) || asText(evidence.validation_reason);
+  return { category, reason };
+}
+
+export function Phase3ReviewQueue({ projectId, active, runId, testCases = [] }: Props) {
   const [items, setItems] = useState<Phase3ReviewItem[]>([]);
   const [editItem, setEditItem] = useState<Phase3ReviewItem | null>(null);
   const [jiraItem, setJiraItem] = useState<Phase3ReviewItem | null>(null);
@@ -35,13 +52,19 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
   const [jiraSubmitting, setJiraSubmitting] = useState(false);
   const [markingId, setMarkingId] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const testCaseById = testCases.reduce<Record<string, Phase3TestCase>>((acc, tc) => {
+    acc[tc.test_id] = tc;
+    return acc;
+  }, {});
 
-  // ── Initial load — fetch existing items from DB ─────────────────────────
+  // ── Fetch items from DB — on mount AND whenever active state changes ────
+  // When execution ends (active goes false), items created between the last
+  // SSE poll and the phase transition would be missed without this re-fetch.
   useEffect(() => {
-    listPhase3ReviewQueue(projectId)
+    listPhase3ReviewQueue(projectId, undefined, runId ?? undefined)
       .then((data) => setItems(data))
       .catch(() => {/* ignore */ });
-  }, [projectId]);
+  }, [projectId, active, runId]);
 
   // ── Poll for status updates while any item is 'rerunning' ───────────────
   useEffect(() => {
@@ -49,14 +72,14 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
     if (!hasRerunning) return;
     const id = setInterval(async () => {
       try {
-        const fresh = await listPhase3ReviewQueue(projectId);
+        const fresh = await listPhase3ReviewQueue(projectId, undefined, runId ?? undefined);
         setItems(fresh);
       } catch {
         // ignore transient errors
       }
     }, 3000);
     return () => clearInterval(id);
-  }, [items, projectId]);
+  }, [items, projectId, runId]);
 
   // ── SSE connection — real-time additions during active run ──────────────
   useEffect(() => {
@@ -66,7 +89,8 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
       return;
     }
 
-    const url = `${API_BASE_URL}/api/v1/projects/${projectId}/phase3/review-queue/stream`;
+    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+    const url = `${API_BASE_URL}/api/v1/projects/${projectId}/phase3/review-queue/stream${qs}`;
     const es = new EventSource(url, { withCredentials: true });
     esRef.current = es;
 
@@ -90,7 +114,7 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
       es.close();
       esRef.current = null;
     };
-  }, [active, projectId]);
+  }, [active, projectId, runId]);
 
   // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -152,6 +176,12 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
           const failingRequests = Array.isArray(evidence.failing_requests)
             ? (evidence.failing_requests as { url: string; method: string; status: number }[])
             : [];
+          const { category, reason } = reviewReason(evidence, item.review_type);
+          const groundingErrors = asStringArray(evidence.grounding_errors);
+          const originalBlock = asText(evidence.original_block);
+          const repairedBlock = asText(evidence.repaired_block);
+          const scriptPath = asText(evidence.script_path);
+          const tc = testCaseById[item.test_id];
 
           return (
             <div
@@ -181,11 +211,19 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
                       {item.review_type}
                     </span>
                     <span className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-xs text-gray-600">
-                      {item.test_id.slice(0, 8)}
+                      {tc?.tc_number ?? item.test_id.slice(0, 8)}
                     </span>
+                    {tc?.title && (
+                      <span className="min-w-0 truncate text-xs font-semibold text-gray-700">
+                        {tc.title}
+                      </span>
+                    )}
                     {item.jira_ref && (
                       <span className="text-xs font-medium text-blue-600">{item.jira_ref}</span>
                     )}
+                    <span className="rounded bg-white/70 px-1.5 py-0.5 text-xs font-semibold text-gray-700">
+                      {category}
+                    </span>
                     <span
                       className={`ml-auto text-xs font-medium ${item.status === "reviewed"
                           ? "text-green-600"
@@ -197,6 +235,18 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
                       {item.status}
                     </span>
                   </div>
+
+                  {reason && (
+                    <p className="mt-2 rounded bg-white/70 px-2 py-1 text-xs font-medium text-gray-700">
+                      {reason}
+                    </p>
+                  )}
+
+                  {tc?.scenario_title && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      Scenario: <span className="font-medium">{tc.scenario_title}</span>
+                    </p>
+                  )}
 
                   {failingRequests.length > 0 && (
                     <div className="mt-2 space-y-1">
@@ -218,6 +268,35 @@ export function Phase3ReviewQueue({ projectId, active }: Props) {
                     <p className="mt-2 line-clamp-2 rounded bg-gray-100 px-2 py-1 font-mono text-xs text-gray-500">
                       {evidence.error_log}
                     </p>
+                  )}
+
+                  {groundingErrors.length > 0 && (
+                    <div className="mt-2 rounded bg-amber-100/70 px-2 py-1 text-xs text-amber-800">
+                      <span className="font-semibold">Grounding:</span>{" "}
+                      {groundingErrors.slice(0, 2).join("; ")}
+                    </div>
+                  )}
+
+                  {scriptPath && (
+                    <p className="mt-2 truncate font-mono text-[11px] text-gray-400">
+                      {scriptPath}
+                    </p>
+                  )}
+
+                  {(originalBlock || repairedBlock) && (
+                    <details className="mt-2 rounded bg-white/60 px-2 py-1 text-xs text-gray-600">
+                      <summary className="cursor-pointer font-medium">Repair evidence</summary>
+                      {originalBlock && (
+                        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-gray-900 p-2 text-[11px] text-gray-100">
+                          {originalBlock}
+                        </pre>
+                      )}
+                      {repairedBlock && (
+                        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-gray-900 p-2 text-[11px] text-green-100">
+                          {repairedBlock}
+                        </pre>
+                      )}
+                    </details>
                   )}
 
                   <p className="mt-2 text-xs text-gray-400">{formatDate(item.created_at)}</p>

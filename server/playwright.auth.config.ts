@@ -1,6 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const headed = process.env.PLAYWRIGHT_HEADED === "true";
+const slowMoMs = headed
+  ? parseInt(process.env.PLAYWRIGHT_SLOW_MO_MS ?? "3000", 10)
+  : 0;
 
 export default defineConfig({
   testDir: "./tests",
@@ -15,7 +18,7 @@ export default defineConfig({
     baseURL: process.env.BASE_URL ?? "http://localhost:3000",
     screenshot: "only-on-failure",
     launchOptions: {
-      slowMo: headed ? 500 : 0,
+      slowMo: Number.isFinite(slowMoMs) ? slowMoMs : 3000,
     },
   },
 

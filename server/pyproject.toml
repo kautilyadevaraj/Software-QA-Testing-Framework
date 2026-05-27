@@ -59,3 +59,8 @@ dependencies = [
     "websockets==16.0",
     "wrapt==2.1.2",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

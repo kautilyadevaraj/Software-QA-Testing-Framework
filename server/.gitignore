@@ -1,44 +1,47 @@
-# Python virtual environment
+# Python virtual environments
 .venv/
 venv/
 env/
 
-# Uploaded user files — never commit credentials/PDFs
-uploads/
-
-# Python bytecode
+# Python bytecode and test caches
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-
-# uv lock (keep or remove depending on your policy — remove if you don't pin deps in CI)
-# uv.lock
-
-# Pytest / coverage
 .pytest_cache/
 .coverage
 htmlcov/
-
-# Mypy
 .mypy_cache/
 
-# Environment files (root .gitignore covers **.env* but be explicit here too)
+# Environment files
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
-# Alembic — keep migrations/ tracked, but not temp files
+# Uploaded user files and generated runtime artifacts
+uploads/
+tests/generated/
+tests/tests/
+test-results/
+test_docs/
+state.json
+report.json
+report_utf8.json
+test_output.txt
+
+# Local caches / dependencies
+models/
+node_modules/
+
+# Alembic temp files. Keep migrations/ tracked.
 *.alembic.tmp
 
-# Editor / OS junk
+# Logs and editor junk
+*.log
+logs/
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Logs
-*.log
-logs/

@@ -124,6 +124,12 @@ def validate_and_save_upload(db: Session, project: Project, file: UploadFile, fi
     db.add(new_file)
     db.commit()
     db.refresh(new_file)
+
+    if file_type == FileType.CREDENTIALS:
+        from app.services.credential_service import sync_profiles_from_credentials_file
+
+        sync_profiles_from_credentials_file(db, project, new_file)
+        db.refresh(new_file)
     
     return new_file
 

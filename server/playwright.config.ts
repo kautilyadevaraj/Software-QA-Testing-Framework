@@ -1,25 +1,48 @@
 import { defineConfig, devices } from "@playwright/test";
 import { existsSync } from "fs";
+import * as path from "path";
 
 const headed = process.env.PLAYWRIGHT_HEADED === "true";
-const AUTH_FILE = "tests/auth.json";
+const slowMoMs = headed
+  ? parseInt(process.env.PLAYWRIGHT_SLOW_MO_MS ?? "3000", 10)
+  : 0;
+const AUTH_FILE = process.env.AUTH_STATE_PATH
+  ? path.resolve(process.cwd(), process.env.AUTH_STATE_PATH)
+  : undefined;
+
+// ── Timeout resolution ──────────────────────────────────────────────────────
+// Per-test timeout (a single test() invocation). PLAYWRIGHT_TEST_TIMEOUT_MS is
+// the new explicit setting; legacy TEST_TIMEOUT_MS is honored as a fallback so
+// existing .env files keep working. Default 30 000 ms — tight enough that a
+// hung selector in one test doesn't blow the whole suite's budget.
+const PER_TEST_TIMEOUT_MS = parseInt(
+  process.env.PLAYWRIGHT_TEST_TIMEOUT_MS
+    ?? process.env.TEST_TIMEOUT_MS
+    ?? "30000",
+  10,
+);
 
 export default defineConfig({
   testDir: "./tests/generated",
-  timeout: parseInt(process.env.TEST_TIMEOUT_MS ?? "180000", 10),
-  retries: 1,   // allows trace capture on first retry
+  timeout: PER_TEST_TIMEOUT_MS,
+  retries: 0,   // app uses its own Agent 7 retry — PW retries corrupt serial state
   workers: 1,
   reporter: "json",
 
   use: {
     headless: !headed,
     baseURL: process.env.BASE_URL ?? "http://localhost:3000",
-    storageState: existsSync(AUTH_FILE) ? AUTH_FILE : undefined,
+    storageState: AUTH_FILE && existsSync(AUTH_FILE) ? AUTH_FILE : undefined,
     screenshot: "only-on-failure",
     video: headed ? "on" : "off",
-    trace: "on-first-retry",   // worker reads trace path from JSON reporter attachments
+    // `on-first-retry` produces NOTHING when retries=0 (we disable Playwright
+    // retries because A7 handles them at the agent level). `retain-on-failure`
+    // keeps a trace for every failed test without needing a retry — the worker
+    // reads the trace path from JSON reporter attachments and routes it to
+    // the review queue UI.
+    trace: "retain-on-failure",
     launchOptions: {
-      slowMo: headed ? 500 : 0,
+      slowMo: Number.isFinite(slowMoMs) ? slowMoMs : 3000,
     },
   },
 
