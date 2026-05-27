@@ -54,6 +54,9 @@ def _drop_fk_by_shape(table: str, columns: list[str], referred_table: str, refer
 
 
 def upgrade() -> None:
+    for table in ("network_logs", "retry_history"):
+        _drop_fk_by_shape(table, ["test_id"], "test_results", ["test_id"])
+
     tr_uniques = _unique_constraints("test_results")
     for name, columns in tr_uniques.items():
         if columns == ["test_id"]:
@@ -75,8 +78,6 @@ def upgrade() -> None:
         if "test_result_id" not in cols:
             op.add_column(table, sa.Column("test_result_id", UUID(as_uuid=True), nullable=True))
             op.create_index(f"ix_{table}_test_result_id", table, ["test_result_id"])
-
-        _drop_fk_by_shape(table, ["test_id"], "test_results", ["test_id"])
 
         fks = _foreign_keys(table)
         if f"fk_{table}_test_result_id_test_results" not in fks:

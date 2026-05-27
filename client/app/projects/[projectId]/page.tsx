@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -74,6 +74,13 @@ import { ScenarioQaPanel } from "@/components/scenario-qa-panel";
 import { Phase3Panel } from "@/components/phase3-panel";
 
 type ActiveTab = "qa" | "configuration" | "phase3";
+
+function parseActiveTab(value: string | null): ActiveTab {
+  if (value === "qa" || value === "phase3" || value === "configuration") {
+    return value;
+  }
+  return "configuration";
+}
 
 type ProjectFormState = {
   name: string;
@@ -161,6 +168,9 @@ function getStatusTone(status: ProjectStatus) {
 
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const projectId = params.projectId;
 
   const [project, setProject] = useState<ProjectRecord | null>(null);
@@ -175,7 +185,7 @@ export default function ProjectDetailsPage() {
   const [searchResults, setSearchResults] = useState<UserSearchResponse[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>("configuration");
+  const [activeTab, setActiveTabState] = useState<ActiveTab>(() => parseActiveTab(searchParams.get("tab")));
   const [isLoading, setIsLoading] = useState(true);
   const [isLaunched, setIsLaunched] = useState(false);
   const [isProceedConfirmed, setIsProceedConfirmed] = useState(false);
@@ -192,6 +202,25 @@ export default function ProjectDetailsPage() {
     isBackendSynced &&
     credentials.length > 0 &&
     credentials.every((c) => c.verified === true);
+
+  const setActiveTab = useCallback(
+    (tab: ActiveTab) => {
+      setActiveTabState(tab);
+      const nextParams = new URLSearchParams(searchParams.toString());
+      if (tab === "configuration") {
+        nextParams.delete("tab");
+      } else {
+        nextParams.set("tab", tab);
+      }
+      const query = nextParams.toString();
+      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
+
+  useEffect(() => {
+    setActiveTabState(parseActiveTab(searchParams.get("tab")));
+  }, [searchParams]);
 
   // Jira integration state
   const [jiraConfig, setJiraConfig] = useState<JiraConfig | null>(null);
@@ -354,7 +383,7 @@ export default function ProjectDetailsPage() {
       }
       setIsRedirectingToQa(false);
     };
-  }, [allVerified, isIngestionStarted, projectId]);
+  }, [allVerified, isIngestionStarted, projectId, setActiveTab]);
 
   const canIngestAndAddDocuments = isLaunched && isProceedConfirmed;
 
@@ -933,11 +962,12 @@ export default function ProjectDetailsPage() {
 
   if (isLoading) {
     return (
-      <Card className="border-black/10 bg-white">
-        <CardHeader>
-          <CardTitle className="text-black">Loading project...</CardTitle>
-        </CardHeader>
-      </Card>
+      <div className="flex h-full min-h-[calc(100dvh-5rem)] w-full items-center justify-center bg-white">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-9 w-9 animate-spin text-[#2a63f5]" />
+          <p className="text-sm font-medium text-black/65">Loading project...</p>
+        </div>
+      </div>
     );
   }
 

@@ -1,13 +1,7 @@
 import uuid
 from pathlib import Path
+from typing import Any
 from sqlalchemy import func, select
-
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.http import models
-except ImportError:
-    QdrantClient = None
-    models = None
 
 from fastapi import HTTPException, UploadFile, status
 
@@ -28,6 +22,15 @@ _FILE_TYPE_LABELS: dict[FileType, str] = {
 }
 
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+def _qdrant_imports() -> tuple[Any | None, Any | None]:
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models
+    except ImportError:
+        return None, None
+    return QdrantClient, models
 
 
 def get_project_files(db: Session, project: Project) -> list[ProjectFile]:
@@ -146,7 +149,8 @@ def delete_project_file(db: Session, project: Project, file_id: uuid.UUID) -> No
     db.commit()
 
     settings = get_settings()
-    if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+    QdrantClient, models = _qdrant_imports()
+    if QdrantClient and models and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
             collection_name = str(project.id)

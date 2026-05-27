@@ -167,13 +167,35 @@ class ScenarioStep(Base):
         nullable=False,
     )
     step_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    # action_type: 'navigate' | 'click' | 'fill' | 'select' | 'hover' | 'keypress' | 'scroll'
+    # action_type: navigate | click | fill | select | hover | keypress | scroll | check | uncheck | slide | submit
     action_type: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     selector: Mapped[str | None] = mapped_column(Text, nullable=True)
     value: Mapped[str | None] = mapped_column(Text, nullable=True)
     element_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     element_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selector_stability: Mapped[str | None] = mapped_column(Text, nullable=True)
+    playwright_locator: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accessible_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url_before: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url_after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    caused_navigation: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    route_variant_before_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("route_variants.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    route_variant_after_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("route_variants.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    semantic_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     network_calls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -182,7 +204,7 @@ class ScenarioStep(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action_type IN ('navigate','click','fill','select','hover','keypress','scroll')",
+            "action_type IN ('navigate','click','fill','select','hover','keypress','scroll','check','uncheck','slide','submit')",
             name="ck_scenario_steps_action_type",
         ),
     )

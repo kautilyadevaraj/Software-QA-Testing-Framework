@@ -1,13 +1,14 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Square, Trash2, WandSparkles, X } from "lucide-react";
+import { BrushCleaning, Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Square, Trash2, WandSparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   ApiError,
   approveHighLevelScenarios,
+  clearScenarioRecording,
   createHighLevelScenario,
   deleteHighLevelScenario,
   generateHighLevelScenarios,
@@ -183,6 +184,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   // Trigger / Launch state
   const [launchingScenarioId, setLaunchingScenarioId] = useState<string | null>(null);
   const [recordingScenarioId, setRecordingScenarioId] = useState<string | null>(null);
+  const [clearingRecordingScenarioId, setClearingRecordingScenarioId] = useState<string | null>(null);
   // Setup Recorder popover
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupInfo, setSetupInfo] = useState<RecordingSetupResponse | null>(null);
@@ -446,6 +448,32 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
       toast.success("Scenario deleted.");
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Unable to delete scenario.");
+    }
+  };
+
+  const clearApprovedRecording = async (scenario: HighLevelScenario) => {
+    if (
+      !window.confirm(
+        `Clear all web recording data for "${scenario.title}"? This removes recorded steps, screenshots, route snapshots, and recording files.`,
+      )
+    ) {
+      return;
+    }
+
+    setClearingRecordingScenarioId(scenario.id);
+    try {
+      const result = await clearScenarioRecording(projectId, scenario.id);
+      if (recordingScenarioId === scenario.id) {
+        setRecordingScenarioId(null);
+      }
+      await loadApprovedScenarios();
+      toast.success(
+        `Recording cleared. Removed ${result.steps_deleted} steps, ${result.route_variants_deleted} route snapshots, and ${result.files_deleted} files.`,
+      );
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Unable to clear recording.");
+    } finally {
+      setClearingRecordingScenarioId(null);
     }
   };
 
@@ -778,7 +806,13 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                 <Info className="h-4 w-4" />
                 Setup Recorder
               </Button>
-              <Button variant="outline" onClick={() => setIsAddingApproved(true)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewApprovedDraft({ title: "", description: "" });
+                  setIsAddingApproved(true);
+                }}
+              >
                 <Plus className="h-4 w-4" />
                 Add Scenario
               </Button>
@@ -792,7 +826,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                   <th className="px-4 py-3">Title</th>
                   <th className="w-32 px-4 py-3">Tags</th>
                   <th className="w-32 px-4 py-3">Status</th>
-                  <th className="w-[112px] px-4 py-3 text-right">Actions</th>
+                  <th className="w-[160px] px-4 py-3 text-right">Actions</th>
                   <th className="w-[240px] px-4 py-3 text-right">Launch</th>
                 </tr>
               </thead>
@@ -859,6 +893,21 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                               <>
                                 <Button size="icon" variant="outline" onClick={() => startApprovedEdit(scenario)} aria-label={`Edit ${scenario.title}`} title="Edit">
                                   <Pencil className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="outline"
+                                  className="border-sky-200 text-sky-700 hover:bg-sky-50"
+                                  onClick={() => void clearApprovedRecording(scenario)}
+                                  disabled={clearingRecordingScenarioId === scenario.id}
+                                  aria-label={`Clear recording for ${scenario.title}`}
+                                  title="Clear web recording"
+                                >
+                                  {clearingRecordingScenarioId === scenario.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <BrushCleaning className="h-4 w-4" />
+                                  )}
                                 </Button>
                                 <Button
                                   size="icon"
@@ -950,35 +999,6 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                   );
                 })}
 
-                {isAddingApproved ? (
-                  <tr>
-                    <td className="px-4 py-3 text-black/40">New</td>
-                    <td className="px-4 py-3">
-                      <Input value={newApprovedDraft.title} onChange={(e) => setNewApprovedDraft((current) => ({ ...current, title: e.target.value }))} placeholder="Scenario title" />
-                    </td>
-                    <td className="px-4 py-3" colSpan={4}>
-                      <textarea
-                        rows={2}
-                        value={newApprovedDraft.description}
-                        onChange={(e) => setNewApprovedDraft((current) => ({ ...current, description: e.target.value }))}
-                        className={tableInputClass()}
-                        placeholder="Scenario description"
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-right" colSpan={2}>
-                      <div className="flex justify-end gap-2">
-                        <Button size="sm" onClick={() => void createApproved()}>
-                          <Check className="h-4 w-4" />
-                          Save
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => setIsAddingApproved(false)}>
-                          <X className="h-4 w-4" />
-                          Cancel
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
               </tbody>
             </table>
           </div>
@@ -987,6 +1007,85 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     </div>
 
       {/* ── Setup Recorder Modal ──────────────────────────────────────────── */}
+      {isAddingApproved ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsAddingApproved(false);
+              setNewApprovedDraft({ title: "", description: "" });
+            }
+          }}
+        >
+          <div className="w-full max-w-xl rounded-lg border border-black/10 bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-black">Add Scenario</h2>
+                <p className="mt-1 text-sm text-black/60">Create a manual high level scenario for this QA project.</p>
+              </div>
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={() => {
+                  setIsAddingApproved(false);
+                  setNewApprovedDraft({ title: "", description: "" });
+                }}
+                aria-label="Close add scenario dialog"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-title" className="text-sm font-medium text-black">
+                  Scenario Title
+                </label>
+                <Input
+                  id="new-scenario-title"
+                  value={newApprovedDraft.title}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, title: event.target.value }))}
+                  placeholder="Enter scenario title"
+                  autoFocus
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-description" className="text-sm font-medium text-black">
+                  Scenario Description
+                </label>
+                <textarea
+                  id="new-scenario-description"
+                  rows={5}
+                  value={newApprovedDraft.description}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, description: event.target.value }))}
+                  className="flex w-full resize-none rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black placeholder:text-black/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                  placeholder="Describe the tester scenario"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setIsAddingApproved(false);
+                  setNewApprovedDraft({ title: "", description: "" });
+                }}
+              >
+                <X className="h-4 w-4" />
+                Cancel
+              </Button>
+              <Button onClick={() => void createApproved()}>
+                <Check className="h-4 w-4" />
+                Save Scenario
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showSetupModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"

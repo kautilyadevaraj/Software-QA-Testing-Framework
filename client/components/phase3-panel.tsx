@@ -389,6 +389,7 @@ function TcAccordion({ tc, projectId, onUpdate, executionState, readOnly = false
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function Phase3Panel({ projectId }: Props) {
+  const phase3TabStorageKey = `sqat:${projectId}:phase3-tab`;
   const [phase, setPhase] = useState<UiPhase>("idle");
   const [allCompleted, setAllCompleted] = useState<boolean | null>(null);
   const [planRunId, setPlanRunId] = useState<string | null>(null);
@@ -398,7 +399,11 @@ export function Phase3Panel({ projectId }: Props) {
   const [runStatus, setRunStatus] = useState<Phase3RunStatus | null>(null);
   const [execState, setExecState] = useState<Phase3TestState[]>([]);
   const [approvingAll, setApprovingAll] = useState(false);
-  const [activeTab, setActiveTab] = useState<Phase3Tab>("testcases");
+  const [activeTab, setActiveTab] = useState<Phase3Tab>(() => {
+    if (typeof window === "undefined") return "testcases";
+    const stored = window.localStorage.getItem(phase3TabStorageKey);
+    return stored === "execution" || stored === "report" || stored === "testcases" ? stored : "testcases";
+  });
   const [tcFilter, setTcFilter] = useState<TestCaseFilter>("ALL");
   const [tcSearch, setTcSearch] = useState("");
 
@@ -414,11 +419,15 @@ export function Phase3Panel({ projectId }: Props) {
     [pollRef, execPollRef, tcPollRef].forEach(r => { if (r.current) { clearInterval(r.current); r.current = null; } });
   };
 
-  // Check Phase 2 completion
+  useEffect(() => {
+    window.localStorage.setItem(phase3TabStorageKey, activeTab);
+  }, [activeTab, phase3TabStorageKey]);
+
+  // Check whether at least one Phase 2 scenario is recorded/completed.
   const checkScenarios = useCallback(async () => {
     try {
       const d = await listHighLevelScenarios(projectId);
-      setAllCompleted(d.scenarios.length > 0 && d.scenarios.every(s => s.status === "completed"));
+      setAllCompleted(d.scenarios.some(s => s.status === "completed"));
     } catch { setAllCompleted(false); }
   }, [projectId]);
 
@@ -498,6 +507,17 @@ export function Phase3Panel({ projectId }: Props) {
     }
   }, [projectId]);
 
+  const fetchInitialRunStatus = useCallback(async () => {
+    try {
+      const runs = await listPhase3Runs(projectId, "all", 1);
+      if (runs.length > 0) {
+        await fetchRunStatus();
+      }
+    } catch {
+      // Non-fatal: the panel can stay idle until the user starts planning.
+    }
+  }, [fetchRunStatus, projectId]);
+
   // Allow the user to jump to an earlier plan run from the history dropdown.
   function handleSelectPlanRun(runId: string) {
     if (!runId || runId === planRunId) return;
@@ -529,10 +549,10 @@ export function Phase3Panel({ projectId }: Props) {
 
   useEffect(() => {
     checkScenarios();
-    fetchRunStatus(); // on mount: auto-detects running/completed runs and sets phase
+    fetchInitialRunStatus(); // on mount: auto-detect existing runs without causing no-run 404s
     fetchPlanRuns();  // populate history dropdown
     return stopAll;
-  }, [checkScenarios, fetchRunStatus, fetchPlanRuns]);
+  }, [checkScenarios, fetchInitialRunStatus, fetchPlanRuns]);
 
   // Secondary effect for planning-complete detection via TC poll
   useEffect(() => {
@@ -715,8 +735,8 @@ export function Phase3Panel({ projectId }: Props) {
           {/* Status message */}
           <p className="text-sm text-gray-500">
             {allCompleted === null ? "Checking scenario status…"
-              : !allCompleted ? "Complete all Phase 2 scenarios before generating tests."
-                : phase === "idle" ? "All scenarios ready. Generate test cases to begin."
+              : !allCompleted ? "Record at least one HLS scenario before generating tests."
+                : phase === "idle" ? "Recorded HLS scenarios are ready. Generate test cases to begin."
                   : phase === "planning" ? "Generating test cases with AI planner…"
                     : phase === "review" ? `${testCases.length} test cases ready for review (${approvedCount}/${activeTestCases.length} active approved, ${excludedCount} excluded).`
                       : phase === "executing" ? "Playwright execution in progress…"

@@ -85,7 +85,9 @@ class Settings(BaseSettings):
     jira_lead_account_id: str | None = None
     
     PUBLIC_API_URL: str = "http://localhost:8000"   # override with actual VM URL in .env
-    RECORDINGS_BASE_PATH: str = "uploads/recordings"
+    RECORDINGS_BASE_PATH: str = "recordings"
+    recorder_store_password_values: bool = False
+    recorder_screenshot_indicator: bool = True
 
     # Playwright test credentials (passed as env vars to test subprocess)
     base_url: str = "http://localhost:3000"

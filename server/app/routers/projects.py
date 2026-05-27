@@ -1,6 +1,7 @@
 import uuid
 import csv
 import asyncio
+from typing import Any
 from app.models.project import (
     ProjectFile,
     FileType,
@@ -11,15 +12,7 @@ from app.models.project import (
     ProjectJiraConfig,
     JiraTicket,
 )
-from playwright.sync_api import sync_playwright
 import threading
-
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.http import models
-except ImportError:
-    QdrantClient = None
-    models = None
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
@@ -32,16 +25,21 @@ from app.schemas.project import ProjectCreateRequest, ProjectListResponse, Proje
 from app.services.project_service import create_project, delete_project, get_project_or_404, list_projects, update_project
 from app.services.credential_service import get_profile_password, list_project_profiles
 from app.utils.rate_limiter import limiter
-from app.services.pdf_extractor_service import start_pdf_extraction, PDF_PROGRESS
-import fitz
-from pathlib import Path
-from sqlalchemy import func
 
 
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 settings = get_settings()
+
+
+def _qdrant_imports() -> tuple[Any | None, Any | None]:
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models
+    except ImportError:
+        return None, None
+    return QdrantClient, models
 
 
 def _to_project_response(project) -> ProjectResponse:
@@ -215,6 +213,7 @@ def ingest_project(
     db.query(APIEndpoint).filter(APIEndpoint.project_id == project.id).delete()
     db.commit()
 
+    QdrantClient, _ = _qdrant_imports()
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
@@ -233,6 +232,8 @@ def ingest_project(
             print(f"Failed to clear Qdrant data: {e}")
 
     project_id_str = str(project.id)
+    from app.services.pdf_extractor_service import PDF_PROGRESS
+
     if project_id_str in PDF_PROGRESS:
         PDF_PROGRESS[project_id_str] = {
             "status": "idle",
@@ -641,6 +642,8 @@ def run_playwright(
                     break
 
     def run():
+        from playwright.sync_api import sync_playwright
+
         if hasattr(asyncio, "WindowsProactorEventLoopPolicy") and not isinstance(
             asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy
         ):
@@ -763,12 +766,16 @@ def extract_pdfs(
 ):
     project = get_project_or_404(db, current_user.id, project_id)
 
+    from app.services.pdf_extractor_service import start_pdf_extraction
+
     return start_pdf_extraction(db, project)
 
 @router.get("/{project_id}/extract-status")
 def get_extract_status(
     project_id: uuid.UUID,
 ):
+    from app.services.pdf_extractor_service import PDF_PROGRESS
+
     return PDF_PROGRESS.get(str(project_id), {
         "status": "idle",
         "progress": 0,

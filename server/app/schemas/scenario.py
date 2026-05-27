@@ -222,12 +222,24 @@ class RecorderRouteResponse(BaseModel):
 
 class RecorderStepCreate(BaseModel):
     step_index: int
-    action_type: str   # navigate | click | fill | select | hover | keypress | scroll
+    action_type: str   # navigate | click | fill | select | hover | keypress | scroll | check | uncheck | slide | submit
     url: str | None = None
     selector: str | None = None
     value: str | None = None
     element_text: str | None = None
     element_type: str | None = None
+    selector_stability: str | None = None
+    playwright_locator: str | None = None
+    accessible_name: str | None = None
+    role: str | None = None
+    label: str | None = None
+    input_type: str | None = None
+    url_before: str | None = None
+    url_after: str | None = None
+    caused_navigation: bool | None = None
+    route_variant_before_id: uuid.UUID | None = None
+    route_variant_after_id: uuid.UUID | None = None
+    semantic_context: dict | None = None
     screenshot_base64: str | None = None
     network_calls: list[dict] | None = None
 

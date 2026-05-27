@@ -2,19 +2,20 @@
 
 
 import logging
+import shutil
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from uuid6 import uuid7
 
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
-from app.graph.scenario_graph import run_scenario_graph
 from app.models.project import HighLevelScenario, Project
-from app.models.scenario import RecordingSession
+from app.models.scenario import DiscoveredRoute, RecordingSession, RouteVariant, ScenarioStep
 from app.models.user import User
 from app.schemas.scenario import (
     ApproveScenariosRequest,
@@ -72,6 +73,34 @@ def _get_scenario_with_completed_by_name(
     return _scenario_response(scenario, completed_by_name)
 
 
+def _recordings_base() -> Path:
+    return Path(getattr(settings, "RECORDINGS_BASE_PATH", "recordings")).resolve()
+
+
+def _remove_recording_path(path: str | None, recordings_base: Path) -> bool:
+    if not path:
+        return False
+
+    target = Path(path)
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return False
+
+    if recordings_base not in resolved.parents and resolved != recordings_base:
+        return False
+
+    if resolved.is_dir():
+        shutil.rmtree(resolved, ignore_errors=True)
+        return True
+    if resolved.exists():
+        resolved.unlink()
+        return True
+    return False
+
+
 # ── Generate ───────────────────────────────────────────────────────────────
 
 @router.post("/{project_id}/scenarios/generate", response_model=GenerateScenariosResponse)
@@ -85,6 +114,8 @@ def generate_scenarios(
 ) -> GenerateScenariosResponse:
     get_project_or_404(db, current_user.id, project_id)
     try:
+        from app.graph.scenario_graph import run_scenario_graph
+
         scenarios = run_scenario_graph(
             str(project_id),
             {
@@ -248,9 +279,121 @@ def delete_scenario(
     ).scalar_one_or_none()
     if not scenario:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
+    clear_scenario_recording(request, project_id, scenario_id, db, current_user)
+    scenario = db.execute(
+        select(HighLevelScenario).where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.id == scenario_id,
+        )
+    ).scalar_one_or_none()
+    if not scenario:
+        return {"deleted": True}
     db.delete(scenario)
     db.commit()
     return {"deleted": True}
+
+
+@router.delete("/{project_id}/scenarios/{scenario_id}/recording")
+@limiter.limit(settings.rate_limit_api)
+def clear_scenario_recording(
+    request: Request,
+    project_id: uuid.UUID,
+    scenario_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, int | bool]:
+    get_project_or_404(db, current_user.id, project_id)
+    scenario = db.execute(
+        select(HighLevelScenario).where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.id == scenario_id,
+        )
+    ).scalar_one_or_none()
+    if not scenario:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
+
+    sessions = db.execute(
+        select(RecordingSession).where(
+            RecordingSession.project_id == project_id,
+            RecordingSession.scenario_id == scenario_id,
+        )
+    ).scalars().all()
+    session_ids = [session.id for session in sessions]
+
+    steps: list[ScenarioStep] = []
+    variants: list[RouteVariant] = []
+    if session_ids:
+        steps = db.execute(
+            select(ScenarioStep).where(ScenarioStep.recording_session_id.in_(session_ids))
+        ).scalars().all()
+        variants = db.execute(
+            select(RouteVariant).where(RouteVariant.recording_session_id.in_(session_ids))
+        ).scalars().all()
+
+    route_ids = {variant.route_id for variant in variants}
+    recordings_base = _recordings_base()
+    files_deleted = 0
+
+    for step in steps:
+        if _remove_recording_path(step.screenshot_path, recordings_base):
+            files_deleted += 1
+
+    for variant in variants:
+        if _remove_recording_path(variant.html_path, recordings_base):
+            files_deleted += 1
+        if _remove_recording_path(variant.screenshot_path, recordings_base):
+            files_deleted += 1
+
+    for session_id in session_ids:
+        session_dir = recordings_base / str(project_id) / str(session_id)
+        if _remove_recording_path(str(session_dir), recordings_base):
+            files_deleted += 1
+
+    for step in steps:
+        db.delete(step)
+    for variant in variants:
+        db.delete(variant)
+    for session in sessions:
+        db.delete(session)
+
+    project = db.get(Project, project_id)
+    if project and project.active_launch_scenario_id == scenario_id:
+        project.active_launch_scenario_id = None
+
+    scenario.status = "pending"
+    scenario.completed_by = None
+
+    db.flush()
+
+    routes_deleted = 0
+    for route_id in route_ids:
+        remaining_variants = db.execute(
+            select(func.count(RouteVariant.id)).where(RouteVariant.route_id == route_id)
+        ).scalar_one()
+        route = db.get(DiscoveredRoute, route_id)
+        if not route:
+            continue
+        if remaining_variants == 0:
+            if _remove_recording_path(route.html_path, recordings_base):
+                files_deleted += 1
+            if _remove_recording_path(route.screenshot_path, recordings_base):
+                files_deleted += 1
+            db.delete(route)
+            routes_deleted += 1
+        else:
+            route.html_path = None
+            route.screenshot_path = None
+
+    db.commit()
+
+    return {
+        "cleared": True,
+        "sessions_deleted": len(sessions),
+        "steps_deleted": len(steps),
+        "route_variants_deleted": len(variants),
+        "routes_deleted": routes_deleted,
+        "files_deleted": files_deleted,
+    }
 
 
 # ── Recording Setup (Web UI fetches daemon command) ────────────────────────

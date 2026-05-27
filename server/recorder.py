@@ -2,8 +2,8 @@
 """
 SQAT UI Discovery Recorder
 --------------------------
-Generated for project: __PROJECT_ID__
-Server:                __SERVER_URL__
+Generated for project: 019e69a7-55bd-7caa-be80-a889a5495ac2
+Server:                http://localhost:8000
 
 Run this script on your local machine:
     pip install playwright httpx
@@ -36,190 +36,18 @@ except ImportError:
 
 # ── Configuration (embedded by server) ────────────────────────────────────
 
-PROJECT_ID: str = "__PROJECT_ID__"
-SERVER_URL: str = "__SERVER_URL__"
-RECORDER_TOKEN: str = "__RECORDER_TOKEN__"
-STORE_PASSWORD_VALUES: bool = __STORE_PASSWORD_VALUES__
-SCREENSHOT_INDICATOR: bool = __SCREENSHOT_INDICATOR__
+PROJECT_ID: str = "019e69a7-55bd-7caa-be80-a889a5495ac2"
+SERVER_URL: str = "http://localhost:8000"
+RECORDER_TOKEN: str = "c481309c-5ce5-451f-b06e-34cfaf55672b"
+STORE_PASSWORD_VALUES: bool = False
+SCREENSHOT_INDICATOR: bool = True
 
 BROWSER_DATA_DIR = Path.home() / ".sqat" / PROJECT_ID
 BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── JavaScript injected into every page ───────────────────────────────────
 
-ACTION_CAPTURE_JS = """
-(function () {
-  if (window.__sqat_installed__) return;
-  window.__sqat_installed__ = true;
-
-  function buildSelector(el) {
-    if (!el || !el.tagName) return null;
-    const tag = el.tagName.toLowerCase();
-    if (el.dataset && el.dataset.testid)
-      return { selector: `[data-testid="${el.dataset.testid}"]`, stability: 'high' };
-    const ariaLabel = el.getAttribute('aria-label');
-    if (ariaLabel)
-      return { selector: `${tag}[aria-label="${ariaLabel}"]`, stability: 'high' };
-    if (el.id && !el.id.match(/^[0-9a-f-]{20,}$/i))
-      return { selector: `#${CSS.escape(el.id)}`, stability: 'high' };
-    if (el.name)
-      return { selector: `${tag}[name="${el.name}"]`, stability: 'medium' };
-    const role = el.getAttribute('role');
-    const text = (el.textContent || '').trim().replace(/\\s+/g, ' ').substring(0, 60);
-    if (role && text)
-      return { selector: `[role="${role}"]`, stability: 'medium', playwrightLocator: `getByRole('${role}', { name: '${text.replace(/'/g, "\\'")}' })` };
-    if (el.placeholder)
-      return { selector: `${tag}[placeholder="${el.placeholder}"]`, stability: 'medium' };
-    return { selector: tag, stability: 'low' };
-  }
-
-  document.addEventListener('click', function (e) {
-    const el = e.target;
-    if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
-    const sel = buildSelector(el);
-    if (!sel) return;
-    window.__sqat_action__({
-      type: 'click', ...sel,
-      text: (el.textContent || '').trim().substring(0, 120),
-      elementType: el.tagName.toLowerCase(),
-      url: window.location.href,
-    }).catch(() => {});
-  }, true);
-
-  document.addEventListener('change', function (e) {
-    const el = e.target;
-    if (!el || !el.tagName) return;
-    const tag = el.tagName.toLowerCase();
-    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return;
-    const sel = buildSelector(el);
-    if (!sel) return;
-    window.__sqat_action__({
-      type: tag === 'select' ? 'select' : 'fill', ...sel,
-      value: el.type === 'password' ? '***REDACTED***' : (el.value || '').substring(0, 500),
-      elementType: tag,
-      url: window.location.href,
-    }).catch(() => {});
-  }, true);
-
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter' && e.key !== 'Tab') return;
-    const el = e.target;
-    if (!el || !el.tagName) return;
-    const sel = buildSelector(el);
-    if (!sel) return;
-    window.__sqat_action__({
-      type: 'keypress', ...sel,
-      value: e.key,
-      elementType: el.tagName.toLowerCase(),
-      url: window.location.href,
-    }).catch(() => {});
-  }, true);
-})();
-
-window.__sqat_get_elements__ = function () {
-  const results = [];
-  const seen = new Set();
-  const SELECTORS = [
-    'button:not([disabled])','a[href]','input:not([type="hidden"])',
-    'select','textarea','[role="button"]','[role="link"]','[role="tab"]',
-    '[role="checkbox"]','[role="radio"]','[role="menuitem"]','[role="combobox"]',
-    '[role="switch"]','[role="option"]','[tabindex]:not([tabindex="-1"])',
-  ];
-  function buildSel(el) {
-    const tag = el.tagName.toLowerCase();
-    if (el.dataset && el.dataset.testid) return { selector: `[data-testid="${el.dataset.testid}"]`, stability: 'high' };
-    const al = el.getAttribute('aria-label');
-    if (al) return { selector: `${tag}[aria-label="${al}"]`, stability: 'high' };
-    if (el.id && !el.id.match(/^[0-9a-f-]{20,}$/i)) return { selector: `#${CSS.escape(el.id)}`, stability: 'high' };
-    if (el.name) return { selector: `${tag}[name="${el.name}"]`, stability: 'medium' };
-    if (el.placeholder) return { selector: `${tag}[placeholder="${el.placeholder}"]`, stability: 'medium' };
-    const text = (el.textContent || '').trim().replace(/\\s+/g, ' ').substring(0, 60);
-    const role = el.getAttribute('role') || tag;
-    if (text) return { selector: tag, stability: 'low', playwrightLocator: `getByRole('${role}', { name: '${text.replace(/'/g, "\\'")}' })` };
-    return { selector: tag, stability: 'low' };
-  }
-  SELECTORS.forEach(sel => {
-    document.querySelectorAll(sel).forEach(el => {
-      if (seen.has(el)) return;
-      seen.add(el);
-      const rect = el.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      if (getComputedStyle(el).display === 'none') return;
-      const selInfo = buildSel(el);
-      results.push({
-        tag: el.tagName.toLowerCase(), type: el.type || null,
-        text: (el.textContent || '').trim().replace(/\\s+/g, ' ').substring(0, 120),
-        placeholder: el.placeholder || null, name: el.name || null, id: el.id || null,
-        'data-testid': el.dataset ? el.dataset.testid || null : null,
-        'aria-label': el.getAttribute('aria-label'),
-        'aria-expanded': el.getAttribute('aria-expanded'),
-        'aria-selected': el.getAttribute('aria-selected'),
-        role: el.getAttribute('role'),
-        href: el.tagName.toLowerCase() === 'a' ? el.getAttribute('href') : null,
-        disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
-        required: el.required || false,
-        ...selInfo,
-        rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
-      });
-    });
-  });
-  return results;
-};
-
-window.__sqat_clean_html__ = function () {
-  const clone = document.documentElement.cloneNode(true);
-  clone.querySelectorAll('style,script,link[rel="stylesheet"],link[rel="preload"],noscript,meta,template,[aria-hidden="true"]').forEach(el => el.remove());
-  clone.querySelectorAll('svg *').forEach(el => {
-    ['d','points','transform','viewBox','fill','stroke','clip-path','filter','mask','opacity'].forEach(a => el.removeAttribute(a));
-  });
-  const KEEP = new Set([
-    'id','name','type','href','src','alt','placeholder','role','for','action','method',
-    'value','checked','selected','disabled','required','readonly','multiple','tabindex','target',
-    'colspan','rowspan','scope',
-    'aria-label','aria-labelledby','aria-describedby','aria-expanded','aria-selected',
-    'aria-checked','aria-disabled','aria-controls','aria-current','aria-invalid','aria-required',
-    'data-testid','data-test','data-cy','data-qa',
-  ]);
-  clone.querySelectorAll('*').forEach(el => {
-    el.removeAttribute('style');
-    el.removeAttribute('class');
-    const toRemove = [];
-    for (const attr of el.attributes) { if (!KEEP.has(attr.name)) toRemove.push(attr.name); }
-    toRemove.forEach(a => el.removeAttribute(a));
-  });
-  return clone.outerHTML;
-};
-
-window.__sqat_get_page_context__ = function () {
-  function text(el) { return el ? (el.textContent || '').trim().replace(/\\s+/g, ' ').substring(0, 200) : ''; }
-  function bestSel(el) {
-    if (!el) return null;
-    const tag = el.tagName.toLowerCase();
-    if (el.dataset && el.dataset.testid) return `[data-testid="${el.dataset.testid}"]`;
-    const al = el.getAttribute('aria-label');
-    if (al) return `${tag}[aria-label="${al}"]`;
-    if (el.id && !el.id.match(/^[0-9a-f-]{20,}$/i)) return `#${CSS.escape(el.id)}`;
-    if (el.name) return `${tag}[name="${el.name}"]`;
-    return null;
-  }
-  const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4')).map(h => ({ level: parseInt(h.tagName[1]), text: text(h) })).filter(h => h.text);
-  const forms = Array.from(document.querySelectorAll('form')).map(form => {
-    const fields = Array.from(form.querySelectorAll('input:not([type="hidden"]),select,textarea')).map(f => ({
-      tag: f.tagName.toLowerCase(), type: f.type || null, name: f.name || null,
-      placeholder: f.placeholder || null, 'aria-label': f.getAttribute('aria-label'),
-      'data-testid': f.dataset ? f.dataset.testid || null : null,
-      required: f.required || false, selector: bestSel(f),
-    }));
-    const sub = form.querySelector('[type="submit"],button:not([type="button"])');
-    return { action: form.getAttribute('action'), method: form.method || 'get', submit_text: sub ? text(sub) : null, fields };
-  });
-  const navLinks = Array.from(document.querySelectorAll('nav a,[role="navigation"] a,header a')).map(a => ({ text: text(a), href: a.getAttribute('href'), selector: bestSel(a) })).filter(l => l.text && l.href);
-  const buttons = Array.from(document.querySelectorAll('button:not(form button),[role="button"]')).filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && !b.disabled; }).map(b => ({ text: text(b), selector: bestSel(b), 'aria-label': b.getAttribute('aria-label') })).filter(b => b.text || b['aria-label']).slice(0, 30);
-  const tabs = Array.from(document.querySelectorAll('[role="tab"]')).map(t => ({ text: text(t), selected: t.getAttribute('aria-selected') === 'true', selector: bestSel(t) }));
-  const dialogs = Array.from(document.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog[open]')).filter(el => { const r = el.getBoundingClientRect(); return r.width > 0; }).map(el => ({ title: text(el.querySelector('[aria-labelledby],h1,h2,h3')), text: text(el).substring(0, 300) }));
-  return { url: window.location.href, title: document.title, headings, forms, nav_links: navLinks.slice(0, 40), buttons, tabs, dialogs };
-};
-"""
+ACTION_CAPTURE_JS = '(function () {\n  if (window.__sqat_installed__) return;\n  window.__sqat_installed__ = true;\n\n  const STORE_PASSWORD_VALUES = window.__sqat_store_password_values__ === true;\n  const focusState = new WeakMap();\n  const BARE = new Set([\'a\', \'button\', \'input\', \'select\', \'textarea\', \'div\', \'span\']);\n\n  function text(v, n = 200) {\n    return (v || \'\').toString().replace(/\\s+/g, \' \').trim().substring(0, n);\n  }\n  function esc(v) {\n    return String(v || \'\').replace(/["\\\\]/g, \'\\\\$&\');\n  }\n  function css(v) {\n    return window.CSS && CSS.escape ? CSS.escape(v) : esc(v);\n  }\n  function attr(el, name) {\n    return el && el.getAttribute ? el.getAttribute(name) : null;\n  }\n  function visible(el) {\n    if (!el || !el.getBoundingClientRect) return false;\n    const r = el.getBoundingClientRect();\n    const s = window.getComputedStyle(el);\n    return r.width > 0 && r.height > 0 && s.display !== \'none\' && s.visibility !== \'hidden\';\n  }\n  function stableId(id) {\n    return !!id && !/^[0-9a-f-]{16,}$/i.test(id) && !/^(ember|react|radix|headlessui|mui|chakra|mantine|rc|auto|generated)[-_]?[0-9]/i.test(id);\n  }\n  function role(el) {\n    const explicit = attr(el, \'role\');\n    if (explicit) return explicit;\n    const tag = (el.tagName || \'\').toLowerCase();\n    const type = (el.type || \'\').toLowerCase();\n    if (tag === \'button\' || type === \'button\' || type === \'submit\') return \'button\';\n    if (tag === \'a\' && attr(el, \'href\')) return \'link\';\n    if (tag === \'select\') return \'combobox\';\n    if (tag === \'textarea\') return \'textbox\';\n    if (tag === \'input\') {\n      if (type === \'checkbox\') return \'checkbox\';\n      if (type === \'radio\') return \'radio\';\n      if (type === \'range\') return \'slider\';\n      return \'textbox\';\n    }\n    return tag || null;\n  }\n  function label(el) {\n    const labelledBy = attr(el, \'aria-labelledby\');\n    if (labelledBy) {\n      const t = labelledBy.split(/\\s+/).map(id => text(document.getElementById(id)?.textContent)).filter(Boolean).join(\' \');\n      if (t) return t;\n    }\n    if (el.id) {\n      const l = document.querySelector(`label[for="${esc(el.id)}"]`);\n      if (l) return text(l.textContent);\n    }\n    const wrap = el.closest ? el.closest(\'label\') : null;\n    return wrap ? text(wrap.textContent) : \'\';\n  }\n  function nameOf(el) {\n    return text(attr(el, \'aria-label\')) || label(el) || text(attr(el, \'alt\')) || text(attr(el, \'title\')) || text(el.placeholder) || text(el.innerText || el.textContent || el.value, 120);\n  }\n  function locator(el, accessible, r) {\n    const safe = String(accessible || \'\').replace(/[.*+?^${}()|[\\]\\\\]/g, \'\\\\$&\').replace(/\'/g, "\\\\\'");\n    if (r && safe) return `page.getByRole(\'${r}\', { name: /${safe}/i })`;\n    const l = label(el).replace(/\'/g, "\\\\\'");\n    if (l && [\'input\', \'textarea\', \'select\'].includes((el.tagName || \'\').toLowerCase())) return `page.getByLabel(\'${l}\')`;\n    return null;\n  }\n  function selector(el) {\n    if (!el || !el.tagName) return null;\n    const tag = el.tagName.toLowerCase();\n    for (const a of [\'data-testid\', \'data-test\', \'data-cy\', \'data-qa\']) {\n      const v = attr(el, a);\n      if (v) return { selector: `[${a}="${esc(v)}"]`, stability: \'high\' };\n    }\n    const aria = attr(el, \'aria-label\');\n    if (aria) return { selector: `${tag}[aria-label="${esc(aria)}"]`, stability: \'high\' };\n    if (el.id && stableId(el.id)) return { selector: `#${css(el.id)}`, stability: \'high\' };\n    if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, stability: \'medium\' };\n    if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, stability: \'medium\' };\n    return { selector: tag, stability: \'low\' };\n  }\n  function domPath(el) {\n    const parts = [];\n    let node = el;\n    while (node && node.nodeType === 1 && parts.length < 8) {\n      const tag = node.tagName.toLowerCase();\n      if (node.id && stableId(node.id)) {\n        parts.unshift(`${tag}#${css(node.id)}`);\n        break;\n      }\n      let i = 1;\n      let p = node.previousElementSibling;\n      while (p) {\n        if (p.tagName === node.tagName) i += 1;\n        p = p.previousElementSibling;\n      }\n      parts.unshift(`${tag}:nth-of-type(${i})`);\n      node = node.parentElement;\n    }\n    return parts.join(\' > \');\n  }\n  function state(el) {\n    if (!el) return null;\n    const type = (el.type || \'\').toLowerCase();\n    const redacted = type === \'password\' && !STORE_PASSWORD_VALUES;\n    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;\n    const opt = el.tagName?.toLowerCase() === \'select\' ? el.options?.[el.selectedIndex] : null;\n    return {\n      value: redacted ? null : (el.value == null ? null : String(el.value).substring(0, 500)),\n      value_redacted: redacted,\n      checked: typeof el.checked === \'boolean\' ? el.checked : null,\n      selected_value: el.tagName?.toLowerCase() === \'select\' ? el.value : null,\n      selected_label: opt ? text(opt.label || opt.textContent) : null,\n      aria_expanded: attr(el, \'aria-expanded\'),\n      aria_selected: attr(el, \'aria-selected\'),\n      aria_checked: attr(el, \'aria-checked\'),\n      aria_pressed: attr(el, \'aria-pressed\'),\n      aria_invalid: attr(el, \'aria-invalid\'),\n      required: el.required === true || attr(el, \'aria-required\') === \'true\',\n      disabled: el.disabled === true || attr(el, \'aria-disabled\') === \'true\',\n      min: attr(el, \'min\'),\n      max: attr(el, \'max\'),\n      step: attr(el, \'step\'),\n      rect: r ? {\n        x: Math.round(r.x),\n        y: Math.round(r.y),\n        width: Math.round(r.width),\n        height: Math.round(r.height),\n        page_x: Math.round(r.x + window.scrollX),\n        page_y: Math.round(r.y + window.scrollY),\n      } : null,\n    };\n  }\n  function options(el) {\n    if (el && el.tagName?.toLowerCase() === \'select\') {\n      return Array.from(el.options || []).map((o, i) => ({\n        index: i,\n        value: o.value,\n        label: text(o.label || o.textContent),\n        selected: o.selected,\n        disabled: o.disabled,\n      }));\n    }\n    const controlled = el ? document.getElementById(attr(el, \'aria-controls\')) : null;\n    const root = controlled || document;\n    return Array.from(root.querySelectorAll(\'[role="listbox"] [role="option"],[role="option"],[role="menu"] [role="menuitem"],[role="menuitem"]\'))\n      .filter(visible)\n      .slice(0, 80)\n      .map((o, i) => ({\n        index: i,\n        text: nameOf(o) || text(o.textContent),\n        value: attr(o, \'data-value\') || attr(o, \'value\'),\n        role: role(o),\n        selected: attr(o, \'aria-selected\') === \'true\' || attr(o, \'aria-checked\') === \'true\',\n        disabled: o.disabled === true || attr(o, \'aria-disabled\') === \'true\',\n        selector: selector(o)?.selector || null,\n      }));\n  }\n  function group(el) {\n    const type = (el.type || \'\').toLowerCase();\n    if (el.name && [\'checkbox\', \'radio\'].includes(type)) {\n      return {\n        name: el.name,\n        role: type === \'radio\' ? \'radiogroup\' : \'checkbox-group\',\n        options: Array.from(document.querySelectorAll(`input[type="${type}"][name="${esc(el.name)}"]`)).map((n, i) => ({\n          index: i,\n          label: nameOf(n),\n          value: n.value || null,\n          checked: n.checked === true,\n          selector: selector(n)?.selector || null,\n        })),\n      };\n    }\n    const g = el.closest?.(\'[role="radiogroup"],[role="group"],fieldset\');\n    if (!g) return null;\n    return {\n      label: nameOf(g) || text(g.querySelector(\'legend\')?.textContent),\n      role: attr(g, \'role\') || g.tagName.toLowerCase(),\n      options: Array.from(g.querySelectorAll(\'[role="radio"],[role="checkbox"],[role="switch"],input[type="radio"],input[type="checkbox"]\')).map((n, i) => ({\n        index: i,\n        label: nameOf(n),\n        checked: n.checked === true || attr(n, \'aria-checked\') === \'true\',\n        selector: selector(n)?.selector || null,\n      })),\n    };\n  }\n  function parent(el) {\n    const p = el.closest?.(\'form,nav,header,main,section,article,[role="dialog"],[role="navigation"],[role="main"],[role="group"],fieldset\') || el.parentElement;\n    return p ? {\n      tag: p.tagName.toLowerCase(),\n      role: role(p),\n      label: nameOf(p) || text(p.querySelector?.(\'legend,h1,h2,h3\')?.textContent),\n      text: text(p.textContent, 300),\n      selector: selector(p)?.selector || null,\n    } : null;\n  }\n  function snapshot(el) {\n    const s = selector(el);\n    const r = role(el);\n    const n = nameOf(el);\n    const loc = locator(el, n, r);\n    return {\n      selector: s?.selector || null,\n      selector_stability: s?.stability || \'low\',\n      playwright_locator: loc,\n      accessible_name: n || null,\n      visible_text: text(el.innerText || el.textContent, 160),\n      label: label(el) || null,\n      role: r,\n      tag: el.tagName?.toLowerCase() || null,\n      type: el.type || null,\n      id: el.id || null,\n      name: el.name || null,\n      class: attr(el, \'class\'),\n      href: attr(el, \'href\'),\n      dom_path: domPath(el),\n      parent_context: parent(el),\n      state: state(el),\n      options: options(el),\n      group: group(el),\n      attributes: {\n        \'data-testid\': attr(el, \'data-testid\'),\n        \'data-test\': attr(el, \'data-test\'),\n        \'data-cy\': attr(el, \'data-cy\'),\n        \'data-qa\': attr(el, \'data-qa\'),\n        \'aria-label\': attr(el, \'aria-label\'),\n        \'aria-controls\': attr(el, \'aria-controls\'),\n      },\n    };\n  }\n  function ok(el) {\n    return el && el.tagName && ![\'HTML\', \'BODY\'].includes(el.tagName) && !(el.closest && el.closest(\'#__sqat_capture_indicator__\'));\n  }\n  function action(type, el, extra = {}) {\n    const snap = snapshot(el);\n    return {\n      type,\n      selector: snap.selector,\n      stability: snap.selector_stability,\n      playwrightLocator: snap.playwright_locator,\n      text: snap.visible_text,\n      accessibleName: snap.accessible_name,\n      role: snap.role,\n      label: snap.label,\n      inputType: snap.type,\n      elementType: snap.tag,\n      value: extra.value,\n      url: window.location.href,\n      urlBefore: window.location.href,\n      beforeState: extra.beforeState || snap.state,\n      afterState: extra.afterState || null,\n      semanticContext: {\n        element: snap,\n        parent_context: snap.parent_context,\n        options: snap.options || [],\n        group: snap.group || null,\n        event: extra.event || null,\n        low_selector_reason: BARE.has(String(snap.selector || \'\').toLowerCase()) ? \'semantic CSS selector unavailable; use playwright_locator or parent_context\' : null,\n      },\n    };\n  }\n\n  document.addEventListener(\'focusin\', e => {\n    if (ok(e.target)) focusState.set(e.target, state(e.target));\n  }, true);\n  document.addEventListener(\'pointerdown\', e => {\n    if (ok(e.target)) focusState.set(e.target, state(e.target));\n  }, true);\n  document.addEventListener(\'click\', e => {\n    if (!ok(e.target)) return;\n    const el = e.target;\n    const tag = el.tagName.toLowerCase();\n    const nativeType = (el.type || \'\').toLowerCase();\n    if ([\'input\', \'textarea\', \'select\'].includes(tag) && ![\'button\', \'submit\', \'reset\'].includes(nativeType)) return;\n    let type = \'click\';\n    const r = role(el);\n    if (r === \'button\' && ((el.type || \'\').toLowerCase() === \'submit\' || text(el.innerText || el.value).toLowerCase() === \'submit\')) type = \'submit\';\n    window.__sqat_action__(action(type, el, {\n      beforeState: focusState.get(el) || state(el),\n      event: { x: Math.round(e.clientX), y: Math.round(e.clientY), button: e.button },\n    })).catch(() => {});\n  }, true);\n  document.addEventListener(\'change\', e => {\n    if (!ok(e.target)) return;\n    const el = e.target;\n    const tag = el.tagName.toLowerCase();\n    if (![\'input\', \'textarea\', \'select\'].includes(tag)) return;\n    const t = (el.type || \'\').toLowerCase();\n    const redacted = t === \'password\' && !STORE_PASSWORD_VALUES;\n    const kind = tag === \'select\' ? \'select\' : t === \'range\' ? \'slide\' : [\'checkbox\', \'radio\'].includes(t) ? (el.checked ? \'check\' : \'uncheck\') : \'fill\';\n    window.__sqat_action__(action(kind, el, {\n      value: redacted ? null : (el.value || \'\').substring(0, 500),\n      beforeState: focusState.get(el) || null,\n      afterState: state(el),\n      event: { committed: true },\n    })).catch(() => {});\n  }, true);\n  document.addEventListener(\'keydown\', e => {\n    if (![\'Enter\', \'Tab\'].includes(e.key) || !ok(e.target)) return;\n    window.__sqat_action__(action(\'keypress\', e.target, {\n      value: e.key,\n      beforeState: focusState.get(e.target) || state(e.target),\n      event: { key: e.key },\n    })).catch(() => {});\n  }, true);\n})();\n\nwindow.__sqat_enrich_after_action__ = function (action) {\n  const text = (v, n = 200) => (v || \'\').toString().replace(/\\s+/g, \' \').trim().substring(0, n);\n  const attr = (el, name) => el && el.getAttribute ? el.getAttribute(name) : null;\n  let el = null;\n  try {\n    const sel = String(action?.selector || \'\');\n    if (sel && ![\'a\', \'button\', \'input\', \'select\', \'textarea\', \'div\', \'span\'].includes(sel.toLowerCase())) el = document.querySelector(sel);\n  } catch (_) {}\n  const visible = node => {\n    if (!node || !node.getBoundingClientRect) return false;\n    const r = node.getBoundingClientRect();\n    const s = getComputedStyle(node);\n    return r.width > 0 && r.height > 0 && s.display !== \'none\' && s.visibility !== \'hidden\';\n  };\n  const optionRoot = el && attr(el, \'aria-controls\') ? document.getElementById(attr(el, \'aria-controls\')) : document;\n  const visibleOptions = el && el.tagName?.toLowerCase() === \'select\'\n    ? Array.from(el.options || []).map((o, i) => ({ index: i, value: o.value, label: text(o.label || o.textContent), selected: o.selected, disabled: o.disabled }))\n    : Array.from(optionRoot.querySelectorAll(\'[role="listbox"] [role="option"],[role="option"],[role="menu"] [role="menuitem"],[role="menuitem"]\')).filter(visible).slice(0, 80).map((o, i) => ({\n        index: i,\n        text: text(attr(o, \'aria-label\') || o.textContent),\n        value: attr(o, \'data-value\') || attr(o, \'value\'),\n        role: attr(o, \'role\') || o.tagName.toLowerCase(),\n        selected: attr(o, \'aria-selected\') === \'true\' || attr(o, \'aria-checked\') === \'true\',\n        disabled: o.disabled === true || attr(o, \'aria-disabled\') === \'true\',\n      }));\n  return {\n    url: window.location.href,\n    title: document.title,\n    after_state: el ? {\n      value: el.type === \'password\' && !window.__sqat_store_password_values__ ? null : (el.value ?? null),\n      value_redacted: el.type === \'password\' && !window.__sqat_store_password_values__,\n      checked: typeof el.checked === \'boolean\' ? el.checked : null,\n      selected_value: el.tagName?.toLowerCase() === \'select\' ? el.value : null,\n      selected_label: el.tagName?.toLowerCase() === \'select\' ? text(el.options?.[el.selectedIndex]?.label || el.options?.[el.selectedIndex]?.textContent) : null,\n      aria_expanded: attr(el, \'aria-expanded\'),\n      aria_selected: attr(el, \'aria-selected\'),\n      aria_checked: attr(el, \'aria-checked\'),\n      aria_pressed: attr(el, \'aria-pressed\'),\n    } : null,\n    visible_options: visibleOptions,\n  };\n};\n\nwindow.__sqat_show_capture_indicator__ = function () {\n  let el = document.getElementById(\'__sqat_capture_indicator__\');\n  if (!el) {\n    el = document.createElement(\'div\');\n    el.id = \'__sqat_capture_indicator__\';\n    el.setAttribute(\'aria-hidden\', \'true\');\n    el.innerHTML = \'<div>CAM</div>\';\n    const style = document.createElement(\'style\');\n    style.id = \'__sqat_capture_indicator_style__\';\n    style.textContent = \'#__sqat_capture_indicator__{position:fixed;inset:0;pointer-events:none;z-index:2147483647;box-shadow:inset 0 0 0 4px rgba(37,99,235,.95),inset 0 0 38px rgba(37,99,235,.55);opacity:0;transition:opacity 120ms ease}#__sqat_capture_indicator__.on{opacity:1}#__sqat_capture_indicator__ div{position:fixed;right:18px;bottom:18px;width:46px;height:46px;border-radius:999px;background:#2563eb;color:white;font:700 11px/46px system-ui,sans-serif;text-align:center;box-shadow:0 10px 24px rgba(37,99,235,.35)}\';\n    document.documentElement.appendChild(style);\n    document.documentElement.appendChild(el);\n  }\n  requestAnimationFrame(() => el.classList.add(\'on\'));\n};\nwindow.__sqat_hide_capture_indicator__ = function () {\n  const el = document.getElementById(\'__sqat_capture_indicator__\');\n  if (el) el.classList.remove(\'on\');\n};\n\nwindow.__sqat_get_elements__ = function () {\n  const out = [];\n  const seen = new Set();\n  const selectors = [\n    \'button:not([disabled])\',\n    \'a[href]\',\n    \'input:not([type="hidden"])\',\n    \'select\',\n    \'textarea\',\n    \'[role="button"]\',\n    \'[role="link"]\',\n    \'[role="tab"]\',\n    \'[role="checkbox"]\',\n    \'[role="radio"]\',\n    \'[role="switch"]\',\n    \'[role="combobox"]\',\n    \'[role="option"]\',\n    \'[role="menuitem"]\',\n    \'[tabindex]:not([tabindex="-1"])\',\n  ];\n  const text = (v, n = 160) => (v || \'\').toString().replace(/\\s+/g, \' \').trim().substring(0, n);\n  const attr = (el, name) => el && el.getAttribute ? el.getAttribute(name) : null;\n  const esc = v => String(v || \'\').replace(/["\\\\]/g, \'\\\\$&\');\n  const stableId = id => !!id && !/^[0-9a-f-]{16,}$/i.test(id);\n  const role = el => attr(el, \'role\') || (el.tagName || \'\').toLowerCase();\n  const name = el => text(attr(el, \'aria-label\')) || text(el.innerText || el.textContent || el.value);\n  const best = el => {\n    const tag = el.tagName.toLowerCase();\n    for (const a of [\'data-testid\', \'data-test\', \'data-cy\', \'data-qa\']) {\n      const v = attr(el, a);\n      if (v) return { selector: `[${a}="${esc(v)}"]`, selector_stability: \'high\' };\n    }\n    if (attr(el, \'aria-label\')) return { selector: `${tag}[aria-label="${esc(attr(el, \'aria-label\'))}"]`, selector_stability: \'high\' };\n    if (el.id && stableId(el.id)) return { selector: `#${window.CSS && CSS.escape ? CSS.escape(el.id) : esc(el.id)}`, selector_stability: \'high\' };\n    if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, selector_stability: \'medium\' };\n    if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, selector_stability: \'medium\' };\n    return { selector: tag, selector_stability: \'low\' };\n  };\n  const optionList = el => {\n    if (el.tagName?.toLowerCase() !== \'select\') return [];\n    return Array.from(el.options || []).map((o, i) => ({ index: i, value: o.value, label: text(o.label || o.textContent), selected: o.selected, disabled: o.disabled }));\n  };\n\n  selectors.forEach(sel => {\n    document.querySelectorAll(sel).forEach(el => {\n      if (seen.has(el)) return;\n      seen.add(el);\n      const rect = el.getBoundingClientRect();\n      const style = getComputedStyle(el);\n      if (rect.width === 0 || rect.height === 0 || style.display === \'none\' || style.visibility === \'hidden\') return;\n      const b = best(el);\n      out.push({\n        tag: el.tagName.toLowerCase(),\n        type: el.type || null,\n        role: role(el),\n        text: text(el.innerText || el.textContent),\n        accessible_name: name(el),\n        label: text(document.querySelector(`label[for="${esc(el.id)}"]`)?.textContent),\n        placeholder: el.placeholder || null,\n        name: el.name || null,\n        id: el.id || null,\n        class: attr(el, \'class\'),\n        href: el.tagName.toLowerCase() === \'a\' ? attr(el, \'href\') : null,\n        disabled: el.disabled === true || attr(el, \'aria-disabled\') === \'true\',\n        required: el.required === true || attr(el, \'aria-required\') === \'true\',\n        checked: typeof el.checked === \'boolean\' ? el.checked : null,\n        aria_expanded: attr(el, \'aria-expanded\'),\n        aria_selected: attr(el, \'aria-selected\'),\n        aria_checked: attr(el, \'aria-checked\'),\n        options: optionList(el),\n        ...b,\n        rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },\n      });\n    });\n  });\n  return out;\n};\n\nwindow.__sqat_clean_html__ = function () {\n  const clone = document.documentElement.cloneNode(true);\n  clone.querySelectorAll(\'style,script,link[rel="stylesheet"],link[rel="preload"],noscript,meta,template,[aria-hidden="true"],#__sqat_capture_indicator__,#__sqat_capture_indicator_style__\').forEach(el => el.remove());\n  clone.querySelectorAll(\'svg *\').forEach(el => {\n    [\'d\', \'points\', \'transform\', \'viewBox\', \'fill\', \'stroke\', \'clip-path\', \'filter\', \'mask\', \'opacity\'].forEach(a => el.removeAttribute(a));\n  });\n  const keep = new Set([\n    \'id\', \'name\', \'type\', \'href\', \'src\', \'alt\', \'placeholder\', \'role\', \'for\', \'action\', \'method\',\n    \'value\', \'checked\', \'selected\', \'disabled\', \'required\', \'readonly\', \'multiple\', \'tabindex\', \'target\',\n    \'aria-label\', \'aria-labelledby\', \'aria-describedby\', \'aria-expanded\', \'aria-selected\',\n    \'aria-checked\', \'aria-disabled\', \'aria-controls\', \'aria-current\', \'aria-invalid\', \'aria-required\',\n    \'data-testid\', \'data-test\', \'data-cy\', \'data-qa\',\n  ]);\n  clone.querySelectorAll(\'*\').forEach(el => {\n    el.removeAttribute(\'style\');\n    el.removeAttribute(\'class\');\n    Array.from(el.attributes).forEach(a => {\n      if (!keep.has(a.name)) el.removeAttribute(a.name);\n    });\n  });\n  return clone.outerHTML;\n};\n\nwindow.__sqat_get_page_context__ = function () {\n  const text = (el, n = 220) => el ? (el.textContent || \'\').replace(/\\s+/g, \' \').trim().substring(0, n) : \'\';\n  const best = el => {\n    if (!el) return null;\n    const tag = el.tagName.toLowerCase();\n    for (const a of [\'data-testid\', \'data-test\', \'data-cy\', \'data-qa\']) {\n      const v = el.getAttribute(a);\n      if (v) return `[${a}="${String(v).replace(/["\\\\]/g, \'\\\\$&\')}"]`;\n    }\n    if (el.getAttribute(\'aria-label\')) return `${tag}[aria-label="${String(el.getAttribute(\'aria-label\')).replace(/["\\\\]/g, \'\\\\$&\')}"]`;\n    if (el.id && !/^[0-9a-f-]{16,}$/i.test(el.id)) return `#${window.CSS && CSS.escape ? CSS.escape(el.id) : el.id}`;\n    if (el.name) return `${tag}[name="${String(el.name).replace(/["\\\\]/g, \'\\\\$&\')}"]`;\n    return null;\n  };\n  const headings = Array.from(document.querySelectorAll(\'h1,h2,h3,h4\')).map(h => ({ level: parseInt(h.tagName[1], 10), text: text(h) })).filter(h => h.text);\n  const forms = Array.from(document.querySelectorAll(\'form\')).map(form => ({\n    action: form.getAttribute(\'action\'),\n    method: form.method || \'get\',\n    submit_text: text(form.querySelector(\'[type="submit"],button:not([type="button"])\')),\n    fields: Array.from(form.querySelectorAll(\'input:not([type="hidden"]),select,textarea\')).map(f => ({\n      tag: f.tagName.toLowerCase(),\n      type: f.type || null,\n      name: f.name || null,\n      label: text(document.querySelector(`label[for="${String(f.id || \'\').replace(/["\\\\]/g, \'\\\\$&\')}"]`)),\n      placeholder: f.placeholder || null,\n      required: f.required || false,\n      selector: best(f),\n      options: f.tagName.toLowerCase() === \'select\' ? Array.from(f.options || []).map(o => ({ value: o.value, label: text(o), selected: o.selected })) : [],\n    })),\n  }));\n  const nav_links = Array.from(document.querySelectorAll(\'nav a,[role="navigation"] a,header a\')).map(a => ({ text: text(a), href: a.getAttribute(\'href\'), selector: best(a) })).filter(l => l.text && l.href).slice(0, 50);\n  const buttons = Array.from(document.querySelectorAll(\'button,[role="button"]\')).filter(b => {\n    const r = b.getBoundingClientRect();\n    return r.width > 0 && r.height > 0 && !b.disabled;\n  }).map(b => ({ text: text(b), selector: best(b), aria_label: b.getAttribute(\'aria-label\') })).filter(b => b.text || b.aria_label).slice(0, 50);\n  const dialogs = Array.from(document.querySelectorAll(\'[role="dialog"],[role="alertdialog"],dialog[open]\')).filter(el => {\n    const r = el.getBoundingClientRect();\n    return r.width > 0 && r.height > 0;\n  }).map(el => ({ title: text(el.querySelector(\'[aria-labelledby],h1,h2,h3\')), text: text(el, 350) }));\n  return { url: window.location.href, title: document.title, headings, forms, nav_links, buttons, dialogs };\n};\n'
 
 # ── Recorder class ─────────────────────────────────────────────────────────
 

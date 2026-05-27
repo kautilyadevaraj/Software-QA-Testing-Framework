@@ -1219,6 +1219,29 @@ export async function stopScenarioRecording(
 
 }
 
+export async function clearScenarioRecording(
+
+  projectId: string,
+
+  scenarioId: string,
+
+): Promise<{
+  cleared: boolean;
+  sessions_deleted: number;
+  steps_deleted: number;
+  route_variants_deleted: number;
+  routes_deleted: number;
+  files_deleted: number;
+}> {
+
+  return request(`/projects/${projectId}/scenarios/${scenarioId}/recording`, {
+
+    method: "DELETE",
+
+  });
+
+}
+
 
 
 // ─── Phase 3 ───────────────────────────────────────────────────────────────

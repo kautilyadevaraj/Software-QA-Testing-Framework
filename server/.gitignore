@@ -20,6 +20,7 @@ htmlcov/
 
 # Uploaded user files and generated runtime artifacts
 uploads/
+recordings/
 tests/generated/
 tests/tests/
 test-results/

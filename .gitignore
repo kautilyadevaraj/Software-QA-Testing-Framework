@@ -40,6 +40,7 @@ next-env.d.ts
 # Uploaded user files
 uploads/
 **/uploads/
+server/recordings/
 
 # Generated Playwright scripts and test output
 server/tests/generated/
@@ -67,6 +68,7 @@ yarn-error.log*
 .pnpm-debug.log*
 *.log
 logs/
+MD
 
 # OS / editor junk
 .DS_Store

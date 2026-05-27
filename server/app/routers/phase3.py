@@ -24,6 +24,7 @@ Legacy / unchanged:
   POST   /raise-jira                    — raise a Jira issue prefixed with [TC-XXX]
 """
 import asyncio
+import importlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ from app.db.session import get_db
 from app.dependencies.auth import get_current_user
 from app.models.phase3 import Phase3Artifact, Phase3ExecutionState, ReviewQueueItem, TestCase, TestResult, TestRun
 from app.models.project import CredentialProfile, HighLevelScenario, Project, ProjectJiraConfig
+from app.models.scenario import RecordingSession
 from app.models.user import User
 from app.schemas.phase3 import (
     ApprovalPatch,
@@ -58,16 +60,32 @@ from app.schemas.phase3 import (
     TriggerRunResponse,
     UpdateTestCaseRequest,
 )
-from app.services import mcp_server, state_store
 from app.services.artifact_paths import legacy_tc_document_path, tc_document_path
 from app.services.artifact_registry import register_artifact
-from app.services.jira_service import create_jira_issue, is_jira_configured
 from app.utils.rate_limiter import limiter
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 router = APIRouter(prefix="/projects/{project_id}/phase3", tags=["phase3"])
+
+
+class _LazyModule:
+    def __init__(self, module_name: str) -> None:
+        self._module_name = module_name
+        self._module = None
+
+    def _load(self):
+        if self._module is None:
+            self._module = importlib.import_module(self._module_name)
+        return self._module
+
+    def __getattr__(self, name: str):
+        return getattr(self._load(), name)
+
+
+mcp_server = _LazyModule("app.services.mcp_server")
+state_store = _LazyModule("app.services.state_store")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -369,17 +387,20 @@ def plan_phase3(
             detail="A planning run is already in progress",
         )
 
-    # Guard: all Phase 2 scenarios must be completed
-    incomplete = db.execute(
-        select(HighLevelScenario).where(
-            HighLevelScenario.project_id == project_id,
-            HighLevelScenario.status != "completed",
-        ).limit(1)
+    recorded_hls = db.execute(
+        select(RecordingSession)
+        .join(HighLevelScenario, RecordingSession.scenario_id == HighLevelScenario.id)
+        .where(
+            RecordingSession.project_id == project_id,
+            RecordingSession.status == "completed",
+            HighLevelScenario.status == "completed",
+        )
+        .limit(1)
     ).scalars().first()
-    if incomplete:
+    if not recorded_hls:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="All Phase 2 scenarios must be completed before planning Phase 3",
+            detail="Record at least one HLS scenario before planning Phase 3",
         )
 
     run = TestRun(
@@ -1368,6 +1389,8 @@ def raise_jira(
     Jira Bug → Test Case → Scenario → Epic.
     """
     _get_project_or_404(db, current_user.id, project_id)
+
+    from app.services.jira_service import create_jira_issue, is_jira_configured
 
     if not is_jira_configured():
         raise HTTPException(

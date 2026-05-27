@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +38,7 @@ from app.schemas.scenario import (
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _recordings_base() -> Path:
-    base = Path(getattr(settings, "RECORDINGS_BASE_PATH", "uploads/recordings"))
+    base = Path(getattr(settings, "RECORDINGS_BASE_PATH", "recordings"))
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -55,6 +56,86 @@ def _url_path(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path.rstrip("/") or "/"
     return path
+
+
+def _latest_route_variant_id_for_url(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    session_id: uuid.UUID,
+    url: str | None,
+) -> uuid.UUID | None:
+    if not url:
+        return None
+    path = _url_path(url)
+    return db.execute(
+        select(RouteVariant.id)
+        .join(DiscoveredRoute, RouteVariant.route_id == DiscoveredRoute.id)
+        .where(
+            RouteVariant.project_id == project_id,
+            RouteVariant.recording_session_id == session_id,
+            DiscoveredRoute.path == path,
+        )
+        .order_by(RouteVariant.captured_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _with_route_variant_context(
+    semantic_context: dict | None,
+    *,
+    before_id: uuid.UUID | None,
+    after_id: uuid.UUID | None,
+) -> dict | None:
+    if semantic_context is None and before_id is None and after_id is None:
+        return None
+    context = dict(semantic_context or {})
+    context["route_variants"] = {
+        "before_id": str(before_id) if before_id else None,
+        "after_id": str(after_id) if after_id else None,
+    }
+    return context
+
+
+def _backfill_step_route_variant_links(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    session_id: uuid.UUID,
+    path: str,
+    variant_id: uuid.UUID,
+) -> None:
+    steps = list(
+        db.execute(
+            select(ScenarioStep).where(
+                ScenarioStep.project_id == project_id,
+                ScenarioStep.recording_session_id == session_id,
+            )
+        ).scalars()
+    )
+    for step in steps:
+        changed = False
+        if (
+            step.route_variant_before_id is None
+            and step.url_before
+            and _url_path(step.url_before) == path
+        ):
+            step.route_variant_before_id = variant_id
+            changed = True
+        if (
+            step.route_variant_after_id is None
+            and step.url_after
+            and _url_path(step.url_after) == path
+        ):
+            step.route_variant_after_id = variant_id
+            changed = True
+        if changed:
+            step.semantic_context = _with_route_variant_context(
+                step.semantic_context,
+                before_id=step.route_variant_before_id,
+                after_id=step.route_variant_after_id,
+            )
+            db.add(step)
 
 
 # ── Auth helper ────────────────────────────────────────────────────────────
@@ -330,6 +411,14 @@ def upsert_route(
         network_calls=payload.network_calls,
     )
     db.add(variant)
+    db.flush()
+    _backfill_step_route_variant_links(
+        db,
+        project_id=project.id,
+        session_id=payload.session_id,
+        path=path,
+        variant_id=variant.id,
+    )
     db.commit()
     db.refresh(route)
     db.refresh(variant)
@@ -359,24 +448,70 @@ def append_step(
     base = _recordings_base() / str(project.id) / str(session_id) / "steps"
     screenshot_path: str | None = None
 
+    step_index = payload.step_index
+    used_indices: set[int] = set(
+        db.execute(
+            select(ScenarioStep.step_index).where(
+                ScenarioStep.recording_session_id == session_id,
+            )
+        ).scalars()
+    )
+    while step_index in used_indices:
+        step_index += 1
+
     if payload.screenshot_base64:
         screenshot_path = _save_file(
             payload.screenshot_base64,
             base,
-            f"step_{payload.step_index:04d}.png",
+            f"step_{step_index:04d}.png",
         )
+
+    route_variant_before_id = (
+        payload.route_variant_before_id
+        or _latest_route_variant_id_for_url(
+            db,
+            project_id=project.id,
+            session_id=session_id,
+            url=payload.url_before or payload.url,
+        )
+    )
+    route_variant_after_id = (
+        payload.route_variant_after_id
+        or _latest_route_variant_id_for_url(
+            db,
+            project_id=project.id,
+            session_id=session_id,
+            url=payload.url_after,
+        )
+    )
 
     step = ScenarioStep(
         scenario_id=session.scenario_id,
         recording_session_id=session_id,
         project_id=project.id,
-        step_index=payload.step_index,
+        step_index=step_index,
         action_type=payload.action_type,
         url=payload.url,
         selector=payload.selector,
         value=payload.value,
         element_text=payload.element_text,
         element_type=payload.element_type,
+        selector_stability=payload.selector_stability,
+        playwright_locator=payload.playwright_locator,
+        accessible_name=payload.accessible_name,
+        role=payload.role,
+        label=payload.label,
+        input_type=payload.input_type,
+        url_before=payload.url_before,
+        url_after=payload.url_after,
+        caused_navigation=payload.caused_navigation,
+        route_variant_before_id=route_variant_before_id,
+        route_variant_after_id=route_variant_after_id,
+        semantic_context=_with_route_variant_context(
+            payload.semantic_context,
+            before_id=route_variant_before_id,
+            after_id=route_variant_after_id,
+        ),
         screenshot_path=screenshot_path,
         network_calls=payload.network_calls,
     )
@@ -396,10 +531,21 @@ def get_recorder_script(project_id: uuid.UUID, recorder_token: str, server_url: 
     # Read the template from disk (you store recorder_template.py in your repo)
     template_path = Path(__file__).parent.parent.parent / "recorder_template.py"
     template = template_path.read_text(encoding="utf-8")
+    action_js_path = Path(__file__).parent.parent.parent / "recorder_action_capture.js"
+    action_js = action_js_path.read_text(encoding="utf-8")
+    template = re.sub(
+        r'ACTION_CAPTURE_JS = """\n.*?\n"""',
+        lambda _match: f"ACTION_CAPTURE_JS = {action_js!r}",
+        template,
+        count=1,
+        flags=re.DOTALL,
+    )
 
     return (
         template
         .replace("__PROJECT_ID__", str(project_id))
         .replace("__RECORDER_TOKEN__", recorder_token)
         .replace("__SERVER_URL__", server_url)
+        .replace("__STORE_PASSWORD_VALUES__", "True" if settings.recorder_store_password_values else "False")
+        .replace("__SCREENSHOT_INDICATOR__", "True" if settings.recorder_screenshot_indicator else "False")
     )
