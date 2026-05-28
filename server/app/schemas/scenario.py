@@ -200,18 +200,24 @@ class RecorderSessionCreate(BaseModel):
 class RecorderSessionResponse(BaseModel):
     id: uuid.UUID
     status: str
+    flow_id: uuid.UUID | None = None
 
 
 class RecorderRouteUpsert(BaseModel):
     session_id: uuid.UUID
     scenario_id: uuid.UUID
+    flow_id: uuid.UUID | None = None
+    snapshot_index: int | None = None
+    snapshot_kind: str | None = None
     url: str
     title: str | None = None
     html_base64: str | None = None          # base64-encoded page HTML
     accessibility_tree: dict | None = None
     interactive_elements: list[dict] | None = None
+    assertion_candidates: list[dict] | None = None
     screenshot_base64: str | None = None    # base64-encoded PNG
     network_calls: list[dict] | None = None
+    metadata_json: dict | None = None
 
 
 class RecorderRouteResponse(BaseModel):
@@ -222,10 +228,13 @@ class RecorderRouteResponse(BaseModel):
 
 class RecorderStepCreate(BaseModel):
     step_index: int
+    flow_id: uuid.UUID | None = None
     action_type: str   # navigate | click | fill | select | hover | keypress | scroll | check | uncheck | slide | submit
     url: str | None = None
     selector: str | None = None
+    selector_candidates: list[str] | None = None
     value: str | None = None
+    input_value_kind: str | None = None
     element_text: str | None = None
     element_type: str | None = None
     selector_stability: str | None = None

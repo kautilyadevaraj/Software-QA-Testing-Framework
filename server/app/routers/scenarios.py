@@ -416,7 +416,7 @@ def get_recording_setup(
     script_url = f"{api_base}/api/v1/recorder/{project_id}/script"
     # Two-step command: download the script then run it
     cmd = (
-        f'curl -s -o recorder.py -H "X-Recorder-Token: {token}" {script_url} && python recorder.py'
+        f'curl.exe -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}"; python recorder.py'
     )
     return RecordingSetupResponse(setup_command=cmd, recorder_token=token)
 

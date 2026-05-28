@@ -25,7 +25,14 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models.phase3 import TestCase
-from app.models.scenario import DiscoveredRoute, RouteVariant, ScenarioStep
+from app.models.scenario import (
+    DiscoveredRoute,
+    RecordedAssertionCandidate,
+    RecordedRouteTransition,
+    RecordingSession,
+    RouteVariant,
+    ScenarioStep,
+)
 from app.services import mcp_server
 
 logger = logging.getLogger(__name__)
@@ -45,12 +52,72 @@ def _serialize_recorded_steps(steps: list[ScenarioStep]) -> list[dict[str, Any]]
             "step_index": s.step_index,
             "action": s.action_type,
             "selector": s.selector or "",
+            "selector_candidates": list(s.selector_candidates or []),
             "value": s.value or "",
+            "input_value_kind": s.input_value_kind or "",
             "element_text": s.element_text or "",
             "element_type": s.element_type or "",
+            "accessible_name": s.accessible_name or "",
+            "role": s.role or "",
             "url": s.url or "",
+            "from_url": s.url_before or s.url or "",
+            "to_url": s.url_after or "",
+            "before_snapshot_id": str(s.route_variant_before_id) if s.route_variant_before_id else None,
+            "after_snapshot_id": str(s.route_variant_after_id) if s.route_variant_after_id else None,
         })
     return out
+
+
+def _serialize_route_transitions(rows: list[RecordedRouteTransition]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows[:_MAX_RECORDED_STEPS]:
+        out.append({
+            "step_index": row.step_index,
+            "from_url": row.from_url or "",
+            "from_path": row.from_path or "",
+            "to_url": row.to_url or "",
+            "to_path": row.to_path or "",
+            "action_type": row.action_type,
+            "selector": row.selector or "",
+            "element_text": row.element_text or "",
+            "accessible_name": row.accessible_name or "",
+            "transition_type": row.transition_type,
+            "confidence": row.confidence,
+            "before_snapshot_id": str(row.before_snapshot_id) if row.before_snapshot_id else None,
+            "after_snapshot_id": str(row.after_snapshot_id) if row.after_snapshot_id else None,
+        })
+    return out
+
+
+def _serialize_flow_pages(rows: list[RouteVariant]) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    for row in rows[:_MAX_ROUTE_SNAPSHOTS]:
+        route = row.route
+        pages.append({
+            "snapshot_id": str(row.id),
+            "snapshot_index": row.snapshot_index,
+            "snapshot_kind": row.snapshot_kind,
+            "path": route.path if route else "",
+            "url": route.full_url if route else "",
+            "title": route.page_title if route else "",
+            "interactive_elements": list(row.interactive_elements or [])[:_MAX_VARIANT_ELEMENTS],
+            "assertion_candidates": list(row.assertion_candidates or [])[:40],
+        })
+    return pages
+
+
+def _serialize_assertion_candidates(rows: list[RecordedAssertionCandidate]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = str(row.snapshot_id)
+        grouped.setdefault(key, []).append({
+            "candidate_index": row.candidate_index,
+            "kind": row.kind,
+            "selector": row.selector,
+            "text": row.text,
+            "confidence": row.confidence,
+        })
+    return grouped
 
 
 def _serialize_variant_elements(variant: RouteVariant | None) -> list[dict[str, Any]]:
@@ -313,12 +380,13 @@ def _build_route_map(steps: list[ScenarioStep]) -> dict[str, str]:
     """
     route_map: dict[str, str] = {}
     for s in steps:
-        if s.action_type == "navigate" and s.url:
+        candidate_url = s.url_after or s.url
+        if candidate_url:
             try:
                 from urllib.parse import urlparse
-                path = urlparse(s.url).path or s.url
+                path = urlparse(candidate_url).path or candidate_url
             except Exception:
-                path = s.url
+                path = candidate_url
             if path and path not in route_map:
                 route_map[path] = s.element_text or ""
     return route_map
@@ -358,6 +426,8 @@ def _recorded_route_paths(steps: list[ScenarioStep], target_page: str) -> list[s
     push(target_page)
     for step in steps:
         push(_path_from_url(step.url))
+        push(_path_from_url(step.url_before))
+        push(_path_from_url(step.url_after))
         if len(out) >= _MAX_ROUTE_SNAPSHOTS:
             break
     return out
@@ -412,16 +482,53 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
         if not tc:
             raise ValueError(f"TestCase not found: test_id={test_id}")
 
+        latest_recording: RecordingSession | None = None
+        if tc.hls_id is not None:
+            latest_recording = db.execute(
+                select(RecordingSession)
+                .where(RecordingSession.scenario_id == tc.hls_id)
+                .order_by(RecordingSession.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
         # Phase-2 recorded steps for this scenario (gold-standard selectors).
         recorded_steps: list[ScenarioStep] = []
-        if tc.hls_id is not None:
+        if latest_recording is not None:
             recorded_steps = list(
                 db.execute(
                     select(ScenarioStep)
-                    .where(ScenarioStep.scenario_id == tc.hls_id)
+                    .where(ScenarioStep.recording_session_id == latest_recording.id)
                     .order_by(ScenarioStep.step_index)
                 ).scalars()
             )
+
+        recorded_transitions: list[RecordedRouteTransition] = []
+        flow_pages: list[RouteVariant] = []
+        recorded_assertions: list[RecordedAssertionCandidate] = []
+        if latest_recording is not None:
+            recorded_transitions = list(
+                db.execute(
+                    select(RecordedRouteTransition)
+                    .where(RecordedRouteTransition.recording_id == latest_recording.id)
+                    .order_by(RecordedRouteTransition.step_index)
+                ).scalars()
+            )
+            flow_pages = list(
+                db.execute(
+                    select(RouteVariant)
+                    .where(RouteVariant.recording_session_id == latest_recording.id)
+                    .order_by(RouteVariant.snapshot_index.asc().nullslast(), RouteVariant.captured_at.asc())
+                ).scalars()
+            )
+            snapshot_ids = [p.id for p in flow_pages]
+            if snapshot_ids:
+                recorded_assertions = list(
+                    db.execute(
+                        select(RecordedAssertionCandidate)
+                        .where(RecordedAssertionCandidate.snapshot_id.in_(snapshot_ids))
+                        .order_by(RecordedAssertionCandidate.snapshot_id, RecordedAssertionCandidate.candidate_index)
+                    ).scalars()
+                )
 
         # Latest RouteVariant for the (scenario, target_page) pair, if any.
         # Falls back gracefully when Phase-2 didn't capture this page.
@@ -437,15 +544,18 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
                 latest_variant = db.execute(
                     select(RouteVariant)
                     .where(
-                        RouteVariant.scenario_id == tc.hls_id,
+                        RouteVariant.recording_session_id == latest_recording.id if latest_recording else RouteVariant.scenario_id == tc.hls_id,
                         RouteVariant.route_id == route_row.id,
                     )
-                    .order_by(RouteVariant.captured_at.desc())
+                    .order_by(RouteVariant.snapshot_index.desc().nullslast(), RouteVariant.captured_at.desc())
                     .limit(1)
                 ).scalar_one_or_none()
 
         # Snapshot fields we need from the ORM rows BEFORE the session closes.
         recorded_steps_payload = _serialize_recorded_steps(recorded_steps)
+        route_transitions_payload = _serialize_route_transitions(recorded_transitions)
+        flow_pages_payload = _serialize_flow_pages(flow_pages)
+        assertions_by_snapshot_payload = _serialize_assertion_candidates(recorded_assertions)
         variant_elements_payload = _serialize_variant_elements(latest_variant)
         route_map_payload = _build_route_map(recorded_steps)
         tc_title = tc.title
@@ -513,15 +623,26 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
         "test_id_attribute": test_id_attribute,
         # Phase-2 enrichment — see module docstring.
         "recorded_steps": recorded_steps_payload,
+        "recorded_route_transitions": route_transitions_payload,
+        "recording_flow": {
+            "recording_id": str(latest_recording.id) if latest_recording else None,
+            "hls_id": str(tc.hls_id) if tc.hls_id else None,
+            "pages": flow_pages_payload,
+            "actions": recorded_steps_payload,
+            "route_transitions": route_transitions_payload,
+            "assertion_candidates_by_snapshot": assertions_by_snapshot_payload,
+        },
         "recorded_variant_elements": variant_elements_payload,
         "route_map": route_map_payload,
         "route_snapshots": route_snapshots,
     }
 
     logger.info(
-        "agent4: built context test_id=%s page=%s recorded_steps=%d variant_elements=%d routes=%d route_snapshots=%d",
+        "agent4: built context test_id=%s page=%s recorded_steps=%d transitions=%d flow_pages=%d variant_elements=%d routes=%d route_snapshots=%d",
         test_id, tc_target_page,
         len(recorded_steps_payload),
+        len(route_transitions_payload),
+        len(flow_pages_payload),
         len(variant_elements_payload),
         len(route_map_payload),
         len(route_snapshots),

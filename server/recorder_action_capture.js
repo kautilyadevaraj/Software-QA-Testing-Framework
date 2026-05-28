@@ -4,6 +4,8 @@
 
   const STORE_PASSWORD_VALUES = window.__sqat_store_password_values__ === true;
   const focusState = new WeakMap();
+  const dirtyInputs = new WeakSet();
+  const lastInputCommit = new WeakMap();
   const BARE = new Set(['a', 'button', 'input', 'select', 'textarea', 'div', 'span']);
 
   function text(v, n = 200) {
@@ -79,7 +81,32 @@
     if (el.id && stableId(el.id)) return { selector: `#${css(el.id)}`, stability: 'high' };
     if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, stability: 'medium' };
     if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, stability: 'medium' };
-    return { selector: tag, stability: 'low' };
+    if (tag === 'a' && attr(el, 'href')) return { selector: `${tag}[href="${esc(attr(el, 'href'))}"]`, stability: 'medium' };
+    return { selector: domPath(el) || tag, stability: 'low' };
+  }
+  function selectorCandidates(el) {
+    if (!el || !el.tagName) return [];
+    const tag = el.tagName.toLowerCase();
+    const out = [];
+    const push = v => {
+      if (v && !out.includes(v)) out.push(v);
+    };
+    for (const a of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
+      const v = attr(el, a);
+      if (v) push(`[${a}="${esc(v)}"]`);
+    }
+    if (attr(el, 'aria-label')) push(`${tag}[aria-label="${esc(attr(el, 'aria-label'))}"]`);
+    if (el.id && stableId(el.id)) push(`#${css(el.id)}`);
+    if (el.name) push(`${tag}[name="${esc(el.name)}"]`);
+    if (el.placeholder) push(`${tag}[placeholder="${esc(el.placeholder)}"]`);
+    if (tag === 'a' && attr(el, 'href')) push(`${tag}[href="${esc(attr(el, 'href'))}"]`);
+    const l = label(el);
+    if (l && ['input', 'textarea', 'select'].includes(tag)) push(`label:${l}`);
+    const r = role(el);
+    const n = nameOf(el);
+    if (r && n) push(`role:${r}[name="${n}"]`);
+    push(domPath(el));
+    return out.slice(0, 8);
   }
   function domPath(el) {
     const parts = [];
@@ -203,6 +230,7 @@
     const loc = locator(el, n, r);
     return {
       selector: s?.selector || null,
+      selector_candidates: selectorCandidates(el),
       selector_stability: s?.stability || 'low',
       playwright_locator: loc,
       accessible_name: n || null,
@@ -238,6 +266,7 @@
     return {
       type,
       selector: snap.selector,
+      selectorCandidates: snap.selector_candidates,
       stability: snap.selector_stability,
       playwrightLocator: snap.playwright_locator,
       text: snap.visible_text,
@@ -247,6 +276,7 @@
       inputType: snap.type,
       elementType: snap.tag,
       value: extra.value,
+      inputValueKind: extra.inputValueKind,
       url: window.location.href,
       urlBefore: window.location.href,
       beforeState: extra.beforeState || snap.state,
@@ -261,15 +291,74 @@
       },
     };
   }
+  function inputKind(el) {
+    const tag = (el.tagName || '').toLowerCase();
+    const t = (el.type || '').toLowerCase();
+    if (tag === 'select') return 'select';
+    if (t === 'range') return 'slide';
+    if (['checkbox', 'radio'].includes(t)) return el.checked ? 'check' : 'uncheck';
+    return 'fill';
+  }
+  function recordableInput(el) {
+    if (!ok(el)) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    const t = (el.type || '').toLowerCase();
+    if (!['input', 'textarea', 'select'].includes(tag)) return false;
+    return !['button', 'submit', 'reset', 'image', 'hidden', 'file'].includes(t);
+  }
+  function inputValue(el) {
+    const t = (el.type || '').toLowerCase();
+    const redacted = t === 'password' && !STORE_PASSWORD_VALUES;
+    return redacted ? null : (el.value || '').substring(0, 500);
+  }
+  function inputValueKind(el) {
+    const t = (el.type || '').toLowerCase();
+    const hints = `${t} ${el.name || ''} ${el.id || ''} ${attr(el, 'autocomplete') || ''} ${label(el) || ''} ${el.placeholder || ''}`.toLowerCase();
+    if (t === 'password' || /password|username|email|login|credential/.test(hints)) return 'credential';
+    if ((el.value || '') === '') return 'empty';
+    if ((el.tagName || '').toLowerCase() === 'select') return 'option_value';
+    return 'literal';
+  }
+  function inputCommitKey(el) {
+    const t = (el.type || '').toLowerCase();
+    const rawValue = t === 'password'
+      ? String(el.value || '').substring(0, 500)
+      : String(inputValue(el) ?? '');
+    return `${inputKind(el)}|${rawValue}|${el.checked === true}`;
+  }
+  function commitInput(el, event = {}) {
+    if (!recordableInput(el)) return;
+    const force = event.force === true || event.source === 'change';
+    if (!force && !dirtyInputs.has(el)) return;
+    const key = inputCommitKey(el);
+    if (lastInputCommit.get(el) === key) return;
+    lastInputCommit.set(el, key);
+    window.__sqat_action__(action(inputKind(el), el, {
+      value: inputValue(el),
+      inputValueKind: inputValueKind(el),
+      beforeState: focusState.get(el) || null,
+      afterState: state(el),
+      event,
+    })).catch(() => {});
+  }
+  function flushActiveInput(source) {
+    const active = document.activeElement;
+    if (active) commitInput(active, { committed: true, source });
+  }
 
   document.addEventListener('focusin', e => {
     if (ok(e.target)) focusState.set(e.target, state(e.target));
   }, true);
   document.addEventListener('pointerdown', e => {
+    if (ok(e.target) && e.target !== document.activeElement) flushActiveInput('pointerdown');
     if (ok(e.target)) focusState.set(e.target, state(e.target));
+  }, true);
+  document.addEventListener('focusout', e => {
+    commitInput(e.target, { committed: true, source: 'blur' });
   }, true);
   document.addEventListener('click', e => {
     if (!ok(e.target)) return;
+    flushActiveInput('click');
     const el = e.target;
     const tag = el.tagName.toLowerCase();
     const nativeType = (el.type || '').toLowerCase();
@@ -287,18 +376,19 @@
     const el = e.target;
     const tag = el.tagName.toLowerCase();
     if (!['input', 'textarea', 'select'].includes(tag)) return;
+    commitInput(el, { committed: true, source: 'change', force: true });
+  }, true);
+  document.addEventListener('input', e => {
+    if (!ok(e.target)) return;
+    const el = e.target;
+    const tag = el.tagName.toLowerCase();
     const t = (el.type || '').toLowerCase();
-    const redacted = t === 'password' && !STORE_PASSWORD_VALUES;
-    const kind = tag === 'select' ? 'select' : t === 'range' ? 'slide' : ['checkbox', 'radio'].includes(t) ? (el.checked ? 'check' : 'uncheck') : 'fill';
-    window.__sqat_action__(action(kind, el, {
-      value: redacted ? null : (el.value || '').substring(0, 500),
-      beforeState: focusState.get(el) || null,
-      afterState: state(el),
-      event: { committed: true },
-    })).catch(() => {});
+    if (!['input', 'textarea'].includes(tag) || ['checkbox', 'radio', 'range', 'button', 'submit', 'reset'].includes(t)) return;
+    dirtyInputs.add(el);
   }, true);
   document.addEventListener('keydown', e => {
     if (!['Enter', 'Tab'].includes(e.key) || !ok(e.target)) return;
+    commitInput(e.target, { committed: true, source: 'keydown', key: e.key });
     window.__sqat_action__(action('keypress', e.target, {
       value: e.key,
       beforeState: focusState.get(e.target) || state(e.target),
@@ -356,10 +446,10 @@ window.__sqat_show_capture_indicator__ = function () {
     el = document.createElement('div');
     el.id = '__sqat_capture_indicator__';
     el.setAttribute('aria-hidden', 'true');
-    el.innerHTML = '<div>CAM</div>';
+    el.innerHTML = '';
     const style = document.createElement('style');
     style.id = '__sqat_capture_indicator_style__';
-    style.textContent = '#__sqat_capture_indicator__{position:fixed;inset:0;pointer-events:none;z-index:2147483647;box-shadow:inset 0 0 0 4px rgba(37,99,235,.95),inset 0 0 38px rgba(37,99,235,.55);opacity:0;transition:opacity 120ms ease}#__sqat_capture_indicator__.on{opacity:1}#__sqat_capture_indicator__ div{position:fixed;right:18px;bottom:18px;width:46px;height:46px;border-radius:999px;background:#2563eb;color:white;font:700 11px/46px system-ui,sans-serif;text-align:center;box-shadow:0 10px 24px rgba(37,99,235,.35)}';
+    style.textContent = '#__sqat_capture_indicator__{position:fixed;inset:0;pointer-events:none;z-index:2147483647;box-shadow:inset 0 0 0 3px rgba(125,211,252,.95),inset 0 0 18px rgba(125,211,252,.45);opacity:0;transition:opacity 80ms ease}#__sqat_capture_indicator__.on{opacity:1}';
     document.documentElement.appendChild(style);
     document.documentElement.appendChild(el);
   }
@@ -396,6 +486,49 @@ window.__sqat_get_elements__ = function () {
   const stableId = id => !!id && !/^[0-9a-f-]{16,}$/i.test(id);
   const role = el => attr(el, 'role') || (el.tagName || '').toLowerCase();
   const name = el => text(attr(el, 'aria-label')) || text(el.innerText || el.textContent || el.value);
+  const path = el => {
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && parts.length < 8) {
+      const tag = node.tagName.toLowerCase();
+      if (node.id && stableId(node.id)) {
+        parts.unshift(`${tag}#${window.CSS && CSS.escape ? CSS.escape(node.id) : esc(node.id)}`);
+        break;
+      }
+      let i = 1;
+      let p = node.previousElementSibling;
+      while (p) {
+        if (p.tagName === node.tagName) i += 1;
+        p = p.previousElementSibling;
+      }
+      parts.unshift(`${tag}:nth-of-type(${i})`);
+      node = node.parentElement;
+    }
+    return parts.join(' > ');
+  };
+  const candidates = el => {
+    const tag = el.tagName.toLowerCase();
+    const out = [];
+    const push = v => {
+      if (v && !out.includes(v)) out.push(v);
+    };
+    for (const a of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
+      const v = attr(el, a);
+      if (v) push(`[${a}="${esc(v)}"]`);
+    }
+    if (attr(el, 'aria-label')) push(`${tag}[aria-label="${esc(attr(el, 'aria-label'))}"]`);
+    if (el.id && stableId(el.id)) push(`#${window.CSS && CSS.escape ? CSS.escape(el.id) : esc(el.id)}`);
+    if (el.name) push(`${tag}[name="${esc(el.name)}"]`);
+    if (el.placeholder) push(`${tag}[placeholder="${esc(el.placeholder)}"]`);
+    if (tag === 'a' && attr(el, 'href')) push(`${tag}[href="${esc(attr(el, 'href'))}"]`);
+    const labelled = el.id ? text(document.querySelector(`label[for="${esc(el.id)}"]`)?.textContent) : '';
+    if (labelled && ['input', 'textarea', 'select'].includes(tag)) push(`label:${labelled}`);
+    const r = role(el);
+    const n = name(el);
+    if (r && n) push(`role:${r}[name="${n}"]`);
+    push(path(el));
+    return out.slice(0, 8);
+  };
   const best = el => {
     const tag = el.tagName.toLowerCase();
     for (const a of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
@@ -406,7 +539,8 @@ window.__sqat_get_elements__ = function () {
     if (el.id && stableId(el.id)) return { selector: `#${window.CSS && CSS.escape ? CSS.escape(el.id) : esc(el.id)}`, selector_stability: 'high' };
     if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, selector_stability: 'medium' };
     if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, selector_stability: 'medium' };
-    return { selector: tag, selector_stability: 'low' };
+    if (tag === 'a' && attr(el, 'href')) return { selector: `${tag}[href="${esc(attr(el, 'href'))}"]`, selector_stability: 'medium' };
+    return { selector: candidates(el).at(-1) || tag, selector_stability: 'low' };
   };
   const optionList = el => {
     if (el.tagName?.toLowerCase() !== 'select') return [];
@@ -427,6 +561,7 @@ window.__sqat_get_elements__ = function () {
         role: role(el),
         text: text(el.innerText || el.textContent),
         accessible_name: name(el),
+        selector_candidates: candidates(el),
         label: text(document.querySelector(`label[for="${esc(el.id)}"]`)?.textContent),
         placeholder: el.placeholder || null,
         name: el.name || null,
@@ -436,6 +571,9 @@ window.__sqat_get_elements__ = function () {
         disabled: el.disabled === true || attr(el, 'aria-disabled') === 'true',
         required: el.required === true || attr(el, 'aria-required') === 'true',
         checked: typeof el.checked === 'boolean' ? el.checked : null,
+        value_redacted: (el.type || '').toLowerCase() === 'password',
+        selected_value: el.tagName.toLowerCase() === 'select' ? el.value : null,
+        selected_label: el.tagName.toLowerCase() === 'select' ? text(el.options?.[el.selectedIndex]?.label || el.options?.[el.selectedIndex]?.textContent) : null,
         aria_expanded: attr(el, 'aria-expanded'),
         aria_selected: attr(el, 'aria-selected'),
         aria_checked: attr(el, 'aria-checked'),
@@ -511,4 +649,67 @@ window.__sqat_get_page_context__ = function () {
     return r.width > 0 && r.height > 0;
   }).map(el => ({ title: text(el.querySelector('[aria-labelledby],h1,h2,h3')), text: text(el, 350) }));
   return { url: window.location.href, title: document.title, headings, forms, nav_links, buttons, dialogs };
+};
+
+window.__sqat_get_assertion_candidates__ = function () {
+  const out = [];
+  const seen = new Set();
+  const text = (el, n = 260) => el ? (el.textContent || '').replace(/\s+/g, ' ').trim().substring(0, n) : '';
+  const attr = (el, name) => el && el.getAttribute ? el.getAttribute(name) : null;
+  const esc = v => String(v || '').replace(/["\\]/g, '\\$&');
+  const stableId = id => !!id && !/^[0-9a-f-]{16,}$/i.test(id);
+  const visible = el => {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+  };
+  const selector = el => {
+    if (!el || !el.tagName) return null;
+    const tag = el.tagName.toLowerCase();
+    for (const a of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
+      const v = attr(el, a);
+      if (v) return `[${a}="${esc(v)}"]`;
+    }
+    if (attr(el, 'aria-label')) return `${tag}[aria-label="${esc(attr(el, 'aria-label'))}"]`;
+    if (el.id && stableId(el.id)) return `#${window.CSS && CSS.escape ? CSS.escape(el.id) : esc(el.id)}`;
+    if (el.name) return `${tag}[name="${esc(el.name)}"]`;
+    return null;
+  };
+  const push = (kind, el, confidence = 0.75, extra = {}) => {
+    if (!visible(el)) return;
+    const value = text(el);
+    if (!value) return;
+    const key = `${kind}|${selector(el) || ''}|${value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ kind, selector: selector(el), text: value, confidence, ...extra });
+  };
+
+  document.querySelectorAll('h1,h2,h3,h4,[role="heading"]').forEach(el => push('heading', el, 0.9));
+  document.querySelectorAll('[role="alert"],[role="status"],[aria-live]').forEach(el => push('status_text', el, 0.95));
+  document.querySelectorAll('[data-testid],[data-test],[data-cy],[data-qa]').forEach(el => {
+    const key = `${attr(el, 'data-testid') || attr(el, 'data-test') || attr(el, 'data-cy') || attr(el, 'data-qa')}`.toLowerCase();
+    if (/error|alert|success|complete|confirm|message|badge|count|total|title|name|price|summary|empty/.test(key)) {
+      push('stable_ui_text', el, 0.9, { data_key: key });
+    }
+  });
+  document.querySelectorAll('.error,.success,.alert,.message,.badge,.count,[class*="error"],[class*="success"],[class*="badge"]').forEach(el => push('semantic_class_text', el, 0.7));
+  document.querySelectorAll('ul,ol,[role="list"]').forEach((list, listIndex) => {
+    const items = Array.from(list.querySelectorAll('li,[role="listitem"]')).filter(visible).map(item => text(item, 180)).filter(Boolean).slice(0, 40);
+    if (items.length) {
+      out.push({ kind: 'list_items', selector: selector(list), text: items.join(' | '), confidence: 0.75, item_count: items.length, list_index: listIndex, items });
+    }
+  });
+  document.querySelectorAll('table,[role="table"],[role="grid"]').forEach((table, tableIndex) => {
+    const rows = Array.from(table.querySelectorAll('tr,[role="row"]')).filter(visible).map(row => text(row, 220)).filter(Boolean).slice(0, 40);
+    if (rows.length) {
+      out.push({ kind: 'table_rows', selector: selector(table), text: rows.join(' | '), confidence: 0.8, row_count: rows.length, table_index: tableIndex, rows });
+    }
+  });
+  const urlPath = window.location.pathname + window.location.search;
+  if (urlPath) {
+    out.push({ kind: 'url_pattern', selector: null, text: urlPath, confidence: 0.8 });
+  }
+  return out.slice(0, 120);
 };

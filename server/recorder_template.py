@@ -234,9 +234,13 @@ class Recorder:
         self._capture_start: float = time.time()
         self._stop_event = asyncio.Event()
         self._current_session_id: str | None = None
+        self._current_flow_id: str | None = None
         self._step_index: int = 0
+        self._snapshot_index: int = 0
+        self._last_snapshot_id: str | None = None
         self._browser_dead = False
         self._shutdown_requested = False
+        self._action_handler = None
 
     # ── HTTP helpers ───────────────────────────────────────────────────────
 
@@ -255,15 +259,32 @@ class Recorder:
         r.raise_for_status()
         return r.json()
 
+    async def _dispatch_action(self, source, action_data: dict) -> None:
+        handler = self._action_handler
+        if handler is not None:
+            await handler(source, action_data)
+
     # ── Network tracking ───────────────────────────────────────────────────
 
     def _on_response(self, response) -> None:
         try:
+            resource_type = getattr(response.request, "resource_type", None)
+            parsed = urlparse(response.url)
+            path = parsed.path.lower()
+            static_ext = (
+                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico",
+                ".css", ".js", ".mjs", ".woff", ".woff2", ".ttf", ".otf", ".map",
+            )
+            is_static_asset = bool(resource_type in {"image", "stylesheet", "font", "script"} or path.endswith(static_ext))
+            is_api_call = bool(resource_type in {"xhr", "fetch"} or "/api/" in path or response.request.method.upper() != "GET")
             self.network_buffer.append({
                 "ts": round(time.time() - self._capture_start, 3),
                 "method": response.request.method,
                 "url": response.url,
                 "status": response.status,
+                "resource_type": resource_type,
+                "is_static_asset": is_static_asset,
+                "is_api_call": is_api_call,
             })
         except Exception:
             pass
@@ -278,12 +299,17 @@ class Recorder:
     async def fetch_project_info(self) -> dict:
         return await self._get(f"/api/v1/recorder/{PROJECT_ID}/info")
 
-    async def create_session(self, scenario_id: str) -> str:
+    async def create_session(self, scenario_id: str) -> dict:
         data = await self._post(
             f"/api/v1/recorder/{PROJECT_ID}/sessions",
             json={"scenario_id": scenario_id},
         )
-        return data["id"]
+        return data
+
+    def _next_snapshot_index(self) -> int:
+        current = self._snapshot_index
+        self._snapshot_index += 1
+        return current
 
     async def start_session(self, session_id: str) -> None:
         await self._put(f"/api/v1/recorder/{PROJECT_ID}/sessions/{session_id}/start")
@@ -325,40 +351,18 @@ class Recorder:
         await asyncio.sleep(0.6)
 
     async def _capture_png(self, page: Page, *, full_page: bool = False) -> bytes:
-        hide_indicator_style = (
-            "#__sqat_capture_indicator__,#__sqat_capture_indicator_style__"
-            "{display:none!important;visibility:hidden!important;opacity:0!important}"
-        )
-        if SCREENSHOT_INDICATOR:
-            try:
-                await page.evaluate("window.__sqat_show_capture_indicator__ && window.__sqat_show_capture_indicator__()")
-                await asyncio.sleep(0.08)
-            except Exception:
-                pass
         try:
             return await page.screenshot(
                 full_page=full_page,
                 type="png",
                 animations="disabled",
-                style=hide_indicator_style,
             )
         except TypeError:
-            if SCREENSHOT_INDICATOR:
-                try:
-                    await page.evaluate("window.__sqat_hide_capture_indicator__ && window.__sqat_hide_capture_indicator__()")
-                except Exception:
-                    pass
             return await page.screenshot(
                 full_page=full_page,
                 type="png",
                 animations="disabled",
             )
-        finally:
-            if SCREENSHOT_INDICATOR:
-                try:
-                    await page.evaluate("window.__sqat_hide_capture_indicator__ && window.__sqat_hide_capture_indicator__()")
-                except Exception:
-                    pass
 
     async def _enrich_action_after_delay(self, page: Page, action: dict) -> dict:
         before_url = action.get("urlBefore") or action.get("url")
@@ -423,7 +427,18 @@ class Recorder:
 
     # ── Route capture ──────────────────────────────────────────────────────
 
-    async def upsert_route(self, session_id: str, scenario_id: str, page: Page, network_calls: list[dict]) -> dict:
+    async def upsert_route(
+        self,
+        session_id: str,
+        scenario_id: str,
+        flow_id: str | None,
+        page: Page,
+        network_calls: list[dict],
+        *,
+        snapshot_index: int,
+        snapshot_kind: str,
+        metadata: dict | None = None,
+    ) -> dict:
         await self._wait_for_page_ready(page)
         url = page.url
 
@@ -454,6 +469,11 @@ class Recorder:
             page_context = None
 
         try:
+            assertion_candidates = await page.evaluate("window.__sqat_get_assertion_candidates__ ? window.__sqat_get_assertion_candidates__() : []")
+        except Exception:
+            assertion_candidates = []
+
+        try:
             png = await self._capture_png(page, full_page=True)
             screenshot_b64 = base64.b64encode(png).decode()
         except Exception:
@@ -462,38 +482,73 @@ class Recorder:
         payload = {
             "session_id": session_id,
             "scenario_id": scenario_id,
+            "flow_id": flow_id,
+            "snapshot_index": snapshot_index,
+            "snapshot_kind": snapshot_kind,
             "url": url,
             "title": title,
             "html_base64": html_b64,
             "accessibility_tree": {"accessibility_tree": a11y, "page_context": page_context},
             "interactive_elements": interactive,
+            "assertion_candidates": assertion_candidates,
             "screenshot_base64": screenshot_b64,
             "network_calls": network_calls,
+            "metadata_json": metadata or {},
         }
         return await self._post(f"/api/v1/recorder/{PROJECT_ID}/routes", json=payload)
 
     # ── Step capture ───────────────────────────────────────────────────────
 
-    async def push_step(self, session_id: str, step_index: int, action: dict, page: Page, network_calls: list[dict]) -> None:
+    async def push_step(
+        self,
+        session_id: str,
+        scenario_id: str,
+        flow_id: str | None,
+        step_index: int,
+        action: dict,
+        page: Page,
+        network_calls: list[dict],
+    ) -> None:
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=2000)
         except Exception:
             pass
         await asyncio.sleep(0.3)
 
+        before_snapshot_id = self._last_snapshot_id
+        after_snapshot_id = None
         try:
             action = await self._enrich_action_after_delay(page, action)
-            png = await self._capture_png(page)
-            screenshot_b64 = base64.b64encode(png).decode()
+            snapshot = await self.upsert_route(
+                session_id,
+                scenario_id,
+                flow_id,
+                page,
+                network_calls,
+                snapshot_index=self._next_snapshot_index(),
+                snapshot_kind=f"after_step_{step_index:04d}",
+                metadata={
+                    "step_index": step_index,
+                    "action_type": action.get("type"),
+                    "url_before": action.get("urlBefore") or action.get("url"),
+                    "url_after": action.get("urlAfter"),
+                },
+            )
+            after_snapshot_id = snapshot.get("variant_id")
+            self._last_snapshot_id = after_snapshot_id
+            screenshot_b64 = None
         except Exception:
             screenshot_b64 = None
 
         payload = {
             "step_index": step_index,
+            "flow_id": flow_id,
             "action_type": action.get("type", "click"),
             "url": action.get("url"),
             "selector": action.get("selector"),
+            "selector_candidates": action.get("selectorCandidates"),
             "value": action.get("value"),
+            "input_value_kind": action.get("inputValueKind"),
             "element_text": action.get("text"),
             "element_type": action.get("elementType"),
             "playwright_locator": action.get("playwrightLocator"),
@@ -505,6 +560,8 @@ class Recorder:
             "url_before": action.get("urlBefore") or action.get("url"),
             "url_after": action.get("urlAfter"),
             "caused_navigation": action.get("causedNavigation"),
+            "route_variant_before_id": before_snapshot_id,
+            "route_variant_after_id": after_snapshot_id,
             "semantic_context": action.get("semanticContext"),
             "screenshot_base64": screenshot_b64,
             "network_calls": network_calls,
@@ -533,9 +590,14 @@ class Recorder:
             self._browser_dead = True
             raise RuntimeError("browser_dead")
 
-        session_id = await self.create_session(scenario_id)
+        session_info = await self.create_session(scenario_id)
+        session_id = session_info["id"]
+        flow_id = session_info.get("flow_id")
         self._current_session_id = session_id
+        self._current_flow_id = flow_id
         self._step_index = 0
+        self._snapshot_index = 0
+        self._last_snapshot_id = None
         self._stop_event.clear()
         self.network_buffer.clear()
         self._capture_start = time.time()
@@ -547,7 +609,12 @@ class Recorder:
         async def on_action(source, action_data: dict) -> None:
             pending_actions.append(action_data)
 
-        await page.expose_binding("__sqat_action__", on_action)
+        self._action_handler = on_action
+        try:
+            await page.expose_binding("__sqat_action__", self._dispatch_action)
+        except Exception as e:
+            if "already" not in str(e).lower() and "registered" not in str(e).lower():
+                raise
         await page.add_init_script(
             f"window.__sqat_store_password_values__ = {str(STORE_PASSWORD_VALUES).lower()};\n"
             + ACTION_CAPTURE_JS
@@ -565,27 +632,31 @@ class Recorder:
         print(f"  │  Close the browser tab (or press Ctrl+C) when done.")
         print(f"  └─ Waiting for browser activity...\n")
 
-        last_captured_url: str = ""
-
-        async def on_frame_navigated(frame) -> None:
-            nonlocal last_captured_url
-            if frame != page.main_frame:
-                return
+        async def capture_current_route(snapshot_kind: str, metadata: dict | None = None) -> dict | None:
             await self._wait_for_page_ready(page)
             current_url = page.url
-            if current_url == last_captured_url:
-                return
-            last_captured_url = current_url
             network = self._drain_network()
             try:
-                result = await self.upsert_route(session_id, scenario_id, page, network)
+                result = await self.upsert_route(
+                    session_id,
+                    scenario_id,
+                    flow_id,
+                    page,
+                    network,
+                    snapshot_index=self._next_snapshot_index(),
+                    snapshot_kind=snapshot_kind,
+                    metadata=metadata,
+                )
+                self._last_snapshot_id = result.get("variant_id")
                 path = urlparse(current_url).path or "/"
                 tag = "NEW" if result.get("is_new_route") else "UPD"
                 print(f"  [{tag}] Route captured: {path}")
+                return result
             except Exception as e:
                 print(f"  [ERR] Failed to capture route: {e}")
+                return None
 
-        page.on("framenavigated", lambda f: asyncio.ensure_future(on_frame_navigated(f)))
+        await capture_current_route("initial", {"source": "recording_start"})
 
         async def action_processor() -> None:
             while not self._stop_event.is_set():
@@ -594,7 +665,7 @@ class Recorder:
                     await asyncio.sleep(1.0)
                     network = self._drain_network()
                     try:
-                        await self.push_step(session_id, self._step_index, action, page, network)
+                        await self.push_step(session_id, scenario_id, flow_id, self._step_index, action, page, network)
                         self._step_index += 1
                         atype = action.get("type", "?")
                         sel = action.get("selector", "")[:40]
@@ -611,39 +682,42 @@ class Recorder:
                     if res.get("status") in ("completed", "failed"):
                         print(f"\n  [INFO] Stop signal received from Web UI.")
                         self._stop_event.set()
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
                         break
                 except Exception:
                     pass
                 await asyncio.sleep(2)
 
+        async def all_pages_closed() -> None:
+            while not self._stop_event.is_set():
+                try:
+                    if not [p for p in context.pages if not p.is_closed()]:
+                        self._stop_event.set()
+                        break
+                except Exception:
+                    self._browser_dead = True
+                    self._stop_event.set()
+                    break
+                await asyncio.sleep(0.5)
+
         processor_task = asyncio.create_task(action_processor())
         poller_task = asyncio.create_task(status_poller())
+        pages_closed_task = asyncio.create_task(all_pages_closed())
 
-        close_task = asyncio.create_task(page.wait_for_event("close"))
         stop_task = asyncio.create_task(self._stop_event.wait())
         try:
             await asyncio.wait(
-                {close_task, stop_task},
+                {pages_closed_task, stop_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
-            close_task.cancel()
+            pages_closed_task.cancel()
             stop_task.cancel()
             self._stop_event.set()
             processor_task.cancel()
             poller_task.cancel()
             try:
-                await asyncio.gather(processor_task, poller_task, return_exceptions=True)
+                await asyncio.gather(processor_task, poller_task, pages_closed_task, return_exceptions=True)
             except asyncio.CancelledError:
-                pass
-            try:
-                if not page.is_closed():
-                    await page.close()
-            except Exception:
                 pass
 
         try:
@@ -653,6 +727,8 @@ class Recorder:
             print(f"\n  ⚠  Failed to mark session complete: {e}")
 
         self._current_session_id = None
+        self._current_flow_id = None
+        self._action_handler = None
 
     # ── Main loop (pulse-based) ────────────────────────────────────────────
 

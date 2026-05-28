@@ -8,7 +8,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +20,9 @@ from app.models.project import (
 )
 from app.models.scenario import (
     DiscoveredRoute,
+    RecordedAssertionCandidate,
+    RecordedRouteTransition,
+    RecordingFlow,
     RecordingSession,
     RouteVariant,
     ScenarioStep,
@@ -58,6 +61,45 @@ def _url_path(url: str) -> str:
     return path
 
 
+def _url_path_with_query(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
+    return f"{path}?{parsed.query}" if parsed.query else path
+
+
+def _query_params(url: str | None) -> dict[str, str]:
+    if not url:
+        return {}
+    try:
+        return dict(parse_qsl(urlparse(url).query, keep_blank_values=True))
+    except Exception:
+        return {}
+
+
+def _classify_input_value(payload: RecorderStepCreate) -> str | None:
+    if payload.input_value_kind:
+        return payload.input_value_kind
+    if payload.value in (None, ""):
+        return "empty"
+    selector_bits = " ".join(
+        str(v or "")
+        for v in (
+            payload.selector,
+            payload.element_text,
+            payload.accessible_name,
+            payload.label,
+            payload.input_type,
+        )
+    ).lower()
+    if "password" in selector_bits or "email" in selector_bits or "username" in selector_bits:
+        return "credential"
+    if payload.action_type == "select":
+        return "option_value"
+    return "literal"
+
+
 def _latest_route_variant_id_for_url(
     db: Session,
     *,
@@ -76,7 +118,7 @@ def _latest_route_variant_id_for_url(
             RouteVariant.recording_session_id == session_id,
             DiscoveredRoute.path == path,
         )
-        .order_by(RouteVariant.captured_at.desc())
+        .order_by(RouteVariant.snapshot_index.desc().nullslast(), RouteVariant.captured_at.desc())
         .limit(1)
     ).scalar_one_or_none()
 
@@ -95,6 +137,103 @@ def _with_route_variant_context(
         "after_id": str(after_id) if after_id else None,
     }
     return context
+
+
+def _latest_flow_for_session(db: Session, session_id: uuid.UUID) -> RecordingFlow | None:
+    return db.execute(
+        select(RecordingFlow)
+        .where(RecordingFlow.recording_id == session_id)
+        .order_by(RecordingFlow.flow_index.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _transition_type(payload: RecorderStepCreate, before_id: uuid.UUID | None, after_id: uuid.UUID | None) -> tuple[str, float]:
+    before_path = _url_path_with_query(payload.url_before or payload.url)
+    after_path = _url_path_with_query(payload.url_after)
+    if before_path and after_path and before_path != after_path:
+        return "url_change", 1.0
+    semantic = payload.semantic_context or {}
+    navigation = semantic.get("navigation") if isinstance(semantic, dict) else {}
+    if isinstance(navigation, dict) and navigation.get("caused_navigation"):
+        return "url_change", 1.0
+    if before_id and after_id and before_id != after_id:
+        return "dom_change", 0.9
+    if payload.action_type in {"fill", "select", "check", "uncheck", "slide"}:
+        return "state_change", 0.85
+    return "no_url_change", 0.7
+
+
+def _create_transition(
+    db: Session,
+    *,
+    session: RecordingSession,
+    step: ScenarioStep,
+    payload: RecorderStepCreate,
+    before_id: uuid.UUID | None,
+    after_id: uuid.UUID | None,
+) -> None:
+    transition_type, confidence = _transition_type(payload, before_id, after_id)
+    metadata = dict(payload.semantic_context or {})
+    metadata.update({
+        "query_params": {
+            "from": _query_params(payload.url_before or payload.url),
+            "to": _query_params(payload.url_after),
+        },
+        "url_changed": transition_type == "url_change",
+        "dom_changed": before_id is not None and after_id is not None and before_id != after_id,
+    })
+    db.add(
+        RecordedRouteTransition(
+            recording_id=session.id,
+            flow_id=payload.flow_id,
+            hls_id=session.scenario_id,
+            step_id=step.id,
+            step_index=step.step_index,
+            from_url=payload.url_before or payload.url,
+            from_path=_url_path_with_query(payload.url_before or payload.url),
+            to_url=payload.url_after,
+            to_path=_url_path_with_query(payload.url_after),
+            action_type=payload.action_type,
+            selector=payload.selector,
+            element_text=payload.element_text,
+            accessible_name=payload.accessible_name,
+            transition_type=transition_type,
+            confidence=confidence,
+            before_snapshot_id=before_id,
+            after_snapshot_id=after_id,
+            metadata_json=metadata,
+        )
+    )
+
+
+def _store_assertion_candidates(
+    db: Session,
+    *,
+    payload: RecorderRouteUpsert,
+    snapshot_id: uuid.UUID,
+) -> None:
+    for index, candidate in enumerate(payload.assertion_candidates or []):
+        if not isinstance(candidate, dict):
+            continue
+        db.add(
+            RecordedAssertionCandidate(
+                recording_id=payload.session_id,
+                flow_id=payload.flow_id,
+                hls_id=payload.scenario_id,
+                snapshot_id=snapshot_id,
+                candidate_index=index,
+                kind=str(candidate.get("kind") or "ui_text"),
+                selector=candidate.get("selector"),
+                text=candidate.get("text"),
+                confidence=float(candidate.get("confidence") or 0.7),
+                metadata_json={
+                    k: v
+                    for k, v in candidate.items()
+                    if k not in {"kind", "selector", "text", "confidence"}
+                } or None,
+            )
+        )
 
 
 def _backfill_step_route_variant_links(
@@ -191,28 +330,23 @@ def create_session(
     if scenario is None:
         raise ValueError("Scenario not found in this project")
 
-    # Reuse existing pending/failed session or create new
-    existing = db.execute(
-        select(RecordingSession).where(
-            RecordingSession.scenario_id == scenario_id,
-            RecordingSession.status.in_(["pending", "failed"]),
-        ).order_by(RecordingSession.created_at.desc())
-    ).scalar_one_or_none()
-
-    if existing:
-        existing.status = "pending"
-        existing.started_at = None
-        existing.completed_at = None
-        db.commit()
-        db.refresh(existing)
-        return RecorderSessionResponse(id=existing.id, status=existing.status)
-
     session = RecordingSession(
         project_id=project.id,
         scenario_id=scenario_id,
         status="pending",
     )
     db.add(session)
+    db.flush()
+
+    flow = RecordingFlow(
+        recording_id=session.id,
+        project_id=project.id,
+        hls_id=scenario_id,
+        flow_index=0,
+        status="pending",
+        metadata_json={"contract_version": 2},
+    )
+    db.add(flow)
     
     # Clear the trigger flag if this was the launched scenario
     if project.active_launch_scenario_id == scenario_id:
@@ -221,7 +355,8 @@ def create_session(
 
     db.commit()
     db.refresh(session)
-    return RecorderSessionResponse(id=session.id, status=session.status)
+    db.refresh(flow)
+    return RecorderSessionResponse(id=session.id, status=session.status, flow_id=flow.id)
 
 
 def start_session(
@@ -238,9 +373,14 @@ def start_session(
 
     session.status = "in_progress"
     session.started_at = datetime.now(timezone.utc)
+    flow = _latest_flow_for_session(db, session.id)
+    if flow:
+        flow.status = "in_progress"
+        flow.started_at = session.started_at
+        db.add(flow)
     db.commit()
     db.refresh(session)
-    return RecorderSessionResponse(id=session.id, status=session.status)
+    return RecorderSessionResponse(id=session.id, status=session.status, flow_id=flow.id if flow else None)
 
 
 def complete_session(
@@ -257,6 +397,18 @@ def complete_session(
 
     session.status = "completed"
     session.completed_at = datetime.now(timezone.utc)
+    flow = _latest_flow_for_session(db, session.id)
+    if flow:
+        action_count = db.execute(
+            select(ScenarioStep.id).where(
+                ScenarioStep.recording_session_id == session.id,
+                ScenarioStep.flow_id == flow.id,
+            )
+        ).first()
+        flow.status = "completed"
+        flow.completed_at = session.completed_at
+        flow.phase3_ready = bool(action_count)
+        db.add(flow)
     db.commit()
 
     # Mark the scenario as completed
@@ -267,7 +419,7 @@ def complete_session(
         db.commit()
 
     db.refresh(session)
-    return RecorderSessionResponse(id=session.id, status=session.status)
+    return RecorderSessionResponse(id=session.id, status=session.status, flow_id=flow.id if flow else None)
 
 
 def fail_session(
@@ -283,9 +435,13 @@ def fail_session(
         raise ValueError("Session not found")
 
     session.status = "failed"
+    flow = _latest_flow_for_session(db, session.id)
+    if flow:
+        flow.status = "failed"
+        db.add(flow)
     db.commit()
     db.refresh(session)
-    return RecorderSessionResponse(id=session.id, status=session.status)
+    return RecorderSessionResponse(id=session.id, status=session.status, flow_id=flow.id if flow else None)
 
 
 def get_session_status(
@@ -300,7 +456,8 @@ def get_session_status(
     if session is None:
         raise ValueError("Session not found")
 
-    return RecorderSessionResponse(id=session.id, status=session.status)
+    flow = _latest_flow_for_session(db, session.id)
+    return RecorderSessionResponse(id=session.id, status=session.status, flow_id=flow.id if flow else None)
 
 
 def upsert_route(
@@ -312,6 +469,10 @@ def upsert_route(
     """
     path = _url_path(payload.url)
     base = _recordings_base() / str(project.id) / str(payload.session_id)
+    flow = _latest_flow_for_session(db, payload.session_id)
+    flow_id = payload.flow_id or (flow.id if flow else None)
+    payload = payload.model_copy(update={"flow_id": flow_id})
+    snapshot_label = f"{payload.snapshot_index:04d}" if payload.snapshot_index is not None else str(uuid.uuid4())[:8]
 
     # ── Global route registry ──────────────────────────────────────────────
     route = db.execute(
@@ -326,7 +487,7 @@ def upsert_route(
     html_path: str | None = None
 
     if payload.screenshot_base64:
-        filename = f"{path.replace('/', '_') or 'root'}.png"
+        filename = f"{snapshot_label}_{path.replace('/', '_') or 'root'}.png"
         screenshot_path = _save_file(
             payload.screenshot_base64,
             base / "routes",
@@ -334,7 +495,7 @@ def upsert_route(
         )
 
     if payload.html_base64:
-        filename = f"{path.replace('/', '_') or 'root'}.html"
+        filename = f"{snapshot_label}_{path.replace('/', '_') or 'root'}.html"
         html_path = _save_file(
             payload.html_base64,
             base / "routes",
@@ -384,41 +545,46 @@ def upsert_route(
     variant_html: str | None = None
 
     if payload.screenshot_base64:
-        vid = str(uuid.uuid4())[:8]
         variant_screenshot = _save_file(
             payload.screenshot_base64,
             base / "variants",
-            f"{vid}_{path.replace('/', '_') or 'root'}.png",
+            f"{snapshot_label}_{path.replace('/', '_') or 'root'}.png",
         )
 
     if payload.html_base64:
-        vid = str(uuid.uuid4())[:8]
         variant_html = _save_file(
             payload.html_base64,
             base / "variants",
-            f"{vid}_{path.replace('/', '_') or 'root'}.html",
+            f"{snapshot_label}_{path.replace('/', '_') or 'root'}.html",
         )
 
     variant = RouteVariant(
         route_id=route.id,
         scenario_id=payload.scenario_id,
         recording_session_id=payload.session_id,
+        flow_id=flow_id,
         project_id=project.id,
         html_path=variant_html,
         accessibility_tree=payload.accessibility_tree,
         interactive_elements=payload.interactive_elements,
         screenshot_path=variant_screenshot,
         network_calls=payload.network_calls,
+        snapshot_index=payload.snapshot_index,
+        snapshot_kind=payload.snapshot_kind,
+        assertion_candidates=payload.assertion_candidates,
+        metadata_json=payload.metadata_json,
     )
     db.add(variant)
     db.flush()
-    _backfill_step_route_variant_links(
-        db,
-        project_id=project.id,
-        session_id=payload.session_id,
-        path=path,
-        variant_id=variant.id,
-    )
+    _store_assertion_candidates(db, payload=payload, snapshot_id=variant.id)
+    if payload.snapshot_index is None:
+        _backfill_step_route_variant_links(
+            db,
+            project_id=project.id,
+            session_id=payload.session_id,
+            path=path,
+            variant_id=variant.id,
+        )
     db.commit()
     db.refresh(route)
     db.refresh(variant)
@@ -444,6 +610,9 @@ def append_step(
     ).scalar_one_or_none()
     if session is None:
         raise ValueError("Session not found")
+    flow = _latest_flow_for_session(db, session.id)
+    flow_id = payload.flow_id or (flow.id if flow else None)
+    payload = payload.model_copy(update={"flow_id": flow_id})
 
     base = _recordings_base() / str(project.id) / str(session_id) / "steps"
     screenshot_path: str | None = None
@@ -488,12 +657,15 @@ def append_step(
     step = ScenarioStep(
         scenario_id=session.scenario_id,
         recording_session_id=session_id,
+        flow_id=flow_id,
         project_id=project.id,
         step_index=step_index,
         action_type=payload.action_type,
         url=payload.url,
         selector=payload.selector,
+        selector_candidates=payload.selector_candidates,
         value=payload.value,
+        input_value_kind=_classify_input_value(payload),
         element_text=payload.element_text,
         element_type=payload.element_type,
         selector_stability=payload.selector_stability,
@@ -516,6 +688,15 @@ def append_step(
         network_calls=payload.network_calls,
     )
     db.add(step)
+    db.flush()
+    _create_transition(
+        db,
+        session=session,
+        step=step,
+        payload=payload,
+        before_id=route_variant_before_id,
+        after_id=route_variant_after_id,
+    )
     db.commit()
     db.refresh(step)
 
