@@ -80,6 +80,12 @@ APPLICATION BUG — if the failure is clearly a server 4xx/5xx (visible in the
   line 2. Do NOT modify any other line. If you change the body, do NOT
   include a `// A7:` comment — the comment is reserved for "no script bug".
 
+NEGATIVE VALIDATION TESTS — if the test title/steps mention required, missing,
+empty, invalid, validation, rejected, or error feedback, preserve that negative
+intent. Do NOT repair by filling all required fields, clicking final submit, or
+asserting success/confirmation/completion. Repair only the selector/assertion
+needed to verify the validation/error feedback.
+
 RETURN — ONLY the test() block (and optional test.use() line before it).
   No imports. No preamble. No describe wrapper. No markdown fences.
 
@@ -169,6 +175,12 @@ APPLICATION BUG — if the failure is clearly server-side (4xx/5xx in network
 log), return the ORIGINAL block byte-for-byte unchanged with ONLY a single
 `// A7: <one-line reason>` inserted on line 2. Do NOT modify any other line.
 If you change the body, do NOT include a `// A7:` comment.
+
+NEGATIVE VALIDATION TESTS — if the test title/steps mention required, missing,
+empty, invalid, validation, rejected, or error feedback, preserve that negative
+intent. Do NOT repair by filling all required fields, clicking final submit, or
+asserting success/confirmation/completion. Repair only the selector/assertion
+needed to verify the validation/error feedback.
 
 RETURN — ONLY the repaired test() block. No fences, no describe wrapper.
 

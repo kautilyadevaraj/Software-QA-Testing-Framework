@@ -1585,6 +1585,12 @@ export function getPhase3TcDocumentUrl(projectId: string, runId: string): string
   return `${(process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "")}/api/v1/projects/${projectId}/phase3/tc-document?run_id=${runId}`;
 }
 
+/** Download final execution results report as a CSV file. */
+export function getPhase3ExecutionReportCsvUrl(projectId: string, runId?: string | null): string {
+  const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+  return `${(process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "")}/api/v1/projects/${projectId}/phase3/execution-report.csv${qs}`;
+}
+
 /** Step 2a: Bulk-approve all PENDING test cases. */
 export async function approveAllPhase3TestCases(
   projectId: string,

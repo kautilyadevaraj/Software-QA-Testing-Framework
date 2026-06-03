@@ -19,7 +19,7 @@ from app.services import mcp_server
 
 logger = logging.getLogger(__name__)
 
-SCRIPT_GENERATOR_VERSION = "a5-independent-grounded-v6"
+SCRIPT_GENERATOR_VERSION = "a5-independent-grounded-v8"
 
 
 def _stable_json(value: Any) -> str:

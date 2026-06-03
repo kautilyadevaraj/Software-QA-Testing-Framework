@@ -15,6 +15,7 @@ Legacy / unchanged:
   POST   /trigger                       — DEPRECATED alias for /plan+/execute (kept for compat)
   GET    /run-status                    — latest run counters + run_type
   GET    /execution-state               — live per-test status from state_store
+  GET    /execution-report.csv          — final pass/fail execution report
   GET    /review-queue                  — list review items
   PATCH  /review-queue/{id}             — mark reviewed / store jira_ref
   GET    /review-queue/stream           — SSE stream of new review items
@@ -24,7 +25,9 @@ Legacy / unchanged:
   POST   /raise-jira                    — raise a Jira issue prefixed with [TC-XXX]
 """
 import asyncio
+import csv
 import importlib
+import io
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -32,7 +35,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
@@ -127,6 +130,48 @@ def _resolve_scenario_title(db: Session, hls_id: uuid.UUID | None) -> str | None
         return None
     hls = db.get(HighLevelScenario, hls_id)
     return hls.title if hls else None
+
+
+def _latest_execute_run(db: Session, project_id: uuid.UUID, run_id: uuid.UUID | None) -> TestRun | None:
+    if run_id is not None:
+        run = db.get(TestRun, run_id)
+        if run and run.project_id == project_id and run.run_type == "execute":
+            return run
+        return None
+    return db.execute(
+        select(TestRun)
+        .where(TestRun.project_id == project_id, TestRun.run_type == "execute")
+        .order_by(TestRun.created_at.desc())
+        .limit(1)
+    ).scalars().first()
+
+
+def _plan_run_for_execution_report(db: Session, project_id: uuid.UUID, execute_run: TestRun) -> TestRun | None:
+    """Find the planning run whose test cases should appear in the report."""
+    plan_run = db.execute(
+        select(TestRun)
+        .where(
+            TestRun.project_id == project_id,
+            TestRun.run_type == "plan",
+            TestRun.created_at <= execute_run.created_at,
+        )
+        .order_by(TestRun.created_at.desc())
+        .limit(1)
+    ).scalars().first()
+    if plan_run:
+        return plan_run
+    return db.execute(
+        select(TestRun)
+        .where(TestRun.project_id == project_id, TestRun.run_type == "plan")
+        .order_by(TestRun.created_at.desc())
+        .limit(1)
+    ).scalars().first()
+
+
+def _csv_multiline(value: list | tuple | None) -> str:
+    if not value:
+        return ""
+    return "\n".join(str(item).strip() for item in value if str(item).strip())
 
 
 def _regenerate_xray_csv_for_latest_plan(db: Session, project_id: uuid.UUID) -> None:
@@ -863,6 +908,126 @@ def download_tc_document(
         str(doc_path),
         media_type="text/csv",
         filename=f"test_cases_{run_id}.csv",
+    )
+
+
+# ── GET /execution-report.csv ──────────────────────────────────────────────
+
+
+@router.get("/execution-report.csv")
+@limiter.limit(settings.rate_limit_api)
+def download_execution_report_csv(
+    request: Request,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Download a QA execution report CSV for the latest or requested execute run."""
+    _get_project_or_404(db, current_user.id, project_id)
+
+    execute_run = _latest_execute_run(db, project_id, run_id)
+    if not execute_run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No execution run found. Execute approved test cases first.",
+        )
+
+    plan_run = _plan_run_for_execution_report(db, project_id, execute_run)
+    tc_query = select(TestCase).where(TestCase.project_id == project_id)
+    if plan_run:
+        tc_query = tc_query.where(TestCase.run_id == plan_run.run_id)
+    tc_query = tc_query.where(TestCase.approval_status != "EXCLUDED")
+    test_cases = db.execute(
+        tc_query.order_by(TestCase.tc_number.asc().nullslast(), TestCase.created_at.asc())
+    ).scalars().all()
+
+    states = {
+        row.test_id: row
+        for row in db.execute(
+            select(Phase3ExecutionState).where(Phase3ExecutionState.run_id == execute_run.run_id)
+        ).scalars().all()
+    }
+    results = {
+        row.test_id: row
+        for row in db.execute(
+            select(TestResult).where(TestResult.run_id == execute_run.run_id)
+        ).scalars().all()
+    }
+    reviews = {}
+    for row in db.execute(
+        select(ReviewQueueItem)
+        .where(ReviewQueueItem.run_id == execute_run.run_id)
+        .order_by(ReviewQueueItem.created_at.desc())
+    ).scalars().all():
+        reviews.setdefault(row.test_id, row)
+
+    hls_ids = {tc.hls_id for tc in test_cases if tc.hls_id}
+    scenario_titles = {}
+    if hls_ids:
+        scenario_titles = {
+            row.id: row.title
+            for row in db.execute(
+                select(HighLevelScenario.id, HighLevelScenario.title).where(
+                    HighLevelScenario.id.in_(hls_ids)
+                )
+            ).all()
+        }
+
+    headers = [
+        "Run_ID",
+        "Plan_Run_ID",
+        "TCID",
+        "Scenario",
+        "Title",
+        "Approval_Status",
+        "Execution_Status",
+        "Result_Status",
+        "Final_Status",
+        "Retries",
+        "Network_Logs_Count",
+        "Jira_Ref",
+        "Trace_Path",
+        "Script_Path",
+        "Steps",
+        "Acceptance_Criteria",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=headers, lineterminator="\n")
+    writer.writeheader()
+
+    for tc in test_cases:
+        state = states.get(tc.test_id)
+        result = results.get(tc.test_id)
+        review = reviews.get(tc.test_id)
+        approval = str(tc.approval_status or "PENDING").upper()
+        execution_status = state.status if state else ""
+        result_status = result.status if result else ""
+        final_status = execution_status or result_status or "NOT_RUN"
+        writer.writerow({
+            "Run_ID": str(execute_run.run_id),
+            "Plan_Run_ID": str(plan_run.run_id) if plan_run else "",
+            "TCID": tc.tc_number or str(tc.test_id),
+            "Scenario": scenario_titles.get(tc.hls_id, "") if tc.hls_id else "",
+            "Title": tc.title,
+            "Approval_Status": approval,
+            "Execution_Status": execution_status,
+            "Result_Status": result_status,
+            "Final_Status": final_status,
+            "Retries": state.retries if state else (result.retries if result else 0),
+            "Network_Logs_Count": state.network_logs_count if state else 0,
+            "Jira_Ref": review.jira_ref if review else (state.jira_ticket if state else result.jira_ticket if result else ""),
+            "Trace_Path": state.trace_path if state and state.trace_path else (result.trace_path if result else ""),
+            "Script_Path": tc.script_path or "",
+            "Steps": _csv_multiline(tc.steps),
+            "Acceptance_Criteria": _csv_multiline(tc.acceptance_criteria),
+        })
+
+    filename = f"execution_report_{execute_run.run_id}.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

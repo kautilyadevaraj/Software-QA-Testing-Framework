@@ -36,29 +36,80 @@ Software-QA-Testing-Framework/
 |   |-- migrations/          # Alembic migrations
 |   |-- tests/generated/     # Runtime Playwright specs (gitignored)
 |-- documents/               # Project docs/examples if intentionally tracked
-|-- docker-compose.yml       # Local PostgreSQL, RabbitMQ, server, worker, client
+|-- docker-compose.yml       # Optional full local Docker stack
 |-- README.md
 ```
+
+## Local Development Setup
+
+The recommended handoff setup is:
+
+- PostgreSQL installed and running locally.
+- RabbitMQ running through Docker.
+- Backend and frontend running locally from the repo.
+
+Use the full `docker-compose.yml` stack only when you intentionally want containerized PostgreSQL, backend, worker, and frontend.
 
 ## Prerequisites
 
 - Node.js 20+
 - Python 3.11+
-- PostgreSQL 14+ or Docker
-- Docker Desktop for RabbitMQ/PostgreSQL containers
+- PostgreSQL 14+ installed locally
+- Docker Desktop for RabbitMQ
 - `uv` for Python dependency management
 
-## Quick Start
+## 1. Local PostgreSQL
 
-### 1. Start infrastructure
+Create a local database named `sqat_db`.
+
+Using `psql`:
 
 ```powershell
-docker compose up -d postgres rabbitmq
+psql -U postgres
 ```
 
-RabbitMQ management UI runs at `http://localhost:15672` with the local default `guest` / `guest`.
+```sql
+CREATE DATABASE sqat_db;
+```
 
-### 2. Backend
+Your backend `server/.env` should use:
+
+```env
+DATABASE_URL=postgresql://postgres:<YOUR_PASSWORD>@localhost:5432/sqat_db
+```
+
+If your local PostgreSQL username, password, host, port, or database name is different, update the connection string accordingly.
+
+## 2. RabbitMQ Through Docker
+
+Start only RabbitMQ for normal local development:
+
+```powershell
+docker compose up -d rabbitmq
+```
+
+RabbitMQ management UI:
+
+```text
+http://localhost:15672
+```
+
+Default local credentials:
+
+```text
+guest / guest
+```
+
+Backend RabbitMQ settings:
+
+```env
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+RABBITMQ_QUEUE=phase3_test_jobs
+```
+
+If you already have another RabbitMQ container using ports `5672` or `15672`, stop the old container or update the compose port mapping before starting this one.
+
+## 3. Backend
 
 ```powershell
 cd server
@@ -71,23 +122,36 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
-Edit `server/.env` before starting the backend. At minimum configure:
+At minimum, configure these values in `server/.env`:
 
 ```env
-DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/sqat_db
+DATABASE_URL=postgresql://postgres:<YOUR_PASSWORD>@localhost:5432/sqat_db
 JWT_SECRET_KEY=change_this_to_a_long_random_secret_at_least_32_chars
 QDRANT_URL=https://your-qdrant-cluster:6333
 QDRANT_API_KEY=your_qdrant_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+PUBLIC_API_URL=http://localhost:8000
 ```
 
-If you use the Docker PostgreSQL service from this repo, the local development database URL is:
+For visible local demo execution:
 
 ```env
-DATABASE_URL=postgresql://sqat:sqat_password@localhost:5432/sqat
+PHASE3_EMBEDDED_WORKERS=true
+PLAYWRIGHT_HEADED=true
+PLAYWRIGHT_SLOW_MO_MS=3000
+CHROMIUM_WORKERS=1
 ```
 
-### 3. Frontend
+For CI or production-like execution:
+
+```env
+PLAYWRIGHT_HEADED=false
+PLAYWRIGHT_SLOW_MO_MS=0
+CHROMIUM_WORKERS=3
+```
+
+## 4. Frontend
 
 ```powershell
 cd client
@@ -96,39 +160,47 @@ copy .env.example .env
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open:
 
-## Docker Compose
+```text
+http://localhost:3000
+```
 
-For a containerized local stack:
+Client API setting:
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
+
+## Optional Full Docker Stack
+
+The repo keeps a full `docker-compose.yml` for local containerized runs:
 
 ```powershell
 docker compose up --build
 ```
 
-Provide real secrets through a local root `.env` file or `docker-compose.override.yml`. Do not commit either file.
+For the Dev 2 handoff workflow, prefer local PostgreSQL plus:
 
-Important Docker variables:
-
-```env
-PUBLIC_API_URL=http://localhost:8000
-GROQ_API_KEY=your_groq_api_key_here
-GEMINI_API_KEY=
-JWT_SECRET_KEY=change_this_to_a_long_random_secret_at_least_32_chars
-BASE_URL=http://localhost:3000
+```powershell
+docker compose up -d rabbitmq
 ```
+
+Do not commit local root `.env` files or `docker-compose.override.yml`.
 
 ## Phase Pipeline
 
-### Phase 1 - Project setup and ingestion
+### Phase 1 - Project Setup And Ingestion
 
 Uploads documents such as BRD, FSD, WBS, assumptions, credentials, and Swagger/OpenAPI files. Extracted text and metadata are stored for retrieval.
 
-### Phase 2 - High-level scenarios
+### Phase 2 - High-Level Scenarios And Recording Context
 
-Generates and reviews high-level scenarios from ingested documents. Recorded browser/application context should include stable selectors, accessible names, routes, screenshots, and DOM snapshots so Phase 3 can ground automation safely.
+Generates and reviews high-level scenarios from ingested documents. Recorded browser/application context should include stable selectors, accessible names, routes, screenshots, route variants, and DOM snapshots so Phase 3 can ground automation safely.
 
-### Phase 3 - Test generation and execution
+After recorder changes, restart the backend and create fresh recordings before validating Phase 3 behavior. Existing DB recordings can still contain old selector or navigation noise.
+
+### Phase 3 - Test Generation And Execution
 
 - A3 creates QA test cases from approved HLS plus retrieved document/app context.
 - A4 builds DOM and recorded-action context for each approved test case.
@@ -156,7 +228,7 @@ Never commit API keys, Jira tokens, user credentials, auth storage state, upload
 
 ## Useful Commands
 
-### Backend checks
+Backend checks:
 
 ```powershell
 cd server
@@ -165,7 +237,7 @@ alembic current
 alembic upgrade head
 ```
 
-### Frontend checks
+Frontend checks:
 
 ```powershell
 cd client
@@ -173,30 +245,11 @@ npm run lint
 npm run build
 ```
 
-### Phase 3 worker
-
-For external worker mode:
+External Phase 3 worker mode:
 
 ```powershell
 cd server
 python -m app.services.phase3_worker
-```
-
-For visible local demo execution, set:
-
-```env
-PHASE3_EMBEDDED_WORKERS=true
-PLAYWRIGHT_HEADED=true
-PLAYWRIGHT_SLOW_MO_MS=3000
-CHROMIUM_WORKERS=1
-```
-
-For CI or production-like execution, prefer:
-
-```env
-PLAYWRIGHT_HEADED=false
-PLAYWRIGHT_SLOW_MO_MS=0
-CHROMIUM_WORKERS=3
 ```
 
 ## Generated Artifacts
@@ -205,10 +258,11 @@ These are intentionally gitignored:
 
 - `server/uploads/`
 - `server/tests/generated/`
+- `server/tests/.auth/`
 - `server/test-results/`
 - `server/test_docs/`
 - `server/models/`
-- Playwright traces, videos, screenshots, and auth state
+- Playwright traces, videos, screenshots, reports, and auth state
 
 Do not use `git add -f` for these unless you are intentionally adding a tiny sanitized fixture.
 
@@ -233,18 +287,23 @@ Commit model changes and migration files together.
 
 - Confirm no real `.env` files are staged.
 - Confirm no generated scripts, traces, videos, uploaded PDFs, credentials CSVs, or auth state files are staged.
+- Confirm `server/tests/.auth/` is not staged.
 - Rotate any API key that was ever committed, pasted into logs, or shared externally.
 - Keep Docker Compose defaults as local-only development credentials; override them for real deployments.
 
 ## Git Workflow
 
+Avoid `git add .` until you have reviewed the dirty worktree, because this project creates many runtime artifacts during local QA runs.
+
+Recommended handoff staging pattern:
+
 ```powershell
 git status --short
-git diff
-git add <specific files>
-git commit -m "chore: prepare repository for github"
+git diff --stat
+git add README.md .gitignore client/README.md server/tsconfig.json
+git add server/app server/tests client/components client/lib
+git status --short
+git commit -m "chore: prepare repository for github handoff"
 git remote add origin <github-url>
 git push -u origin <branch-name>
 ```
-
-Avoid `git add .` until you have reviewed the dirty worktree, because this project creates many runtime artifacts during local QA runs.

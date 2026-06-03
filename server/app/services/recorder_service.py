@@ -100,6 +100,228 @@ def _classify_input_value(payload: RecorderStepCreate) -> str | None:
     return "literal"
 
 
+_VALID_PLAYWRIGHT_ROLES = {
+    "alert",
+    "alertdialog",
+    "article",
+    "banner",
+    "button",
+    "cell",
+    "checkbox",
+    "columnheader",
+    "combobox",
+    "contentinfo",
+    "definition",
+    "dialog",
+    "directory",
+    "document",
+    "feed",
+    "figure",
+    "form",
+    "grid",
+    "gridcell",
+    "group",
+    "heading",
+    "img",
+    "link",
+    "list",
+    "listbox",
+    "listitem",
+    "log",
+    "main",
+    "marquee",
+    "math",
+    "menu",
+    "menubar",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "meter",
+    "navigation",
+    "none",
+    "note",
+    "option",
+    "presentation",
+    "progressbar",
+    "radio",
+    "radiogroup",
+    "region",
+    "row",
+    "rowgroup",
+    "rowheader",
+    "scrollbar",
+    "search",
+    "searchbox",
+    "separator",
+    "slider",
+    "spinbutton",
+    "status",
+    "switch",
+    "tab",
+    "table",
+    "tablist",
+    "tabpanel",
+    "term",
+    "textbox",
+    "timer",
+    "toolbar",
+    "tooltip",
+    "tree",
+    "treegrid",
+    "treeitem",
+}
+
+_HTML_TAG_TO_ROLE = {
+    "a": "link",
+    "button": "button",
+    "select": "combobox",
+    "textarea": "textbox",
+}
+
+_TEXTBOX_INPUT_TYPES = {
+    "",
+    "date",
+    "datetime-local",
+    "email",
+    "month",
+    "number",
+    "password",
+    "search",
+    "tel",
+    "text",
+    "time",
+    "url",
+    "week",
+}
+
+
+def _normalize_role(role: str | None, element_type: str | None, input_type: str | None) -> str | None:
+    """Convert browser tag-ish roles to valid ARIA roles usable by Playwright."""
+    raw_role = str(role or "").strip().lower()
+    tag = str(element_type or "").strip().lower()
+    kind = str(input_type or "").strip().lower()
+
+    if raw_role in _VALID_PLAYWRIGHT_ROLES and raw_role not in {"none", "presentation"}:
+        return raw_role
+    if raw_role in {"a", "anchor"}:
+        return "link"
+    if raw_role == "input":
+        if kind in {"button", "submit", "reset", "image"}:
+            return "button"
+        if kind == "checkbox":
+            return "checkbox"
+        if kind == "radio":
+            return "radio"
+        if kind == "range":
+            return "slider"
+        if kind in _TEXTBOX_INPUT_TYPES:
+            return "textbox"
+    if raw_role in {"span", "div", "label", "form"}:
+        raw_role = ""
+
+    if tag in _HTML_TAG_TO_ROLE:
+        return _HTML_TAG_TO_ROLE[tag]
+    if tag == "input":
+        return _normalize_role("input", element_type, input_type)
+    return raw_role if raw_role in _VALID_PLAYWRIGHT_ROLES else None
+
+
+def _normalize_playwright_locator(locator: str | None, role: str | None) -> str | None:
+    if not locator:
+        return locator
+    normalized_role = str(role or "").strip()
+    match = re.match(r"page\.getByRole\('([^']+)'", locator)
+    if not match:
+        return locator
+    original_role = match.group(1)
+    if not normalized_role or normalized_role not in _VALID_PLAYWRIGHT_ROLES:
+        return None
+    if original_role == normalized_role:
+        return locator
+    return locator.replace(f"getByRole('{original_role}'", f"getByRole('{normalized_role}'", 1)
+
+
+def _semantic_parent_context(payload: RecorderStepCreate) -> dict | None:
+    context = payload.semantic_context or {}
+    if not isinstance(context, dict):
+        return None
+    parent = context.get("parent_context")
+    element = context.get("element")
+    if not isinstance(parent, dict) and isinstance(element, dict):
+        parent = element.get("parent_context")
+    return parent if isinstance(parent, dict) else None
+
+
+def _actionable_parent_update(payload: RecorderStepCreate) -> dict[str, object]:
+    """Prefer the clickable ancestor when the browser event hit a child node.
+
+    Example: user clicks a cart badge `<span>` inside an `<a>`. The automation
+    contract should click the link, not the child text span.
+    """
+    if payload.action_type not in {"click", "submit"}:
+        return {}
+    parent = _semantic_parent_context(payload)
+    if not parent:
+        return {}
+    parent_selector = str(parent.get("selector") or "").strip()
+    parent_tag = str(parent.get("tag") or "").strip().lower()
+    parent_role = _normalize_role(str(parent.get("role") or ""), parent_tag, None)
+    if not parent_selector or parent_selector == payload.selector:
+        return {}
+    if parent_role not in {"button", "link", "checkbox", "radio", "menuitem", "tab"}:
+        return {}
+
+    candidates = [parent_selector]
+    for candidate in payload.selector_candidates or []:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    text = str(parent.get("text") or parent.get("label") or payload.element_text or "")
+    update: dict[str, object] = {
+        "selector": parent_selector,
+        "selector_candidates": candidates,
+        "element_type": parent_tag or payload.element_type,
+        "role": parent_role,
+        "element_text": text,
+        "accessible_name": str(parent.get("label") or parent.get("text") or payload.accessible_name or ""),
+    }
+    return update
+
+
+def _normalize_step_payload(payload: RecorderStepCreate) -> RecorderStepCreate:
+    """Harden recorder data before it becomes Phase 3 grounding evidence."""
+    update: dict[str, object] = {}
+    update.update(_actionable_parent_update(payload))
+
+    action = str(payload.action_type or "").lower()
+    input_type = str(update.get("input_type") or payload.input_type or "").lower()
+    element_type = str(update.get("element_type") or payload.element_type or "").lower()
+
+    # Text fills are not route-owning actions. If the browser reports a later
+    # submit navigation on the preceding fill event, keep the fill same-route.
+    if action == "fill" and payload.url_before and payload.url_after and _url_path_with_query(payload.url_before) != _url_path_with_query(payload.url_after):
+        update["url_after"] = payload.url_before
+        update["caused_navigation"] = False
+        if payload.semantic_context:
+            context = dict(payload.semantic_context)
+            navigation = dict(context.get("navigation") or {})
+            navigation.update({"to": None, "caused_navigation": False})
+            context["navigation"] = navigation
+            page = dict(context.get("page") or {})
+            page["url_after"] = payload.url_before
+            context["page"] = page
+            update["semantic_context"] = context
+
+    role = _normalize_role(
+        str(update.get("role") or payload.role or ""),
+        str(update.get("element_type") or payload.element_type or ""),
+        input_type,
+    )
+    update["role"] = role
+    update["playwright_locator"] = _normalize_playwright_locator(payload.playwright_locator, role)
+
+    return payload.model_copy(update=update) if update else payload
+
+
 def _latest_route_variant_id_for_url(
     db: Session,
     *,
@@ -613,6 +835,7 @@ def append_step(
     flow = _latest_flow_for_session(db, session.id)
     flow_id = payload.flow_id or (flow.id if flow else None)
     payload = payload.model_copy(update={"flow_id": flow_id})
+    payload = _normalize_step_payload(payload)
 
     base = _recordings_base() / str(project.id) / str(session_id) / "steps"
     screenshot_path: str | None = None

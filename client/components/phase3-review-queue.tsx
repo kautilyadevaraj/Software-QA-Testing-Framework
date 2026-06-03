@@ -61,6 +61,10 @@ export function Phase3ReviewQueue({ projectId, active, runId, testCases = [] }: 
   // When execution ends (active goes false), items created between the last
   // SSE poll and the phase transition would be missed without this re-fetch.
   useEffect(() => {
+    if (!runId) {
+      setItems([]);
+      return;
+    }
     listPhase3ReviewQueue(projectId, undefined, runId ?? undefined)
       .then((data) => setItems(data))
       .catch(() => {/* ignore */ });
@@ -70,6 +74,7 @@ export function Phase3ReviewQueue({ projectId, active, runId, testCases = [] }: 
   useEffect(() => {
     const hasRerunning = items.some((i) => i.status === "rerunning");
     if (!hasRerunning) return;
+    if (!runId) return;
     const id = setInterval(async () => {
       try {
         const fresh = await listPhase3ReviewQueue(projectId, undefined, runId ?? undefined);
@@ -83,13 +88,13 @@ export function Phase3ReviewQueue({ projectId, active, runId, testCases = [] }: 
 
   // ── SSE connection — real-time additions during active run ──────────────
   useEffect(() => {
-    if (!active) {
+    if (!active || !runId) {
       esRef.current?.close();
       esRef.current = null;
       return;
     }
 
-    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+    const qs = `?run_id=${encodeURIComponent(runId)}`;
     const url = `${API_BASE_URL}/api/v1/projects/${projectId}/phase3/review-queue/stream${qs}`;
     const es = new EventSource(url, { withCredentials: true });
     esRef.current = es;

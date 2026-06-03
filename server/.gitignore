@@ -17,11 +17,15 @@ htmlcov/
 .env
 .env.*
 !.env.example
+*.pem
+**/auth.json
+**/storageState*.json
 
 # Uploaded user files and generated runtime artifacts
 uploads/
 recordings/
 tests/generated/
+tests/.auth/
 tests/tests/
 test-results/
 test_docs/

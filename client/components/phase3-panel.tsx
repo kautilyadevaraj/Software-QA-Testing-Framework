@@ -14,6 +14,7 @@ import {
   approveAllPhase3TestCases,
   cancelPhase3Run,
   executePhase3Run,
+  getPhase3ExecutionReportCsvUrl,
   getPhase3ExecutionState,
   getPhase3NetworkLogs,
   getPhase3RunStatus,
@@ -1130,10 +1131,10 @@ export function Phase3Panel({ projectId }: Props) {
             <CardTitle className="flex items-center gap-2 text-base">
               <CheckCircle2 className="h-4 w-4 text-green-500" />
               Final Execution Report
-              {planRunId && (
-                <a href={getPhase3TcDocumentUrl(projectId, planRunId)} download className="ml-auto">
+              {(executeRunId || runStatus?.run_type === "execute") && (
+                <a href={getPhase3ExecutionReportCsvUrl(projectId, executeRunId ?? runStatus?.run_id)} download className="ml-auto">
                   <Button variant="ghost" size="sm" className="gap-2">
-                    <Download className="h-4 w-4" /> Export X-Ray CSV
+                    <Download className="h-4 w-4" /> Download Results CSV
                   </Button>
                 </a>
               )}

@@ -36,6 +36,9 @@ next-env.d.ts
 !**/.env.example
 *.pem
 **/auth.json
+server/tests/.auth/
+server/tests/.auth/**
+**/storageState*.json
 
 # Uploaded user files
 uploads/
@@ -44,6 +47,7 @@ server/recordings/
 
 # Generated Playwright scripts and test output
 server/tests/generated/
+server/tests/.auth/
 server/tests/tests/
 server/test-results/
 server/test_docs/
@@ -68,7 +72,6 @@ yarn-error.log*
 .pnpm-debug.log*
 *.log
 logs/
-MD
 
 # OS / editor junk
 .DS_Store

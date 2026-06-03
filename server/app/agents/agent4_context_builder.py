@@ -55,6 +55,8 @@ def _serialize_recorded_steps(steps: list[ScenarioStep]) -> list[dict[str, Any]]
             "selector_candidates": list(s.selector_candidates or []),
             "value": s.value or "",
             "input_value_kind": s.input_value_kind or "",
+            "input_type": s.input_type or "",
+            "label": s.label or "",
             "element_text": s.element_text or "",
             "element_type": s.element_type or "",
             "accessible_name": s.accessible_name or "",
@@ -247,13 +249,17 @@ def _render_few_shot_step(step: ScenarioStep) -> str | None:
             path = "/"
         return f"  await page.goto(env('BASE_URL') + '{path}');"
 
-    if action == "click" and sel:
+    if action in {"click", "submit"} and sel:
         return f"  await page.locator('{sel}').click();"
 
     if action == "fill" and sel:
         # Heuristic credential masking — render env() placeholders for things
         # that look like emails / passwords so the few-shot doesn't leak the
         # captured credential value.
+        value_kind = (step.input_value_kind or "").lower()
+        if value_kind == "credential":
+            placeholder = "env('USER_PASSWORD')" if "pass" in (sel.lower() + (step.input_type or "").lower()) else "env('USER_EMAIL')"
+            return f"  await page.locator('{sel}').fill({placeholder});"
         if val and _CREDENTIAL_VALUE_RE.match(val):
             placeholder = "env('USER_PASSWORD')" if "pass" in (sel.lower() + val.lower()) else "env('USER_EMAIL')"
             return f"  await page.locator('{sel}').fill({placeholder});"
@@ -323,11 +329,12 @@ def _resolve_auth_login_path(
     if not recorded_steps:
         return None
     first = recorded_steps[0]
-    if first.action_type != "navigate" or not first.url:
+    start_url = first.url_before or first.url
+    if not start_url:
         return None
     try:
         from urllib.parse import urlparse
-        path = urlparse(first.url).path or "/"
+        path = urlparse(start_url).path or "/"
     except Exception:
         path = "/"
     return path or "/"
@@ -353,13 +360,14 @@ def _resolve_target_page(
     if not recorded_steps:
         return declared, None
     first = recorded_steps[0]
-    if first.action_type != "navigate" or not first.url:
+    start_url = first.url_before or first.url
+    if not start_url:
         return declared, None
     try:
         from urllib.parse import urlparse
-        recorded_path = urlparse(first.url).path or first.url
+        recorded_path = urlparse(start_url).path or start_url
     except Exception:
-        recorded_path = first.url
+        recorded_path = start_url
     if not recorded_path:
         return declared, None
     # Strip query / fragment for comparison so equivalent route variants do not
@@ -487,6 +495,7 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
             latest_recording = db.execute(
                 select(RecordingSession)
                 .where(RecordingSession.scenario_id == tc.hls_id)
+                .where(RecordingSession.status == "completed")
                 .order_by(RecordingSession.created_at.desc())
                 .limit(1)
             ).scalar_one_or_none()

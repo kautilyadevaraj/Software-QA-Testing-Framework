@@ -309,7 +309,8 @@ def _format_recorded_steps(recorded: list[dict[str, Any]]) -> str:
         action = s.get("action") or ""
         value = s.get("value") or ""
         text = s.get("element_text") or ""
-        url = s.get("url") or ""
+        from_url = s.get("from_url") or s.get("url") or ""
+        to_url = s.get("to_url") or ""
         parts = [f"#{s.get('step_index', '?')}", action.upper()]
         if sel:
             parts.append(f"selector={sel!r}")
@@ -317,8 +318,10 @@ def _format_recorded_steps(recorded: list[dict[str, Any]]) -> str:
             parts.append(f"text={text!r}")
         if value:
             parts.append(f"value={value!r}")
-        if url:
-            parts.append(f"url={url}")
+        if from_url:
+            parts.append(f"from={from_url}")
+        if to_url and to_url != from_url:
+            parts.append(f"to={to_url}")
         lines.append("  " + " | ".join(parts))
     return "\n".join(lines)
 
@@ -465,6 +468,10 @@ _SINGLE_TEST_SIGNATURE_RE = re.compile(
 _GROUPED_TEST_SIGNATURE_RE = re.compile(
     r"""test\(\s*(?P<quote>['"])(?P<title>(?:\\.|(?!\1).)*)(?P=quote)\s*,\s*async\s*\(\s*\)\s*=>"""
 )
+_FILL_RAW_CREDENTIAL_RE = re.compile(
+    r"""(?P<prefix>\.fill\(\s*)(?P<quote>['"])(?P<value>(?:password|secret|token|passw(?:or)?d)[^'"]*)(?P=quote)(?P<suffix>\s*\))""",
+    re.IGNORECASE,
+)
 
 
 def _rewrite_login_goto(code: str, target_path: str) -> tuple[str, int]:
@@ -527,6 +534,23 @@ def _ensure_network_evidence_assertion(code: str) -> tuple[str, int]:
         return patched, 0
     insertion = "\n" + "\n".join(_network_evidence_lines())
     return patched[:index] + insertion + patched[index:], 1
+
+
+def _normalize_raw_credential_fills(code: str) -> tuple[str, int]:
+    """Replace raw credential literals in fill() calls with env placeholders.
+
+    This is intentionally narrow: it only rewrites the argument value of
+    Playwright fill() calls, not selectors or assertion text. It prevents one
+    bad LLM token ("password") from burning all retry attempts when the safe
+    environment contract is obvious.
+    """
+
+    def repl(match: re.Match[str]) -> str:
+        value = match.group("value").lower()
+        env_name = "USER_PASSWORD" if any(term in value for term in ("password", "passwd", "secret", "token")) else "USER_EMAIL"
+        return f"{match.group('prefix')}env('{env_name}'){match.group('suffix')}"
+
+    return _FILL_RAW_CREDENTIAL_RE.subn(repl, code)
 
 # Bare-tag selectors (locator('select'), locator("button"), etc.) are forbidden
 # because Playwright strict-mode resolves them against ALL matching tags on the
@@ -906,6 +930,13 @@ def _raw_credential_violations(code: str) -> list[str]:
         content = literal[1:-1].strip()
         if "base_url" in lower or "user_email" in lower or "user_password" in lower:
             continue
+        prefix = code[max(0, match.start() - 32):match.start()].lower()
+        suffix = code[match.end():match.end() + 32].lower()
+        # Attribute values inside selectors are not secrets:
+        #   page.locator('[data-test="password"]')
+        if "[data-" in prefix or "getbytestid(" in prefix or "locator(" in prefix:
+            if "]" in suffix or ")" in suffix:
+                continue
         # CSS selectors often contain words like "#password" or
         # "[data-testid='token-field']"; those are not raw secret values.
         if content.startswith(("#", ".", "[", "input", "button", "select")):
@@ -1273,6 +1304,55 @@ def _sorting_assertion_errors(code: str, context: dict[str, Any] | None) -> list
     return []
 
 
+def _negative_validation_flow_errors(code: str, context: dict[str, Any] | None) -> list[str]:
+    """Prevent negative validation cases from being repaired into happy paths."""
+    contract = _context_contract_text(context)
+    negative_terms = (
+        "required",
+        "missing",
+        "empty",
+        "invalid",
+        "validation",
+        "rejected",
+        "without filling",
+        "without required",
+        "error message",
+        "feedback",
+    )
+    if not _contract_mentions(contract, negative_terms):
+        return []
+
+    code_lower = code.lower()
+    errors: list[str] = []
+    success_markers = (
+        "complete-header",
+        "success",
+        "confirmation",
+        "thank you",
+        "order placed",
+        "completed",
+        "tohaveurl",
+        "checkout-complete",
+    )
+    if any(marker in code_lower for marker in success_markers):
+        errors.append("negative validation test asserts a success/completion outcome")
+
+    validation_markers = (
+        "error",
+        "validation",
+        "required",
+        "invalid",
+        "alert",
+        "feedback",
+        "tobevisible",
+        "tocontaintext",
+    )
+    if not any(marker in code_lower for marker in validation_markers):
+        errors.append("negative validation test is missing a validation/error assertion")
+
+    return errors
+
+
 def _script_validation_errors(code: str, context: dict[str, Any] | None = None) -> list[str]:
     errors: list[str] = []
     if not code.strip():
@@ -1296,6 +1376,8 @@ def _script_validation_errors(code: str, context: dict[str, Any] | None = None) 
     errors.extend(_sequence_coverage_errors(code, context))
     errors.extend(_unexpected_duplicate_action_errors(code, context))
     errors.extend(_sorting_assertion_errors(code, context))
+    errors.extend(_negative_validation_flow_errors(code, context))
+    errors.extend(_ungrounded_assertion_selector_errors(code, context))
     errors.extend(_evidence_driven_assertion_errors(code, context))
     return errors
 
@@ -1330,6 +1412,8 @@ def _grouped_validation_errors(code: str, context: dict[str, Any] | None = None)
     errors.extend(_sequence_coverage_errors(code, context))
     errors.extend(_unexpected_duplicate_action_errors(code, context))
     errors.extend(_sorting_assertion_errors(code, context))
+    errors.extend(_negative_validation_flow_errors(code, context))
+    errors.extend(_ungrounded_assertion_selector_errors(code, context))
     errors.extend(_evidence_driven_assertion_errors(code, context))
     return errors
 
@@ -1436,6 +1520,11 @@ def _post_process_block(
         patched = new_patched
         changes.append("network-evidence")
 
+    new_patched, n = _normalize_raw_credential_fills(patched)
+    if n:
+        patched = new_patched
+        changes.append(f"credential-fill-env x{n}")
+
     if changes:
         logger.info(
             "agent5: post-processed block title=%r fixes=%s",
@@ -1518,6 +1607,43 @@ def _env_or_literal(value: str) -> str:
     return f"'{_ts_string(raw)}'"
 
 
+def _valid_runtime_value_for_fill(value: str, selector: str, step: str) -> str:
+    """Return a safe executable value for fill() calls.
+
+    A3 often writes human instructions such as "a valid name" or "a valid
+    code". Those are not test data. Convert them into deterministic runtime
+    values from the field/selector semantics without app-specific branches.
+    """
+    raw = str(value or "").strip().strip('"').strip("'")
+    lower = raw.lower()
+    if not raw:
+        return "''"
+    if "{" in raw and "}" in raw:
+        return _env_or_literal(raw)
+    if "password" in lower or "secret" in lower or "@" in raw:
+        return _env_or_literal(raw)
+
+    descriptive = (
+        lower.startswith("a valid ")
+        or lower.startswith("valid ")
+        or lower in {"test", "testing", "sample", "dummy", "value"}
+        or "valid value" in lower
+    )
+    if not descriptive:
+        return _env_or_literal(raw)
+
+    field_text = f"{selector} {step}".lower()
+    if any(term in field_text for term in ("postal", "postcode", "zip", "pin", "code")):
+        return "String(Math.floor(100000 + Math.random() * 900000))"
+    if any(term in field_text for term in ("phone", "mobile", "contact")):
+        return "'9' + String(Math.floor(100000000 + Math.random() * 900000000))"
+    if any(term in field_text for term in ("email", "mail")):
+        return "`qa.${Date.now()}@example.test`"
+    if any(term in field_text for term in ("first", "last", "name", "customer", "user")):
+        return "`Test${Date.now()}`"
+    return "`Test-${Date.now()}`"
+
+
 def _path_from_step(step: str) -> str | None:
     match = re.search(r"\{BASE_URL\}\s*([^\s'\"]*)", step)
     if match:
@@ -1564,7 +1690,7 @@ def _recorded_selector_matching_raw(
     for index, recorded in enumerate(recorded_steps):
         if index in used:
             continue
-        if str(recorded.get("action") or "").lower() != action:
+        if not _recorded_action_matches(action, str(recorded.get("action") or "")):
             continue
         if str(recorded.get("selector") or "").strip().lower() == raw_selector.lower():
             return str(recorded.get("selector") or "").strip(), index
@@ -1580,14 +1706,14 @@ def _recorded_selector_for_action(
     step_tokens = {tok for tok in re.findall(r"[a-z0-9]+", step_text.lower()) if len(tok) > 2}
     best: tuple[int, int, str] | None = None
     for index, recorded in enumerate(recorded_steps):
-        if index in used or str(recorded.get("action") or "").lower() != action:
+        if index in used or not _recorded_action_matches(action, str(recorded.get("action") or "")):
             continue
         selector = str(recorded.get("selector") or "").strip()
         if not selector:
             continue
         haystack = " ".join(
             str(recorded.get(key) or "")
-            for key in ("selector", "element_text", "element_type", "value")
+            for key in ("selector", "element_text", "element_type", "accessible_name", "role", "label", "value")
         ).lower()
         # Avoid binding semantic bridge steps like "click the cart link" to
         # mutation controls such as "add-to-cart" just because they share a noun.
@@ -1610,6 +1736,23 @@ def _recorded_selector_for_action(
     if step_tokens and best[0] <= 0:
         return None, None
     return best[2], best[1]
+
+
+def _recorded_action_matches(desired_action: str, recorded_action: str) -> bool:
+    """Match Phase-3 intent to Phase-2 recorder verbs.
+
+    Browser recorders often classify buttons/input[type=submit] as `submit`,
+    while Playwright still executes them as locator.click(). Treating those as
+    different actions makes Phase 3 miss login/checkout/continue controls even
+    though the selector was recorded correctly.
+    """
+    desired = str(desired_action or "").strip().lower()
+    recorded = str(recorded_action or "").strip().lower()
+    if desired == recorded:
+        return True
+    if desired == "click" and recorded in {"click", "submit", "tap", "press"}:
+        return True
+    return False
 
 
 def _semantic_tokens(text: str) -> set[str]:
@@ -1703,7 +1846,6 @@ def _desired_action_for_step(step: str) -> str | None:
 
 def _grounding_report(context: dict[str, Any]) -> dict[str, Any]:
     recorded_steps = list(context.get("recorded_steps") or [])
-    used_recorded: set[int] = set()
     actionable = 0
     grounded = 0
     ungrounded: list[str] = []
@@ -1735,18 +1877,18 @@ def _grounding_report(context: dict[str, Any]) -> dict[str, Any]:
             continue
         recorded_action = "fill" if action == "upload" else action
         raw_selector = _bare_selector_from_step(step)
+        selector: str | None = None
+        recorded_index: int | None = None
         if raw_selector:
             selector, recorded_index = _recorded_selector_matching_raw(
-                recorded_steps, recorded_action, raw_selector, used_recorded
+                recorded_steps, recorded_action, raw_selector, set()
             )
-        else:
+        if not selector:
             selector, recorded_index = _recorded_selector_for_action(
-                recorded_steps, recorded_action, used_recorded, step
+                recorded_steps, recorded_action, set(), step
             )
         if selector:
             grounded += 1
-            if recorded_index is not None:
-                used_recorded.add(recorded_index)
         else:
             ungrounded.append(step)
 
@@ -1789,10 +1931,186 @@ def _stable_recorded_selector_or_raw(
     return None if selector and _is_bare_tag_selector(selector) else selector
 
 
+def _recorded_assertion_candidates(context: dict[str, Any]) -> list[dict[str, Any]]:
+    flow = context.get("recording_flow") or {}
+    grouped = flow.get("assertion_candidates_by_snapshot") or {}
+    rows: list[dict[str, Any]] = []
+    if isinstance(grouped, dict):
+        for values in grouped.values():
+            if isinstance(values, list):
+                rows.extend(item for item in values if isinstance(item, dict))
+    return rows
+
+
+def _grounded_selectors_from_context(context: dict[str, Any] | None) -> set[str]:
+    if not context:
+        return set()
+    selectors: set[str] = set()
+
+    def add(value: Any) -> None:
+        selector = str(value or "").strip()
+        if selector and not _is_bare_tag_selector(selector):
+            selectors.add(selector)
+
+    for recorded in context.get("recorded_steps") or []:
+        if isinstance(recorded, dict):
+            add(recorded.get("selector"))
+            for candidate in recorded.get("selector_candidates") or []:
+                add(candidate)
+    for element in (context.get("dom") or {}).get("interactive_elements") or []:
+        if isinstance(element, dict):
+            add(element.get("selector"))
+    for snapshot in (context.get("route_snapshots") or {}).values():
+        if not isinstance(snapshot, dict):
+            continue
+        for element in snapshot.get("interactive_elements") or []:
+            if isinstance(element, dict):
+                add(element.get("selector"))
+    for candidate in _recorded_assertion_candidates(context):
+        add(candidate.get("selector"))
+    return selectors
+
+
+_ASSERT_LOCATOR_SELECTOR_RE = re.compile(
+    r"""expect\(\s*(?:await\s+)?(?:page|sharedPage)\.locator\(\s*(['"])(?P<selector>.+?)\1\s*\)""",
+    re.DOTALL,
+)
+
+
+def _ungrounded_assertion_selector_errors(code: str, context: dict[str, Any] | None) -> list[str]:
+    grounded = _grounded_selectors_from_context(context)
+    if not grounded:
+        return []
+    errors: list[str] = []
+    for match in _ASSERT_LOCATOR_SELECTOR_RE.finditer(code):
+        selector = match.group("selector").strip()
+        if selector and selector not in grounded:
+            errors.append(f"assertion selector {selector!r} is not grounded in recorded DOM/assertion evidence")
+    return list(dict.fromkeys(errors))
+
+
+def _best_recorded_assertion_candidate(context: dict[str, Any], hint_text: str) -> dict[str, Any] | None:
+    contract = f"{hint_text} {_context_contract_text(context)}"
+    hint_tokens = _semantic_tokens(contract)
+    candidates = _recorded_assertion_candidates(context)
+    best: tuple[float, dict[str, Any]] | None = None
+    for candidate in candidates:
+        selector = str(candidate.get("selector") or "").strip()
+        text = str(candidate.get("text") or "").strip()
+        if not selector or not text or len(text) > 200:
+            continue
+        kind = str(candidate.get("kind") or "").lower()
+        if kind not in {"heading", "stable_ui_text", "semantic_class_text"}:
+            continue
+        candidate_tokens = _semantic_tokens(f"{selector} {text} {kind}")
+        overlap = len(hint_tokens & candidate_tokens)
+        confidence = float(candidate.get("confidence") or 0.0)
+        if overlap <= 0 and confidence < 0.9:
+            continue
+        score = overlap + confidence
+        if kind == "heading":
+            score += 1.5
+        if 0 < len(text) <= 80:
+            score += 1
+        if len(text) > 120:
+            score -= 2
+        if any(term in text.lower() for term in ("success", "complete", "thank", "created", "submitted", "confirmed")):
+            score += 2
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best[1] if best else None
+
+
+def _recorded_visible_assertion_lines(
+    context: dict[str, Any],
+    step: str,
+    *,
+    page_var: str,
+) -> list[str]:
+    candidate = _best_recorded_assertion_candidate(context, step)
+    if not candidate:
+        return []
+    selector = _ts_string(str(candidate.get("selector") or ""))
+    text = _ts_string(str(candidate.get("text") or ""))
+    if text:
+        return [f"  await expect({page_var}.locator('{selector}')).toContainText('{text}');"]
+    return [f"  await expect({page_var}.locator('{selector}')).toBeVisible();"]
+
+
+def _list_value_selector_from_context(context: dict[str, Any], *, prefer_numeric: bool) -> str | None:
+    """Find a repeated text selector from recorded assertion candidates.
+
+    Sorting assertions need a list of visible values, not one product/row name.
+    We infer the list selector generically by looking for one selector that has
+    multiple distinct recorded text values across route snapshots. If the step
+    mentions price/amount, prefer numeric-looking values.
+    """
+    by_selector: dict[str, set[str]] = {}
+    for candidate in _recorded_assertion_candidates(context):
+        selector = str(candidate.get("selector") or "").strip()
+        text = str(candidate.get("text") or "").strip()
+        if not selector or not text:
+            continue
+        if len(text) > 120:
+            continue
+        by_selector.setdefault(selector, set()).add(text)
+
+    scored: list[tuple[int, str]] = []
+    for selector, texts in by_selector.items():
+        if len(texts) < 2:
+            continue
+        numeric_count = sum(1 for text in texts if re.search(r"\d", text))
+        if prefer_numeric and numeric_count == 0:
+            continue
+        if not prefer_numeric and numeric_count == len(texts):
+            continue
+        score = len(texts) + (3 if prefer_numeric and numeric_count else 0)
+        scored.append((score, selector))
+    if not scored:
+        return None
+    return sorted(scored, key=lambda item: (-item[0], item[1]))[0][1]
+
+
+def _sorting_assertion_lines(
+    context: dict[str, Any],
+    step: str,
+    selector: str,
+    *,
+    page_var: str,
+    index: int,
+) -> list[str]:
+    lower = step.lower()
+    prefer_numeric = _contract_mentions(lower, ("price", "amount", "cost", "total", "numeric", "number", "lohi", "hilo", "low to high", "high to low"))
+    value_selector = _list_value_selector_from_context(context, prefer_numeric=prefer_numeric)
+    if not value_selector:
+        return []
+    safe_selector = _ts_string(value_selector)
+    if prefer_numeric:
+        var_name = f"numericValues{index}"
+        sorted_name = f"sortedNumericValues{index}"
+        direction_desc = _contract_mentions(lower, ("high to low", "descending", "desc", "hilo", "z to a", "za", "reverse"))
+        comparator = "(a, b) => b - a" if direction_desc else "(a, b) => a - b"
+        return [
+            f"  const {var_name} = (await {page_var}.locator('{safe_selector}').allTextContents()).map((value) => Number(value.replace(/[^0-9.-]/g, '')));",
+            f"  const {sorted_name} = {var_name}.slice().sort({comparator});",
+            f"  expect({var_name}, 'sorted values from {safe_selector}').toEqual({sorted_name});",
+        ]
+    var_name = f"orderedTexts{index}"
+    sorted_name = f"sortedOrderedTexts{index}"
+    descending = _contract_mentions(lower, ("z to a", "reverse", "descending", "desc", "za", "hilo", "high to low"))
+    comparator = "(a, b) => b.localeCompare(a, undefined, { numeric: true })" if descending else "(a, b) => a.localeCompare(b, undefined, { numeric: true })"
+    return [
+        f"  const {var_name} = await {page_var}.locator('{safe_selector}').allTextContents();",
+        f"  const {sorted_name} = {var_name}.slice().sort({comparator});",
+        f"  expect({var_name}, 'sorted values from {safe_selector}').toEqual({sorted_name});",
+    ]
+
+
 def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -> list[str]:
     lines: list[str] = []
     used_recorded: set[int] = set()
     recorded_steps = list(context.get("recorded_steps") or [])
+    sorting_assertion_index = 0
     for raw_step in context.get("steps") or []:
         step = str(raw_step).strip()
         lower = step.lower()
@@ -1825,8 +2143,13 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
                 if recorded_index is not None:
                     used_recorded.add(recorded_index)
                 value_match = re.search(r"\bwith\s+(.+)$", step, re.IGNORECASE)
+                fill_value = _valid_runtime_value_for_fill(
+                    value_match.group(1) if value_match else "",
+                    selector,
+                    step,
+                )
                 lines.append(
-                    f"  await {page_var}.locator('{_ts_string(selector)}').fill({_env_or_literal(value_match.group(1) if value_match else '')});"
+                    f"  await {page_var}.locator('{_ts_string(selector)}').fill({fill_value});"
                 )
             continue
         if lower.startswith(("enter", "type")):
@@ -1847,8 +2170,13 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
                 if recorded_index is not None:
                     used_recorded.add(recorded_index)
                 value_match = re.search(r"\b(?:with|value|text)\s+(.+)$", step, re.IGNORECASE)
+                fill_value = _valid_runtime_value_for_fill(
+                    value_match.group(1) if value_match else "",
+                    selector,
+                    step,
+                )
                 lines.append(
-                    f"  await {page_var}.locator('{_ts_string(selector)}').fill({_env_or_literal(value_match.group(1) if value_match else '')});"
+                    f"  await {page_var}.locator('{_ts_string(selector)}').fill({fill_value});"
                 )
             continue
         if lower.startswith("click") or " click " in f" {lower} ":
@@ -1907,9 +2235,13 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
             if selector and option_match:
                 if recorded_index is not None:
                     used_recorded.add(recorded_index)
+                option_value = option_match.group(1)
+                option_key = "value" if re.fullmatch(r"[A-Za-z0-9_-]{1,20}", option_value) else "label"
                 lines.append(
-                    f"  await {page_var}.locator('{_ts_string(selector)}').selectOption({{ label: '{_ts_string(option_match.group(1))}' }});"
+                    f"  await {page_var}.locator('{_ts_string(selector)}').selectOption({{ {option_key}: '{_ts_string(option_value)}' }});"
                 )
+                sorting_assertion_index += 1
+                lines.extend(_sorting_assertion_lines(context, step, selector, page_var=page_var, index=sorting_assertion_index))
             continue
         if lower.startswith(("check", "uncheck")):
             selector = _selector_from_step(step)
@@ -1943,6 +2275,8 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
             selector = _selector_from_step(step)
             if selector:
                 lines.append(f"  await expect({page_var}.locator('{_ts_string(selector)}')).toBeVisible();")
+            else:
+                lines.extend(_recorded_visible_assertion_lines(context, step, page_var=page_var))
 
     if not any("expect(" in line for line in lines):
         lines.append(f"  await expect({page_var}.locator('body')).toBeVisible();")

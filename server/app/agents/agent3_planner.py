@@ -1160,10 +1160,13 @@ def _testcase_allows_destructive_steps(item: dict[str, Any]) -> bool:
 
 def _step_action_selector(step: Any) -> tuple[str, str] | None:
     text = str(step or "").strip()
-    match = re.match(r"^(click|fill|select|check|uncheck)\s+([^\s]+)", text, re.IGNORECASE)
+    match = re.match(r"^(click|submit|tap|press|fill|select|check|uncheck)\s+([^\s]+)", text, re.IGNORECASE)
     if not match:
         return None
-    return match.group(1).lower(), match.group(2).strip()
+    action = match.group(1).lower()
+    if action in {"submit", "tap", "press"}:
+        action = "click"
+    return action, match.group(2).strip()
 
 
 def _step_is_redundant_focus_click(step: Any, all_steps: list[str]) -> bool:
@@ -1301,12 +1304,14 @@ def _assertion_for_missing_field(original_assertions: list[str], field: str) -> 
 
 def _is_submit_or_transition_click(step: str) -> bool:
     parsed = _step_action_selector(step)
+    lower = str(step).lower()
+    if not parsed and lower.strip().startswith(("submit", "continue", "finish", "save", "next", "create")):
+        return True
     if not parsed:
         return False
     action, selector = parsed
     if action != "click":
         return False
-    lower = str(step).lower()
     if _contains_any(lower, ("submit", "login", "continue", "save", "create", "finish", "next")):
         return True
     selector_lower = selector.lower()
