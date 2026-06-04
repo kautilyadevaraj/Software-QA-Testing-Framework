@@ -251,6 +251,10 @@ class RecorderStepCreate(BaseModel):
     semantic_context: dict | None = None
     screenshot_base64: str | None = None
     network_calls: list[dict] | None = None
+    # Phase 2 step-quality fields
+    is_noise: bool = False
+    noise_reason: str | None = None
+    selector_quality_reason: str | None = None
 
 
 class RecorderStepResponse(BaseModel):

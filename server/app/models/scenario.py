@@ -270,6 +270,10 @@ class ScenarioStep(Base):
     semantic_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     network_calls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Phase 2 step-quality fields
+    is_noise: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    noise_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selector_quality_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), nullable=False
     )

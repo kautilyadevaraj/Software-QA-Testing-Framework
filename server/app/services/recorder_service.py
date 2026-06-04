@@ -287,7 +287,177 @@ def _actionable_parent_update(payload: RecorderStepCreate) -> dict[str, object]:
     return update
 
 
-def _normalize_step_payload(payload: RecorderStepCreate) -> RecorderStepCreate:
+# ── Noise detection ───────────────────────────────────────────────────────
+
+_AD_TRACKER_HOST_PATTERNS = {
+    "googleads", "doubleclick", "pagead", "adsystem",
+    "taboola", "outbrain", "analytics", "tracking",
+}
+_CAPTCHA_HOST_PATTERNS = {
+    "captcha", "recaptcha", "hcaptcha",
+    "security-check", "bot-check", "challenge",
+}
+_CONSENT_HOST_PATTERNS = {
+    "cookiebot", "onetrust", "cookie-consent", "trustarc",
+}
+
+
+def _is_noise_step(
+    payload: RecorderStepCreate,
+    session_origin: str | None,
+) -> tuple[bool, str | None]:
+    """Return (is_noise, noise_reason).  Noise steps are stored with is_noise=True,
+    never silently dropped — Phase 3 skips them."""
+    url = payload.url_before or payload.url or ""
+    if not url:
+        return False, None
+
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except Exception:
+        return False, None
+
+    # Check if external domain (host differs from session origin)
+    if session_origin:
+        try:
+            origin_host = (urlparse(session_origin).hostname or "").lower()
+            is_external = host and host != origin_host and not host.endswith(f".{origin_host}")
+        except Exception:
+            is_external = False
+    else:
+        is_external = False
+
+    # Ad/analytics host patterns
+    for pattern in _AD_TRACKER_HOST_PATTERNS:
+        if pattern in host:
+            return True, f"ad_or_tracker_domain:{host}"
+
+    # Captcha/bot-check host or path patterns
+    path_lower = (parsed.path or "").lower()
+    for pattern in _CAPTCHA_HOST_PATTERNS:
+        if pattern in host or pattern in path_lower:
+            return True, f"captcha_or_security:{host}{path_lower}"
+
+    # Cookie/consent overlay host patterns
+    for pattern in _CONSENT_HOST_PATTERNS:
+        if pattern in host:
+            return True, f"consent_overlay:{host}"
+
+    # Selector chain contains an ad iframe with external domain
+    selector_str = str(payload.selector or "").lower()
+    if "iframe" in selector_str and is_external:
+        return True, f"ad_iframe_element:{host}"
+
+    return False, None
+
+
+def _is_security_blocked_url(url: str) -> bool:
+    """Return True if the page URL itself is a bot-check or captcha page."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+        for pattern in _CAPTCHA_HOST_PATTERNS:
+            if pattern in host or pattern in path:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+# ── Selector quality reason ────────────────────────────────────────────────
+
+def _selector_quality_reason(selector: str | None) -> str | None:
+    """Derive a machine-readable quality reason from the primary selector string."""
+    if not selector:
+        return None
+    s = selector.strip()
+    if re.search(r'\[data-testid|\[data-test|\[data-cy|\[data-qa', s):
+        return "data_attr"
+    if s.startswith("#") and not re.search(r'[0-9a-f-]{16,}', s, re.IGNORECASE):
+        return "stable_id"
+    if re.search(r'\[role=|\[aria-label=', s):
+        return "role_name"
+    if s.startswith("label:"):
+        return "label"
+    if re.search(r'\[placeholder=', s):
+        return "placeholder"
+    if re.search(r'\[href=', s):
+        return "href"
+    if re.search(r':nth-of-type\(|:nth-child\(', s):
+        return "structural_fallback"
+    return "structural_fallback"
+
+
+# ── Semantic field identity ────────────────────────────────────────────────
+
+def _build_field_identity(payload: RecorderStepCreate) -> dict | None:
+    """Build field_identity for fill/select/check/uncheck steps to disambiguate
+    same-placeholder fields across different routes."""
+    if payload.action_type not in {"fill", "select", "check", "uncheck"}:
+        return None
+
+    route_path = _url_path_with_query(payload.url_before or payload.url) or None
+    if not route_path:
+        return None
+
+    context = payload.semantic_context or {}
+    # label may be directly on payload
+    field_label = payload.label or None
+    placeholder_val = None
+    form_title = None
+    form_action = None
+    section_heading = None
+    preceding_label_text = None
+    parent_form_selector = None
+
+    # Extract from semantic_context.element or page_context
+    element = context.get("element") if isinstance(context, dict) else None
+    if isinstance(element, dict):
+        field_label = field_label or element.get("label") or None
+        placeholder_val = element.get("type") or None  # type is input type; placeholder stored separately
+
+    # Extract placeholder from selector string
+    placeholder_match = re.search(r'\[placeholder="([^"]+)"', payload.selector or "")
+    if placeholder_match:
+        placeholder_val = placeholder_match.group(1)
+
+    # Form context from page_context
+    page_ctx = context.get("page_context") if isinstance(context, dict) else None
+    if isinstance(page_ctx, dict):
+        forms = page_ctx.get("forms") or []
+        if forms:
+            first_form = forms[0] if isinstance(forms[0], dict) else {}
+            form_action = first_form.get("action") or None
+            form_title = first_form.get("submit_text") or None
+    headings = (page_ctx or {}).get("headings") if isinstance(page_ctx, dict) else None
+    if headings and isinstance(headings, list) and headings:
+        first_h = headings[0] if isinstance(headings[0], dict) else {}
+        section_heading = first_h.get("text") or None
+
+    # Parent context for preceding label text
+    parent = _semantic_parent_context(payload)
+    if parent:
+        preceding_label_text = parent.get("label") or parent.get("text") or None
+        parent_form_selector = parent.get("selector") or None
+
+    return {
+        "route_path": route_path,
+        "form_title": form_title,
+        "field_label": field_label,
+        "placeholder": placeholder_val,
+        "form_action": form_action,
+        "section_heading": section_heading,
+        "preceding_label_text": preceding_label_text,
+        "parent_form_selector": parent_form_selector,
+    }
+
+
+def _normalize_step_payload(
+    payload: RecorderStepCreate,
+    session_origin: str | None = None,
+) -> RecorderStepCreate:
     """Harden recorder data before it becomes Phase 3 grounding evidence."""
     update: dict[str, object] = {}
     update.update(_actionable_parent_update(payload))
@@ -318,6 +488,24 @@ def _normalize_step_payload(payload: RecorderStepCreate) -> RecorderStepCreate:
     )
     update["role"] = role
     update["playwright_locator"] = _normalize_playwright_locator(payload.playwright_locator, role)
+
+    # Noise detection
+    is_noise, noise_reason = _is_noise_step(payload, session_origin)
+    update["is_noise"] = is_noise
+    update["noise_reason"] = noise_reason
+
+    # Selector quality reason
+    primary_selector = str(update.get("selector") or payload.selector or "")
+    update["selector_quality_reason"] = _selector_quality_reason(primary_selector or None)
+
+    # Semantic field identity (stored back into semantic_context)
+    # Use a merged copy of payload for field_identity so it sees the updated url_after etc.
+    merged_payload = payload.model_copy(update=update) if update else payload
+    field_identity = _build_field_identity(merged_payload)
+    if field_identity:
+        existing_context = dict(update.get("semantic_context") or payload.semantic_context or {})
+        existing_context["field_identity"] = field_identity
+        update["semantic_context"] = existing_context
 
     return payload.model_copy(update=update) if update else payload
 
@@ -438,6 +626,10 @@ def _store_assertion_candidates(
     for index, candidate in enumerate(payload.assertion_candidates or []):
         if not isinstance(candidate, dict):
             continue
+        # Confidence gate: skip candidates below 0.3 threshold
+        confidence = float(candidate.get("confidence") or 0.7)
+        if confidence < 0.3:
+            continue
         db.add(
             RecordedAssertionCandidate(
                 recording_id=payload.session_id,
@@ -448,7 +640,7 @@ def _store_assertion_candidates(
                 kind=str(candidate.get("kind") or "ui_text"),
                 selector=candidate.get("selector"),
                 text=candidate.get("text"),
-                confidence=float(candidate.get("confidence") or 0.7),
+                confidence=confidence,
                 metadata_json={
                     k: v
                     for k, v in candidate.items()
@@ -617,19 +809,79 @@ def complete_session(
     if session is None:
         raise ValueError("Session not found")
 
+def _compute_recording_quality(db: Session, flow: RecordingFlow) -> dict:
+    """Compute a quality summary dict for a completed flow and determine phase3_ready."""
+    steps = list(
+        db.execute(
+            select(ScenarioStep).where(
+                ScenarioStep.flow_id == flow.id,
+            )
+        ).scalars()
+    )
+    total_steps = len(steps)
+    stable_selector_count = sum(1 for s in steps if s.selector_stability == "high")
+    structural_selector_count = sum(1 for s in steps if s.selector_stability == "low")
+    noise_step_count = sum(1 for s in steps if getattr(s, "is_noise", False))
+    route_variant_count = len(list(db.execute(select(RouteVariant.id).where(RouteVariant.flow_id == flow.id)).scalars()))
+    assertion_candidate_count = len(list(
+        db.execute(
+            select(RecordedAssertionCandidate.id).where(
+                RecordedAssertionCandidate.flow_id == flow.id,
+            )
+        ).scalars()
+    ))
+    missing_after_snapshot_count = sum(1 for s in steps if s.route_variant_after_id is None)
+
+    flow_meta = dict(flow.metadata_json or {})
+    blocked_by_security = bool(flow_meta.get("blocked_by_security", False))
+
+    # phase3_ready criteria (all must pass)
+    phase3_ready = (
+        total_steps >= 3
+        and (stable_selector_count / total_steps >= 0.5 if total_steps > 0 else False)
+        and (noise_step_count / total_steps <= 0.3 if total_steps > 0 else True)
+        and not blocked_by_security
+        and assertion_candidate_count >= 1
+    )
+
+    return {
+        "total_steps": total_steps,
+        "stable_selector_count": stable_selector_count,
+        "structural_selector_count": structural_selector_count,
+        "noise_step_count": noise_step_count,
+        "route_variant_count": route_variant_count,
+        "assertion_candidate_count": assertion_candidate_count,
+        "missing_after_snapshot_count": missing_after_snapshot_count,
+        "blocked_by_security": blocked_by_security,
+        "phase3_ready": phase3_ready,
+    }
+
+
+def complete_session(
+    db: Session, project: Project, session_id: uuid.UUID
+) -> RecorderSessionResponse:
+    session = db.execute(
+        select(RecordingSession).where(
+            RecordingSession.id == session_id,
+            RecordingSession.project_id == project.id,
+        )
+    ).scalar_one_or_none()
+    if session is None:
+        raise ValueError("Session not found")
+
     session.status = "completed"
     session.completed_at = datetime.now(timezone.utc)
     flow = _latest_flow_for_session(db, session.id)
     if flow:
-        action_count = db.execute(
-            select(ScenarioStep.id).where(
-                ScenarioStep.recording_session_id == session.id,
-                ScenarioStep.flow_id == flow.id,
-            )
-        ).first()
         flow.status = "completed"
         flow.completed_at = session.completed_at
-        flow.phase3_ready = bool(action_count)
+        db.add(flow)
+        db.flush()  # ensure flow fields are committed before quality compute
+        quality = _compute_recording_quality(db, flow)
+        flow_meta = dict(flow.metadata_json or {})
+        flow_meta["quality_summary"] = quality
+        flow.metadata_json = flow_meta
+        flow.phase3_ready = quality["phase3_ready"]
         db.add(flow)
     db.commit()
 
@@ -762,6 +1014,16 @@ def upsert_route(
         route.page_title = payload.title or route.page_title
         route.last_updated_at = datetime.now(timezone.utc)
 
+    # ── Security block detection ───────────────────────────────────────────
+    if _is_security_blocked_url(payload.url) and flow_id:
+        current_flow = db.get(RecordingFlow, flow_id)
+        if current_flow:
+            flow_meta = dict(current_flow.metadata_json or {})
+            if not flow_meta.get("blocked_by_security"):
+                flow_meta["blocked_by_security"] = True
+                current_flow.metadata_json = flow_meta
+                db.add(current_flow)
+
     # ── Route variant ──────────────────────────────────────────────────────
     variant_screenshot: str | None = None
     variant_html: str | None = None
@@ -835,7 +1097,12 @@ def append_step(
     flow = _latest_flow_for_session(db, session.id)
     flow_id = payload.flow_id or (flow.id if flow else None)
     payload = payload.model_copy(update={"flow_id": flow_id})
-    payload = _normalize_step_payload(payload)
+    # Determine session origin URL for noise detection
+    session_origin: str | None = None
+    project_obj = db.get(Project, project.id)
+    if project_obj and getattr(project_obj, "url", None):
+        session_origin = project_obj.url
+    payload = _normalize_step_payload(payload, session_origin=session_origin)
 
     base = _recordings_base() / str(project.id) / str(session_id) / "steps"
     screenshot_path: str | None = None
@@ -909,6 +1176,10 @@ def append_step(
         ),
         screenshot_path=screenshot_path,
         network_calls=payload.network_calls,
+        # Phase 2 step-quality fields
+        is_noise=payload.is_noise,
+        noise_reason=payload.noise_reason,
+        selector_quality_reason=payload.selector_quality_reason,
     )
     db.add(step)
     db.flush()

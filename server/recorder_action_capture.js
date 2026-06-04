@@ -74,15 +74,15 @@
     const tag = el.tagName.toLowerCase();
     for (const a of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
       const v = attr(el, a);
-      if (v) return { selector: `[${a}="${esc(v)}"]`, stability: 'high' };
+      if (v) return { selector: `[${a}="${esc(v)}"]`, stability: 'high', quality_reason: 'data_attr' };
     }
     const aria = attr(el, 'aria-label');
-    if (aria) return { selector: `${tag}[aria-label="${esc(aria)}"]`, stability: 'high' };
-    if (el.id && stableId(el.id)) return { selector: `#${css(el.id)}`, stability: 'high' };
-    if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, stability: 'medium' };
-    if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, stability: 'medium' };
-    if (tag === 'a' && attr(el, 'href')) return { selector: `${tag}[href="${esc(attr(el, 'href'))}"]`, stability: 'medium' };
-    return { selector: domPath(el) || tag, stability: 'low' };
+    if (aria) return { selector: `${tag}[aria-label="${esc(aria)}"]`, stability: 'high', quality_reason: 'role_name' };
+    if (el.id && stableId(el.id)) return { selector: `#${css(el.id)}`, stability: 'high', quality_reason: 'stable_id' };
+    if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, stability: 'medium', quality_reason: 'placeholder' };
+    if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, stability: 'medium', quality_reason: 'placeholder' };
+    if (tag === 'a' && attr(el, 'href')) return { selector: `${tag}[href="${esc(attr(el, 'href'))}"]`, stability: 'medium', quality_reason: 'href' };
+    return { selector: domPath(el) || tag, stability: 'low', quality_reason: 'structural_fallback' };
   }
   function selectorCandidates(el) {
     if (!el || !el.tagName) return [];
@@ -651,6 +651,19 @@ window.__sqat_get_page_context__ = function () {
   return { url: window.location.href, title: document.title, headings, forms, nav_links, buttons, dialogs };
 };
 
+window.__sqat_classify_snapshot_kind__ = function (actionType) {
+  // Called by Python push_step() after an action to determine semantic snapshot_kind.
+  const hasValidationError = !!(
+    document.querySelector('[role="alert"]') ||
+    document.querySelector('[aria-invalid="true"]') ||
+    document.querySelector('.error, .is-error, .has-error, [class*="error"]')
+  );
+  const hasModal = !!document.querySelector('[role="dialog"]:not([aria-hidden="true"])');
+  if (hasValidationError && actionType === 'submit') return 'validation_error';
+  if (hasModal) return 'modal_state';
+  return 'after_action';
+};
+
 window.__sqat_get_assertion_candidates__ = function () {
   const out = [];
   const seen = new Set();
@@ -664,6 +677,20 @@ window.__sqat_get_assertion_candidates__ = function () {
     const s = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
   };
+  // Elements to exclude: body-level containers and giant layout elements (>60% viewport)
+  const EXCLUDED_IDS = new Set(['__next', '__nuxt', 'app', 'root', '__app']);
+  const EXCLUDED_TAGS = new Set(['body', 'html', 'main']);
+  const viewportArea = window.innerWidth * window.innerHeight;
+  const isExcluded = el => {
+    if (!el || !el.tagName) return true;
+    const tag = el.tagName.toLowerCase();
+    if (EXCLUDED_TAGS.has(tag)) return true;
+    const id = (el.id || '').toLowerCase().replace(/^#/, '');
+    if (EXCLUDED_IDS.has(id)) return true;
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    if (r && (r.width * r.height) > viewportArea * 0.6) return true;
+    return false;
+  };
   const selector = el => {
     if (!el || !el.tagName) return null;
     const tag = el.tagName.toLowerCase();
@@ -676,40 +703,64 @@ window.__sqat_get_assertion_candidates__ = function () {
     if (el.name) return `${tag}[name="${esc(el.name)}"]`;
     return null;
   };
+  const hasStableSelector = el => selector(el) !== null;
   const push = (kind, el, confidence = 0.75, extra = {}) => {
-    if (!visible(el)) return;
+    if (!visible(el) || isExcluded(el)) return;
     const value = text(el);
     if (!value) return;
-    const key = `${kind}|${selector(el) || ''}|${value}`;
+    const sel = selector(el);
+    // Set confidence=0.0 for any candidate without a stable selector
+    const adjustedConfidence = sel ? confidence : 0.0;
+    const key = `${kind}|${sel || ''}|${value}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ kind, selector: selector(el), text: value, confidence, ...extra });
+    out.push({ kind, selector: sel, text: value, confidence: adjustedConfidence, ...extra });
   };
 
-  document.querySelectorAll('h1,h2,h3,h4,[role="heading"]').forEach(el => push('heading', el, 0.9));
-  document.querySelectorAll('[role="alert"],[role="status"],[aria-live]').forEach(el => push('status_text', el, 0.95));
+  // ui_text: headings
+  document.querySelectorAll('h1,h2,h3,h4,[role="heading"]').forEach(el => push('ui_text', el, 0.9, { source: 'heading' }));
+  // error_message: alerts and aria-invalid messages
+  document.querySelectorAll('[role="alert"],[role="status"],[aria-live]').forEach(el => push('error_message', el, 0.95, { source: 'alert' }));
+  document.querySelectorAll('[aria-invalid="true"]').forEach(el => push('error_message', el, 0.85, { source: 'aria_invalid' }));
+  // element_visible: stable data-testid elements
   document.querySelectorAll('[data-testid],[data-test],[data-cy],[data-qa]').forEach(el => {
     const key = `${attr(el, 'data-testid') || attr(el, 'data-test') || attr(el, 'data-cy') || attr(el, 'data-qa')}`.toLowerCase();
     if (/error|alert|success|complete|confirm|message|badge|count|total|title|name|price|summary|empty/.test(key)) {
-      push('stable_ui_text', el, 0.9, { data_key: key });
+      push('element_visible', el, 0.9, { source: 'stable_attr', data_key: key });
     }
   });
-  document.querySelectorAll('.error,.success,.alert,.message,.badge,.count,[class*="error"],[class*="success"],[class*="badge"]').forEach(el => push('semantic_class_text', el, 0.7));
+  // count_check: badge/count elements
+  document.querySelectorAll('.badge,.count,[class*="badge"],[class*="count"]').forEach(el => push('count_check', el, 0.7, { source: 'badge' }));
+  // list_items
   document.querySelectorAll('ul,ol,[role="list"]').forEach((list, listIndex) => {
+    if (isExcluded(list)) return;
     const items = Array.from(list.querySelectorAll('li,[role="listitem"]')).filter(visible).map(item => text(item, 180)).filter(Boolean).slice(0, 40);
     if (items.length) {
-      out.push({ kind: 'list_items', selector: selector(list), text: items.join(' | '), confidence: 0.75, item_count: items.length, list_index: listIndex, items });
+      const sel = selector(list);
+      const key = `list_items|${sel || ''}|${items.slice(0, 3).join('|')}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({ kind: 'list_items', selector: sel, text: items.join(' | '), confidence: sel ? 0.75 : 0.0, source: 'list', item_count: items.length, list_index: listIndex, items });
+      }
     }
   });
+  // table_rows
   document.querySelectorAll('table,[role="table"],[role="grid"]').forEach((table, tableIndex) => {
+    if (isExcluded(table)) return;
     const rows = Array.from(table.querySelectorAll('tr,[role="row"]')).filter(visible).map(row => text(row, 220)).filter(Boolean).slice(0, 40);
     if (rows.length) {
-      out.push({ kind: 'table_rows', selector: selector(table), text: rows.join(' | '), confidence: 0.8, row_count: rows.length, table_index: tableIndex, rows });
+      const sel = selector(table);
+      const key = `table_rows|${sel || ''}|${rows.slice(0, 2).join('|')}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({ kind: 'table_rows', selector: sel, text: rows.join(' | '), confidence: sel ? 0.8 : 0.0, source: 'table', row_count: rows.length, table_index: tableIndex, rows });
+      }
     }
   });
+  // url_match
   const urlPath = window.location.pathname + window.location.search;
   if (urlPath) {
-    out.push({ kind: 'url_pattern', selector: null, text: urlPath, confidence: 0.8 });
+    out.push({ kind: 'url_match', selector: null, text: urlPath, confidence: 0.8, source: 'url' });
   }
   return out.slice(0, 120);
 };

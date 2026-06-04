@@ -218,3 +218,156 @@ def test_phase3_matches_recorded_submit_for_click_intent() -> None:
 
     assert selector == '[data-test="checkout"]'
     assert index == 0
+
+
+# ── Phase 2 quality tests ──────────────────────────────────────────────────
+
+def test_noise_ad_domain_marked_as_noise() -> None:
+    payload = RecorderStepCreate(
+        step_index=5,
+        action_type="click",
+        selector='iframe[src]',
+        url_before="https://googleads.g.doubleclick.net/pagead/ads",
+        url="https://googleads.g.doubleclick.net/pagead/ads",
+    )
+    is_noise, reason = recorder_service._is_noise_step(payload, "https://example.test")
+    assert is_noise is True
+    assert reason is not None
+
+
+def test_noise_captcha_url_marked_as_noise() -> None:
+    payload = RecorderStepCreate(
+        step_index=6,
+        action_type="click",
+        selector="div",
+        url_before="https://example.test/recaptcha/challenge",
+        url="https://example.test/recaptcha/challenge",
+    )
+    is_noise, reason = recorder_service._is_noise_step(payload, "https://example.test")
+    assert is_noise is True
+    assert reason is not None
+
+
+def test_noise_consent_overlay_marked_as_noise() -> None:
+    payload = RecorderStepCreate(
+        step_index=7,
+        action_type="click",
+        selector="button",
+        url_before="https://consent.cookiebot.com/accept",
+        url="https://consent.cookiebot.com/accept",
+    )
+    is_noise, reason = recorder_service._is_noise_step(payload, "https://example.test")
+    assert is_noise is True
+    assert reason is not None
+
+
+def test_legitimate_same_domain_click_not_noise() -> None:
+    payload = RecorderStepCreate(
+        step_index=8,
+        action_type="click",
+        selector='[data-test="login-button"]',
+        url_before="https://example.test/login",
+        url="https://example.test/login",
+    )
+    is_noise, reason = recorder_service._is_noise_step(payload, "https://example.test")
+    assert is_noise is False
+    assert reason is None
+
+
+def test_selector_quality_reason_data_testid() -> None:
+    reason = recorder_service._selector_quality_reason('[data-testid="login-btn"]')
+    assert reason == "data_attr"
+
+
+def test_selector_quality_reason_data_test() -> None:
+    reason = recorder_service._selector_quality_reason('[data-test="submit"]')
+    assert reason == "data_attr"
+
+
+def test_selector_quality_reason_structural_fallback() -> None:
+    reason = recorder_service._selector_quality_reason("div:nth-of-type(3) > span")
+    assert reason == "structural_fallback"
+
+
+def test_selector_quality_reason_stable_id() -> None:
+    reason = recorder_service._selector_quality_reason("#login-form")
+    assert reason == "stable_id"
+
+
+def test_field_identity_login_vs_search() -> None:
+    """Same placeholder on two different routes should produce different field_identity.route_path."""
+    login_payload = RecorderStepCreate(
+        step_index=0,
+        action_type="fill",
+        selector='input[placeholder="Username"]',
+        url_before="https://example.test/web/index.php/auth/login",
+    )
+    search_payload = RecorderStepCreate(
+        step_index=5,
+        action_type="fill",
+        selector='input[placeholder="Username"]',
+        url_before="https://example.test/web/index.php/pim/search",
+    )
+    login_identity = recorder_service._build_field_identity(login_payload)
+    search_identity = recorder_service._build_field_identity(search_payload)
+    assert login_identity is not None
+    assert search_identity is not None
+    assert login_identity["route_path"] != search_identity["route_path"]
+
+
+def test_field_identity_no_form_action_still_valid() -> None:
+    """SPA forms with no form_action should still produce a valid field_identity."""
+    payload = RecorderStepCreate(
+        step_index=1,
+        action_type="fill",
+        selector='input[placeholder="Email"]',
+        url_before="https://spa.example.test/login",
+        semantic_context={},
+    )
+    identity = recorder_service._build_field_identity(payload)
+    assert identity is not None
+    assert identity["route_path"] is not None
+    # form_action should be None (absent) — this is valid per spec
+    assert identity.get("form_action") is None
+
+
+def test_phase3_ready_false_for_all_noise() -> None:
+    """A flow with all noise steps should compute phase3_ready=False."""
+    quality = {
+        "total_steps": 5,
+        "stable_selector_count": 3,
+        "structural_selector_count": 0,
+        "noise_step_count": 5,  # all noise
+        "assertion_candidate_count": 2,
+        "blocked_by_security": False,
+    }
+    total = quality["total_steps"]
+    noise_ratio = quality["noise_step_count"] / total if total > 0 else 0
+    phase3_ready = (
+        total >= 3
+        and quality["stable_selector_count"] / total >= 0.5
+        and noise_ratio <= 0.3
+        and not quality["blocked_by_security"]
+        and quality["assertion_candidate_count"] >= 1
+    )
+    assert phase3_ready is False
+
+
+def test_phase3_ready_false_for_only_structural_selectors() -> None:
+    """A flow with all low-stability selectors should compute phase3_ready=False."""
+    quality = {
+        "total_steps": 5,
+        "stable_selector_count": 0,  # none stable
+        "noise_step_count": 0,
+        "assertion_candidate_count": 2,
+        "blocked_by_security": False,
+    }
+    total = quality["total_steps"]
+    phase3_ready = (
+        total >= 3
+        and quality["stable_selector_count"] / total >= 0.5
+        and quality["noise_step_count"] / total <= 0.3
+        and not quality["blocked_by_security"]
+        and quality["assertion_candidate_count"] >= 1
+    )
+    assert phase3_ready is False

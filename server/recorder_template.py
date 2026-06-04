@@ -39,8 +39,8 @@ except ImportError:
 PROJECT_ID: str = "__PROJECT_ID__"
 SERVER_URL: str = "__SERVER_URL__"
 RECORDER_TOKEN: str = "__RECORDER_TOKEN__"
-STORE_PASSWORD_VALUES: bool = __STORE_PASSWORD_VALUES__
-SCREENSHOT_INDICATOR: bool = __SCREENSHOT_INDICATOR__
+STORE_PASSWORD_VALUES: bool = str("__STORE_PASSWORD_VALUES__") == "True"
+SCREENSHOT_INDICATOR: bool = str("__SCREENSHOT_INDICATOR__") == "True"
 
 BROWSER_DATA_DIR = Path.home() / ".sqat" / PROJECT_ID
 BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -519,6 +519,20 @@ class Recorder:
         after_snapshot_id = None
         try:
             action = await self._enrich_action_after_delay(page, action)
+            # Classify the snapshot kind semantically using the JS classifier
+            action_type_str = action.get("type", "")
+            try:
+                snapshot_kind = await page.evaluate(
+                    "(actionType) => window.__sqat_classify_snapshot_kind__ ? window.__sqat_classify_snapshot_kind__(actionType) : 'after_action'",
+                    action_type_str,
+                )
+            except Exception:
+                snapshot_kind = "after_action"
+            # Check if URL changed after action for success_state detection
+            url_before = action.get("urlBefore") or action.get("url")
+            url_after = action.get("urlAfter")
+            if url_before and url_after and url_before != url_after and action_type_str == "submit":
+                snapshot_kind = "success_state"
             snapshot = await self.upsert_route(
                 session_id,
                 scenario_id,
@@ -526,12 +540,12 @@ class Recorder:
                 page,
                 network_calls,
                 snapshot_index=self._next_snapshot_index(),
-                snapshot_kind=f"after_step_{step_index:04d}",
+                snapshot_kind=snapshot_kind,
                 metadata={
                     "step_index": step_index,
-                    "action_type": action.get("type"),
-                    "url_before": action.get("urlBefore") or action.get("url"),
-                    "url_after": action.get("urlAfter"),
+                    "action_type": action_type_str,
+                    "url_before": url_before,
+                    "url_after": url_after,
                 },
             )
             after_snapshot_id = snapshot.get("variant_id")
