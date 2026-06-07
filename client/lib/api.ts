@@ -409,6 +409,10 @@ export type ProjectCredential = {
 
   auth_type: string | null;
 
+  auth_strategy?: string | null;
+
+  auth_script?: string | null;
+
   endpoint: string | null;
 
   verified: boolean;
@@ -1544,6 +1548,11 @@ export type Phase3TestCase = {
   scenario_title: string | null;
   approval_status: TestCaseApprovalStatus;
   depends_on_titles: string[];
+  auth_mode?: string | null;
+  credential_id?: string | null;
+  credential_role?: string | null;
+  credential_username?: string | null;
+  credential_endpoint?: string | null;
 };
 
 export type PlanRunResponse = {

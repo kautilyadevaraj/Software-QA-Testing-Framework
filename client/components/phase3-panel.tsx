@@ -237,6 +237,13 @@ function TcAccordion({ tc, projectId, onUpdate, executionState, readOnly = false
   const [draftTitle, setDraftTitle] = useState("");
   const [draftSteps, setDraftSteps] = useState("");
   const [draftAC, setDraftAC] = useState("");
+  const credentialLabel = tc.credential_username
+    ? `${tc.credential_role || "credential"}: ${tc.credential_username}`
+    : tc.credential_role
+      ? `${tc.credential_role}: unbound`
+      : tc.auth_mode === "login_flow" || tc.auth_mode === "authenticated"
+        ? "credential unbound"
+        : "";
 
   function startEdit() {
     if (readOnly) return;
@@ -280,6 +287,19 @@ function TcAccordion({ tc, projectId, onUpdate, executionState, readOnly = false
             : <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />}
           <span className="text-xs font-mono text-gray-400 shrink-0">{tc.tc_number || "TC-?"}</span>
           <span className="flex-1 text-sm font-medium text-gray-800 truncate">{tc.title}</span>
+          {credentialLabel && (
+            <span
+              className="max-w-[220px] truncate rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700"
+              title={[
+                tc.auth_mode ? `mode: ${tc.auth_mode}` : "",
+                tc.credential_role ? `role: ${tc.credential_role}` : "",
+                tc.credential_username ? `user: ${tc.credential_username}` : "",
+                tc.credential_endpoint ? `endpoint: ${tc.credential_endpoint}` : "",
+              ].filter(Boolean).join(" | ")}
+            >
+              {credentialLabel}
+            </span>
+          )}
           {executionState && <StatusBadge status={executionState.status} />}
           <span className="text-xs text-gray-400 shrink-0">{tc.target_page}</span>
         </button>
