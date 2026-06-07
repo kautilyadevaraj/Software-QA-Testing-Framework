@@ -533,6 +533,8 @@ def get_project_credentials(
                 "username": profile.username,
                 "role": profile.role,
                 "auth_type": profile.auth_type,
+                "auth_strategy": profile.auth_strategy,
+                "auth_script": profile.auth_script,
                 "endpoint": profile.endpoint,
                 "verified": profile.is_verified,
             }
@@ -566,6 +568,8 @@ def get_project_credentials(
                     "username": username,
                     "role": row.get("role"),
                     "auth_type": row.get("authtype"),
+                    "auth_strategy": row.get("auth_strategy") or row.get("auth strategy") or "inline_login",
+                    "auth_script": row.get("auth_script") or row.get("auth script"),
                     "endpoint": row.get("api endpoint"),
                     "verified": verified_map.get(username, False),
                 })

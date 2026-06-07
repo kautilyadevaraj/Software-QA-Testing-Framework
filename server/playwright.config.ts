@@ -1,14 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
-import { existsSync } from "fs";
-import * as path from "path";
 
 const headed = process.env.PLAYWRIGHT_HEADED === "true";
 const slowMoMs = headed
   ? parseInt(process.env.PLAYWRIGHT_SLOW_MO_MS ?? "3000", 10)
   : 0;
-const AUTH_FILE = process.env.AUTH_STATE_PATH
-  ? path.resolve(process.cwd(), process.env.AUTH_STATE_PATH)
-  : undefined;
 
 // ── Timeout resolution ──────────────────────────────────────────────────────
 // Per-test timeout (a single test() invocation). PLAYWRIGHT_TEST_TIMEOUT_MS is
@@ -32,7 +27,6 @@ export default defineConfig({
   use: {
     headless: !headed,
     baseURL: process.env.BASE_URL ?? "http://localhost:3000",
-    storageState: AUTH_FILE && existsSync(AUTH_FILE) ? AUTH_FILE : undefined,
     screenshot: "only-on-failure",
     video: headed ? "on" : "off",
     // `on-first-retry` produces NOTHING when retries=0 (we disable Playwright

@@ -13,10 +13,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.phase3 import AuthState, TestCase
 from app.models.project import CredentialProfile, Project
-from app.services.credential_service import get_profile_password, list_project_profiles
+from app.services.credential_service import get_profile_password, list_project_profiles, normalize_auth_strategy
 from app.services.artifact_paths import generated_base
 
 logger = logging.getLogger(__name__)
+
+
+class AuthStatePreparationError(RuntimeError):
+    pass
 
 
 def _server_dir() -> Path:
@@ -41,7 +45,11 @@ def _role_matches(profile: CredentialProfile, requested_role: str | None) -> boo
     return (profile.role or "").strip().lower() == requested_role.strip().lower()
 
 
-def assign_default_credentials_for_run(
+def profile_requires_storage_state(profile: CredentialProfile) -> bool:
+    return normalize_auth_strategy(profile.auth_strategy, auth_type=profile.auth_type) == "storage_state"
+
+
+def resolve_credential_bindings_for_run(
     db: Session,
     project_id: uuid.UUID,
     plan_run_id: uuid.UUID,
@@ -61,7 +69,7 @@ def assign_default_credentials_for_run(
         select(TestCase).where(
             TestCase.project_id == project_id,
             TestCase.run_id == plan_run_id,
-            TestCase.auth_mode == "authenticated",
+            TestCase.auth_mode.in_(["authenticated", "login_flow"]),
             TestCase.credential_id.is_(None),
         )
     ).scalars().all()
@@ -82,6 +90,15 @@ def assign_default_credentials_for_run(
     return profiles
 
 
+def assign_default_credentials_for_run(
+    db: Session,
+    project_id: uuid.UUID,
+    plan_run_id: uuid.UUID,
+) -> list[CredentialProfile]:
+    """Backward-compatible alias for the explicit credential binding step."""
+    return resolve_credential_bindings_for_run(db, project_id, plan_run_id)
+
+
 def required_profiles_for_run(
     db: Session,
     project_id: uuid.UUID,
@@ -92,7 +109,7 @@ def required_profiles_for_run(
         .where(
             TestCase.project_id == project_id,
             TestCase.run_id == plan_run_id,
-            TestCase.auth_mode == "authenticated",
+            TestCase.auth_mode.in_(["authenticated", "login_flow"]),
             TestCase.credential_id.isnot(None),
         )
         .distinct()
@@ -113,9 +130,15 @@ def run_auth_setup_for_profile(
     run_id: uuid.UUID,
     profile: CredentialProfile,
 ) -> AuthState:
-    """Run Playwright auth.setup.ts for one project credential profile."""
+    """Run an explicit storage-state auth setup script for one profile."""
     server_dir = _server_dir()
-    setup_file = server_dir / "tests" / "auth.setup.ts"
+    tests_dir = server_dir / "tests"
+    script_name = (profile.auth_script or "auth.setup.ts").strip() or "auth.setup.ts"
+    candidate = Path(script_name)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        setup_file = tests_dir / "__invalid_auth_script__"
+    else:
+        setup_file = (tests_dir / candidate).resolve()
     dest = auth_state_path(str(project.id), str(run_id), str(profile.id))
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -128,17 +151,27 @@ def run_auth_setup_for_profile(
         status="pending",
     )
 
-    if not setup_file.exists():
+    if not profile_requires_storage_state(profile):
         state.status = "failed"
-        state.error_message = f"auth.setup.ts not found at {setup_file}"
+        state.error_message = (
+            "AuthState setup is only valid for credential profiles with "
+            "auth_strategy='storage_state'. Inline-login profiles do not need storageState."
+        )
+        return state
+
+    if not str(setup_file).startswith(str(tests_dir.resolve())) or not setup_file.exists():
+        state.status = "failed"
+        state.error_message = f"auth setup script not found or not allowed: {script_name}"
         return state
 
     env = os.environ.copy()
     env["PLAYWRIGHT_HEADED"] = "true" if settings.playwright_headed else "false"
     env["PLAYWRIGHT_SLOW_MO_MS"] = str(settings.playwright_slow_mo_ms)
     env["BASE_URL"] = _base_url(project, profile)
+    env["TEST_USERNAME"] = profile.username
+    env["TEST_PASSWORD"] = get_profile_password(profile)
     env["USER_EMAIL"] = profile.username
-    env["USER_PASSWORD"] = get_profile_password(profile)
+    env["USER_PASSWORD"] = env["TEST_PASSWORD"]
     env["AUTH_STATE_PATH"] = str(dest)
 
     auth_config = server_dir / "playwright.auth.config.ts"
@@ -148,7 +181,7 @@ def run_auth_setup_for_profile(
             [npx_cmd, "playwright", "test", "--config", str(auth_config), "--reporter=dot"],
             capture_output=True,
             text=True,
-            timeout=90,
+            timeout=max(1, int(settings.auth_setup_timeout_s)),
             shell=False,
             env=env,
             cwd=str(server_dir),
@@ -180,9 +213,14 @@ def prepare_auth_states_for_run(
     execute_uuid = uuid.UUID(execute_run_id)
     assign_default_credentials_for_run(db, project.id, plan_uuid)
     profiles = required_profiles_for_run(db, project.id, plan_uuid)
+    storage_profiles = [
+        profile for profile in profiles
+        if profile_requires_storage_state(profile)
+    ]
 
     result: dict[str, str] = {}
-    for profile in profiles:
+    failed_profiles: list[str] = []
+    for profile in storage_profiles:
         existing = db.execute(
             select(AuthState).where(
                 AuthState.run_id == execute_uuid,
@@ -203,6 +241,7 @@ def prepare_auth_states_for_run(
         if state.status == "ready":
             result[str(profile.id)] = state.storage_state_path
         else:
+            failed_profiles.append(f"{profile.role}:{profile.username}")
             logger.warning(
                 "auth state failed: project_id=%s run_id=%s credential=%s error=%s",
                 project_id,
@@ -210,6 +249,15 @@ def prepare_auth_states_for_run(
                 profile.username,
                 state.error_message,
             )
+
+    required_ids = {str(profile.id) for profile in storage_profiles}
+    missing = [credential_id for credential_id in required_ids if credential_id not in result]
+    if missing:
+        label = ", ".join(failed_profiles) if failed_profiles else ", ".join(missing)
+        raise AuthStatePreparationError(
+            "Phase 3 auth setup failed for required credential(s): "
+            f"{label}. Re-verify project credentials before executing."
+        )
 
     return result
 

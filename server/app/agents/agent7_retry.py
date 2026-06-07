@@ -19,13 +19,17 @@ import re
 import uuid
 from typing import Any
 
+from app.core.config import settings
 from app.services import mcp_server, state_store
 from app.utils.llm import call_llm
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRY_ATTEMPTS = 3
 _MAX_LLM_RETRIES = 2
+
+
+def _max_retry_attempts() -> int:
+    return max(0, int(settings.phase3_agent_retry_attempts))
 
 _REPAIR_PROMPT = """\
 You are Agent A7, a Playwright TypeScript script repair specialist.
@@ -53,15 +57,19 @@ ENV VARIABLES — Use the env() helper, NEVER process.env directly:
 
 WAITING — NEVER use waitForTimeout(). Use instead:
   - await page.waitForURL('**/path**')    after navigation
-  - await page.waitForLoadState('networkidle')   after form submits
   - await expect(locator).toBeVisible()   to wait for elements
+  - after form submits, wait for the concrete outcome: URL change, success/error
+    message, or a specific element becoming visible. Do NOT use networkidle; many
+    apps keep analytics, polling, or background requests open and will timeout.
 
 SELECTORS — NEVER emit bare tag names ('select', 'div', 'span', 'input', 'button', 'a').
-  Prefer RECORDED SELECTORS below verbatim. Otherwise:
+  Use recorded selectors below as evidence of available UI controls. Prefer
+  stable role/label/test-id selectors; fall back to exact recorded selectors
+  only when the DOM evidence does not support a safer selector. Examples:
   - page.getByRole('button', {{ name: 'Login' }})
   - page.getByPlaceholder('Email')
   - page.getByLabel('Username')
-  - page.getByText('Add to cart')
+  - page.getByText('Continue')
   - page.locator('#specific-id') or page.locator('[data-testid="x"]')
 
 INVALID SYNTAX — NEVER use these:
@@ -108,7 +116,7 @@ test("Submit feedback form", async ({{ page }}, testInfo) => {{
   const monitor = new NetworkMonitor(page);
   await page.goto(env('BASE_URL') + '/feedback');
   await page.getByRole('button', {{ name: 'Submit feedback', exact: true }}).click();
-  await page.waitForLoadState('networkidle');
+  await expect(page.getByText('Feedback submitted', {{ exact: false }})).toBeVisible();
   await testInfo.attach('network_logs', {{ body: JSON.stringify(monitor.failures, null, 2), contentType: 'application/json' }});
   expect(monitor.failures, JSON.stringify(monitor.failures, null, 2)).toEqual([]);
 }});
@@ -121,7 +129,7 @@ Error Log:
 Current Script (full file — locate and fix just the broken test() block):
 {script}
 
-RECORDED SELECTORS (Phase-2 ground truth — prefer these verbatim):
+RECORDED SELECTORS (Phase-2 evidence — use exact selectors only when stable):
 {recorded_steps}
 
 Recorded variant elements (real DOM captured during recording):
@@ -153,11 +161,13 @@ PAGE VARIABLE — use `sharedPage` everywhere. NEVER use `page` or new pages.
 SIGNATURE — grouped tests do not use page fixture, but do receive testInfo:
   test("title", async ({{}}, testInfo) => {{ ... }})
 
-WAITING — NEVER waitForTimeout(). Use waitForURL / waitForLoadState / expect().
+WAITING — NEVER waitForTimeout() or networkidle. Use waitForURL or expect()
+against the concrete user-visible outcome after each action.
 
 SELECTORS — NEVER bare tag names ('select', 'div', 'span', 'input', 'button',
-'a'). Prefer the RECORDED SELECTORS below verbatim — they were captured during
-a real Phase-2 recording run and are ground truth.
+'a'). Use recorded selectors below as evidence of available UI controls. Prefer
+stable role/label/test-id selectors; fall back to exact recorded selectors only
+when the DOM evidence does not support a safer selector.
 
 INVALID SYNTAX — NEVER use these:
   - sharedPage.locator('role=button', {{ name: '...' }})  ← ignores 2nd arg / throws
@@ -192,7 +202,7 @@ Error Log:
 Original (failing) block:
 {block}
 
-RECORDED SELECTORS (Phase-2 ground truth — prefer these verbatim):
+RECORDED SELECTORS (Phase-2 evidence — use exact selectors only when stable):
 {recorded_steps}
 
 Recorded variant elements (real DOM captured during recording):
@@ -505,7 +515,7 @@ def _write_review_queue(test_id: str, run_id: str | None, evidence: str | dict[s
         return
 
     if isinstance(evidence, str):
-        payload = {"category": "A7_REPAIR_REJECTED", "error_log": evidence[:1000], "retries_exhausted": _MAX_RETRY_ATTEMPTS}
+        payload = {"category": "A7_REPAIR_REJECTED", "error_log": evidence[:1000], "retries_exhausted": _max_retry_attempts()}
     else:
         payload = evidence
 
@@ -531,6 +541,8 @@ def _build_retry_job(test_id: str, run_id: str, script_path: str | None = None) 
     from app.services.phase3_jobs import build_single_test_job
 
     project_id: str | None = None
+    credential_id: str | None = None
+    plan_run_id: str | None = None
     resolved_script_path = script_path
     with SessionLocal() as db:
         tc = db.execute(
@@ -538,6 +550,8 @@ def _build_retry_job(test_id: str, run_id: str, script_path: str | None = None) 
         ).scalar_one_or_none()
         if tc:
             project_id = str(tc.project_id)
+            credential_id = str(tc.credential_id) if tc.credential_id else None
+            plan_run_id = str(tc.run_id) if tc.run_id else None
             resolved_script_path = resolved_script_path or tc.script_path
 
     if not resolved_script_path:
@@ -546,8 +560,10 @@ def _build_retry_job(test_id: str, run_id: str, script_path: str | None = None) 
     return build_single_test_job(
         project_id=project_id,
         run_id=run_id,
+        plan_run_id=plan_run_id,
         test_id=test_id,
         script_path=resolved_script_path,
+        credential_id=credential_id,
     )
 
 
@@ -599,41 +615,34 @@ def _build_grouped_retry_job(
     ordered_test_ids: list[str],
     attempt: int,
 ) -> dict[str, Any]:
-    """Build an HLS group retry job. Re-runs ALL tests in the serial group so
-    previously-BLOCKED siblings get a fresh chance once the broken block is
-    repaired. credential_id / storage_state_path are looked up from any test
-    in the group (they're identical across the group)."""
-    from sqlalchemy import select
+    """Build an HLS group retry job.
+
+    Re-runs ALL tests in the serial group so previously-BLOCKED siblings get a
+    fresh chance once the broken block is repaired. Credential id is forwarded;
+    the worker resolves DB credential values inline at execution time.
+    """
     from app.db.session import SessionLocal
-    from app.models.phase3 import TestCase, AuthState
+    from app.models.phase3 import TestCase
     from app.services.phase3_jobs import build_hls_group_job
 
     credential_id: str | None = None
-    storage_state_path: str | None = None
+    plan_run_id: str | None = None
     if ordered_test_ids:
         with SessionLocal() as db:
             sample = db.get(TestCase, uuid.UUID(ordered_test_ids[0]))
             if sample and sample.credential_id:
                 credential_id = str(sample.credential_id)
-                auth = db.execute(
-                    select(AuthState).where(
-                        AuthState.run_id == uuid.UUID(run_id),
-                        AuthState.credential_id == sample.credential_id,
-                        AuthState.status == "ready",
-                    )
-                ).scalar_one_or_none()
-                if auth and auth.storage_state_path:
-                    storage_state_path = auth.storage_state_path
+            if sample and sample.run_id:
+                plan_run_id = str(sample.run_id)
 
     return build_hls_group_job(
         project_id=project_id,
         run_id=run_id,
-        plan_run_id=None,
+        plan_run_id=plan_run_id,
         hls_id=hls_id,
         script_path=script_path,
         ordered_test_ids=ordered_test_ids,
         credential_id=credential_id,
-        storage_state_path=storage_state_path,
         attempt=attempt + 1,
     )
 
@@ -834,14 +843,15 @@ async def repair(test_id: str, run_id: str, error_log: str) -> None:
     """Attempt to repair a failing script. Marks HUMAN_REVIEW after max attempts."""
     current_retries = state_store.get_retry_count(test_id)
 
-    if current_retries >= _MAX_RETRY_ATTEMPTS:
+    max_attempts = _max_retry_attempts()
+    if current_retries >= max_attempts:
         logger.info("agent7: max retries reached for test_id=%s — marking HUMAN_REVIEW", test_id)
         state_store.update_state(test_id, "HUMAN_REVIEW", run_id=run_id)
         _write_review_queue(test_id, run_id, error_log)
         return
 
     attempt = current_retries + 1
-    logger.info("agent7: repair attempt %d/%d for test_id=%s", attempt, _MAX_RETRY_ATTEMPTS, test_id)
+    logger.info("agent7: repair attempt %d/%d for test_id=%s", attempt, max_attempts, test_id)
 
     # Grouped vs single dispatch — grouped repair is block-replace + group re-enqueue.
     grouped = _lookup_grouped_context(test_id)

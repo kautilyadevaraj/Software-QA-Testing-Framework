@@ -255,7 +255,7 @@ def _semantic_parent_context(payload: RecorderStepCreate) -> dict | None:
 def _actionable_parent_update(payload: RecorderStepCreate) -> dict[str, object]:
     """Prefer the clickable ancestor when the browser event hit a child node.
 
-    Example: user clicks a cart badge `<span>` inside an `<a>`. The automation
+    Example: user clicks a counter badge `<span>` inside an `<a>`. The automation
     contract should click the link, not the child text span.
     """
     if payload.action_type not in {"click", "submit"}:
@@ -796,18 +796,6 @@ def start_session(
     db.refresh(session)
     return RecorderSessionResponse(id=session.id, status=session.status, flow_id=flow.id if flow else None)
 
-
-def complete_session(
-    db: Session, project: Project, session_id: uuid.UUID
-) -> RecorderSessionResponse:
-    session = db.execute(
-        select(RecordingSession).where(
-            RecordingSession.id == session_id,
-            RecordingSession.project_id == project.id,
-        )
-    ).scalar_one_or_none()
-    if session is None:
-        raise ValueError("Session not found")
 
 def _compute_recording_quality(db: Session, flow: RecordingFlow) -> dict:
     """Compute a quality summary dict for a completed flow and determine phase3_ready."""

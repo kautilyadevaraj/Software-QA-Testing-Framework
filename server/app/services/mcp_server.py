@@ -398,7 +398,7 @@ def get_test_cases_for_run(project_id: str, run_id: str) -> list[dict[str, Any]]
     For the current architecture (one plan run per project at a time) this is
     correct. If multi-run support is added later, add plan_run_id to test_cases.
     """
-    from app.models.project import HighLevelScenario
+    from app.models.project import CredentialProfile, HighLevelScenario
 
     with SessionLocal() as db:
         query = select(TestCase).where(TestCase.project_id == uuid.UUID(project_id))
@@ -416,6 +416,14 @@ def get_test_cases_for_run(project_id: str, run_id: str) -> list[dict[str, Any]]
             ).all()
             hls_map = {str(r.id): r.title for r in hls_rows}
 
+        credential_ids = list({r.credential_id for r in rows if r.credential_id})
+        credential_map: dict[str, CredentialProfile] = {}
+        if credential_ids:
+            credential_rows = db.execute(
+                select(CredentialProfile).where(CredentialProfile.id.in_(credential_ids))
+            ).scalars().all()
+            credential_map = {str(profile.id): profile for profile in credential_rows}
+
         return [
             {
                 "test_id":             str(r.test_id),
@@ -432,6 +440,16 @@ def get_test_cases_for_run(project_id: str, run_id: str) -> list[dict[str, Any]]
                 "auth_mode":           r.auth_mode or "authenticated",
                 "credential_id":       str(r.credential_id) if r.credential_id else None,
                 "credential_role":     r.credential_role,
+                "credential_username": (
+                    credential_map[str(r.credential_id)].username
+                    if r.credential_id and str(r.credential_id) in credential_map
+                    else None
+                ),
+                "credential_endpoint": (
+                    credential_map[str(r.credential_id)].endpoint
+                    if r.credential_id and str(r.credential_id) in credential_map
+                    else None
+                ),
             }
             for r in rows
         ]
@@ -702,9 +720,9 @@ def get_placeholders(actor: str = "user") -> dict[str, str]:
     The runner substitutes real values from environment variables at execution time.
     """
     return {
-        "USER_EMAIL": "{{USER_EMAIL}}",
-        "USER_PASSWORD": "{{USER_PASSWORD}}",
-        "ADMIN_EMAIL": "{{ADMIN_EMAIL}}",
-        "ADMIN_PASSWORD": "{{ADMIN_PASSWORD}}",
+        "TEST_USERNAME": "{{TEST_USERNAME}}",
+        "TEST_PASSWORD": "{{TEST_PASSWORD}}",
+        "TEST_ROLE": "{{TEST_ROLE}}",
+        "TEST_LOGIN_URL": "{{TEST_LOGIN_URL}}",
         "BASE_URL": "{{BASE_URL}}",
     }

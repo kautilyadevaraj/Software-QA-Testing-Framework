@@ -40,10 +40,12 @@ def build_single_test_job(
     *,
     project_id: str | None,
     run_id: str,
+    plan_run_id: str | None = None,
     test_id: str,
     script_path: str,
     review_item_id: str | None = None,
     storage_state_path: str | None = None,
+    credential_id: str | None = None,
     attempt: int = 1,
 ) -> dict[str, Any]:
     return {
@@ -52,10 +54,12 @@ def build_single_test_job(
         "job_type": "single_test",
         "project_id": project_id,
         "run_id": run_id,
+        "plan_run_id": plan_run_id,
         "test_id": test_id,
         "script_path": script_path,
         "review_item_id": review_item_id,
         "storage_state_path": storage_state_path,
+        "credential_id": credential_id,
         "attempt": attempt,
     }
 

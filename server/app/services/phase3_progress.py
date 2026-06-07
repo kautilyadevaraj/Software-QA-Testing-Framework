@@ -8,7 +8,7 @@ per HLS. The UI shows "running" but no detail — users think it's frozen.
 
 This module stores a lightweight progress note per run_id so the /run-status
 endpoint can return strings like:
-    "A5: generating script for HLS 2/5 — 'User checkout'"
+    "A5: generating script for HLS 2/5 — 'User workflow'"
     "A4: building context for TC-007 in 'User login'"
 
 Why in-memory

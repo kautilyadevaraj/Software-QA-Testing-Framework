@@ -3,7 +3,7 @@
 Assembles the full execution context for a test case by combining:
   - test steps (from DB via test_id)
   - DOM snapshot for the target page (HTML + accessibility tree + interactive elements)
-  - **Phase-2 recorded selectors / steps / variants** (ground-truth locators)
+  - **Phase-2 recorded selectors / steps / variants** (execution evidence)
   - ENV placeholder tokens (credentials)
 
 Why Phase-2 enrichment lives here (and not in A5):
@@ -17,12 +17,14 @@ Entry point: build_context(test_id, project_id) -> dict
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.phase3 import TestCase
 from app.models.scenario import (
@@ -44,15 +46,80 @@ _MAX_VARIANT_ELEMENTS = 30
 _MAX_ROUTE_SNAPSHOTS = 8
 
 
+_EXACT_HREF_SELECTOR_RE = re.compile(r"""(?P<prefix>\bhref\s*=\s*)(?P<quote>["'])(?P<href>[^"']+)(?P=quote)""")
+
+
+def _route_pattern(path: str | None) -> str | None:
+    """Generalize dynamic route ids while preserving static route structure."""
+    raw = str(path or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+        path_part = parsed.path or raw
+    except Exception:
+        path_part = raw
+    pattern = re.sub(r"(?<=/)(?:\d+|[0-9a-f]{8,})(?=/|$)", "{id}", path_part, flags=re.IGNORECASE)
+    return pattern if pattern != path_part else None
+
+
+def _abstract_selector_hint(selector: str | None) -> str | None:
+    """Return a safer selector hint for dynamic business-object selectors.
+
+    Example: a[href="/records/2"] -> a[href*="/records/"]
+    """
+    raw = str(selector or "").strip()
+    if not raw:
+        return None
+    if "nth-of-type" in raw:
+        return None
+    match = _EXACT_HREF_SELECTOR_RE.search(raw)
+    if not match:
+        return None
+    href = match.group("href")
+    pattern = _route_pattern(href)
+    if not pattern:
+        return None
+    stable_prefix = pattern.split("{id}", 1)[0]
+    if not stable_prefix or stable_prefix == "/":
+        return None
+    return _EXACT_HREF_SELECTOR_RE.sub(f"href*=\"{stable_prefix}\"", raw, count=1)
+
+
+def _intent_hint_for_step(step: ScenarioStep, selector_hint: str | None = None) -> str | None:
+    label = step.element_text or step.accessible_name or step.label
+    if label:
+        return str(label).strip()
+    selector = step.selector or selector_hint or ""
+    match = _EXACT_HREF_SELECTOR_RE.search(selector)
+    if match:
+        route = _route_pattern(match.group("href")) or match.group("href")
+        words = re.sub(r"[^A-Za-z0-9]+", " ", route.replace("{id}", "")).strip()
+        if words:
+            suffix = "link" if (step.role or step.element_type or "").lower() in {"link", "a"} or selector.startswith("a") else "control"
+            return f"{words} {suffix}".strip()
+    return None
+
+
 def _serialize_recorded_steps(steps: list[ScenarioStep]) -> list[dict[str, Any]]:
     """Trim ORM rows to the fields A5 needs in its prompt."""
     out: list[dict[str, Any]] = []
     for s in steps[:_MAX_RECORDED_STEPS]:
+        semantic_context = s.semantic_context or {}
+        field_identity = (
+            semantic_context.get("field_identity")
+            if isinstance(semantic_context, dict)
+            else None
+        )
         out.append({
             "step_index": s.step_index,
             "action": s.action_type,
             "selector": s.selector or "",
             "selector_candidates": list(s.selector_candidates or []),
+            "selector_hint": _abstract_selector_hint(s.selector),
+            "intent_hint": _intent_hint_for_step(s, _abstract_selector_hint(s.selector)),
+            "selector_quality_reason": s.selector_quality_reason or "",
+            "field_identity": field_identity or {},
             "value": s.value or "",
             "input_value_kind": s.input_value_kind or "",
             "input_type": s.input_type or "",
@@ -68,6 +135,15 @@ def _serialize_recorded_steps(steps: list[ScenarioStep]) -> list[dict[str, Any]]
             "after_snapshot_id": str(s.route_variant_after_id) if s.route_variant_after_id else None,
         })
     return out
+
+
+def _non_noise_steps(steps: list[ScenarioStep]) -> list[ScenarioStep]:
+    """Return only business-relevant recorded steps.
+
+    Phase 2 stores ad/captcha/consent interactions for auditability, but Phase 3
+    must not learn from them or replay them.
+    """
+    return [s for s in steps if not getattr(s, "is_noise", False)]
 
 
 def _serialize_route_transitions(rows: list[RecordedRouteTransition]) -> list[dict[str, Any]]:
@@ -213,7 +289,7 @@ def _detect_test_id_attribute(recorded_steps: list[ScenarioStep]) -> str | None:
     """Return the most-common test-id-style attribute used in recorded
     selectors, or None if none found / Playwright's default applies."""
     counts: dict[str, int] = {}
-    for s in recorded_steps:
+    for s in _non_noise_steps(recorded_steps):
         sel = s.selector or ""
         for m in _TEST_ID_ATTR_RE.finditer(sel):
             attr = m.group(1)
@@ -238,7 +314,8 @@ def _render_few_shot_step(step: ScenarioStep) -> str | None:
     hover) — they're skipped from the few-shot rather than rendered as guesses.
     """
     action = step.action_type
-    sel = (step.selector or "").replace("'", "\\'")
+    selector = _abstract_selector_hint(step.selector) or step.selector or ""
+    sel = selector.replace("'", "\\'")
     val = step.value or ""
 
     if action == "navigate" and step.url:
@@ -258,12 +335,12 @@ def _render_few_shot_step(step: ScenarioStep) -> str | None:
         # captured credential value.
         value_kind = (step.input_value_kind or "").lower()
         if value_kind == "credential":
-            placeholder = "env('USER_PASSWORD')" if "pass" in (sel.lower() + (step.input_type or "").lower()) else "env('USER_EMAIL')"
+            placeholder = "env('TEST_PASSWORD')" if "pass" in (sel.lower() + (step.input_type or "").lower()) else "env('TEST_USERNAME')"
             return f"  await page.locator('{sel}').fill({placeholder});"
         if val and _CREDENTIAL_VALUE_RE.match(val):
-            placeholder = "env('USER_PASSWORD')" if "pass" in (sel.lower() + val.lower()) else "env('USER_EMAIL')"
+            placeholder = "env('TEST_PASSWORD')" if "pass" in (sel.lower() + val.lower()) else "env('TEST_USERNAME')"
             return f"  await page.locator('{sel}').fill({placeholder});"
-        safe_val = val.replace("'", "\\'")
+        safe_val = _few_shot_fill_value(step).replace("'", "\\'")
         return f"  await page.locator('{sel}').fill('{safe_val}');"
 
     if action == "select" and sel:
@@ -271,6 +348,42 @@ def _render_few_shot_step(step: ScenarioStep) -> str | None:
         return f"  await page.locator('{sel}').selectOption({{ value: '{safe_val}' }});"
 
     return None
+
+
+def _few_shot_fill_value(step: ScenarioStep) -> str:
+    """Use deterministic placeholder data in examples instead of replay data."""
+    val = step.value or ""
+    value_kind = (step.input_value_kind or "").lower()
+    if value_kind == "credential":
+        return val
+    if (step.input_type or "").lower() == "number":
+        return "1"
+    field_text = " ".join(
+        str(value or "")
+        for value in (
+            step.selector,
+            step.label,
+            step.element_text,
+            step.accessible_name,
+            step.input_type,
+            (step.semantic_context or {}).get("field_identity", {}) if isinstance(step.semantic_context, dict) else "",
+        )
+    ).lower()
+    if any(term in field_text for term in ("quantity", "qty", "count", "number")):
+        return "1"
+    if any(term in field_text for term in ("postal", "postcode", "zip", "pin", "code")):
+        return settings.phase3_test_data_postal_code
+    if any(term in field_text for term in ("email", "mail")):
+        return settings.phase3_test_data_email
+    if any(term in field_text for term in ("search", "keyword", "query")):
+        return settings.phase3_test_data_search
+    if any(term in field_text for term in ("first", "last", "name", "customer", "user")):
+        return settings.phase3_test_data_name
+    if any(term in field_text for term in ("phone", "mobile", "contact")):
+        return settings.phase3_test_data_phone
+    if val and len(val) <= 3 and val.isdigit():
+        return "1"
+    return settings.phase3_test_data_search
 
 
 def _synthesize_few_shot(project_id_uuid: uuid.UUID, db) -> str | None:
@@ -285,6 +398,7 @@ def _synthesize_few_shot(project_id_uuid: uuid.UUID, db) -> str | None:
         db.execute(
             select(ScenarioStep)
             .where(ScenarioStep.project_id == project_id_uuid)
+            .where(ScenarioStep.is_noise.is_(False))
             .order_by(ScenarioStep.scenario_id, ScenarioStep.step_index)
             .limit(_FEW_SHOT_MAX_STEPS)
         ).scalars()
@@ -302,10 +416,11 @@ def _synthesize_few_shot(project_id_uuid: uuid.UUID, db) -> str | None:
 
     body = "\n".join(rendered)
     return (
-        'test("(synthesized from this project\'s Phase-2 recording)", async ({ page }) => {\n'
+        'test("(structural evidence from this project\'s Phase-2 recording; do not replay exact business objects)", async ({ page }, testInfo) => {\n'
         '  const monitor = new NetworkMonitor(page);\n'
         f"{body}\n"
-        '  expect(monitor.hasFailures()).toBe(false);\n'
+        '  await testInfo.attach(\'network_logs\', { body: JSON.stringify(monitor.failures, null, 2), contentType: \'application/json\' });\n'
+        '  expect(monitor.failures, JSON.stringify(monitor.failures, null, 2)).toEqual([]);\n'
         '});'
     )
 
@@ -324,8 +439,6 @@ def _resolve_auth_login_path(
     Returns the path component (e.g. '/', '/login', '/sign-in', '/users/auth')
     or None when this test is not a login flow OR no recording is available.
     """
-    if (auth_mode or "").lower() != "login_flow":
-        return None
     if not recorded_steps:
         return None
     first = recorded_steps[0]
@@ -343,8 +456,9 @@ def _resolve_auth_login_path(
 def _resolve_target_page(
     declared: str,
     recorded_steps: list[ScenarioStep],
+    auth_mode: str = "",
 ) -> tuple[str, str | None]:
-    """Reconcile A3's declared `target_page` against Phase-2 recorded ground truth.
+    """Reconcile A3's declared `target_page` against Phase-2 recorded evidence.
 
     A3 is an LLM that infers target_page from the test title; it gets this wrong
     in surprising ways. Example: a workflow title can bias the model toward the
@@ -359,6 +473,16 @@ def _resolve_target_page(
     """
     if not recorded_steps:
         return declared, None
+    if (auth_mode or "").lower() == "authenticated":
+        post_auth_path = _first_authenticated_route_path(recorded_steps)
+        if post_auth_path:
+            declared_base = (declared or "").split("?", 1)[0].split("#", 1)[0]
+            if post_auth_path != declared_base:
+                return post_auth_path, (
+                    f"A3 declared target_page={declared!r}; authenticated test starts "
+                    f"from first post-auth recorded route {post_auth_path!r}"
+                )
+
     first = recorded_steps[0]
     start_url = first.url_before or first.url
     if not start_url:
@@ -381,6 +505,75 @@ def _resolve_target_page(
     )
 
 
+def _first_authenticated_route_path(recorded_steps: list[ScenarioStep]) -> str | None:
+    if not recorded_steps:
+        return None
+    first_url = recorded_steps[0].url_before or recorded_steps[0].url
+    try:
+        first_path = urlparse(first_url or "").path or "/"
+    except Exception:
+        first_path = first_url or ""
+
+    for step in recorded_steps:
+        after = step.url_after or step.url
+        if not after:
+            continue
+        try:
+            after_path = urlparse(after).path or "/"
+        except Exception:
+            after_path = after
+        if not after_path or after_path == first_path:
+            continue
+        if _scenario_step_is_auth_setup_control(step):
+            return after_path
+
+    for step in recorded_steps:
+        if _scenario_step_is_auth_setup_control(step):
+            continue
+        candidate = step.url_before or step.url or step.url_after
+        if not candidate:
+            continue
+        try:
+            candidate_path = urlparse(candidate).path or "/"
+        except Exception:
+            candidate_path = candidate
+        if candidate_path and candidate_path != first_path:
+            return candidate_path
+    return None
+
+
+def _scenario_step_is_auth_setup_control(step: ScenarioStep) -> bool:
+    control_text = " ".join(
+        str(value or "")
+        for value in (
+            step.selector,
+            step.playwright_locator,
+            step.element_text,
+            step.accessible_name,
+            step.role,
+            step.label,
+            step.value,
+        )
+    ).lower()
+    return any(
+        term in control_text
+        for term in (
+            "login",
+            "log in",
+            "sign in",
+            "signin",
+            "logout",
+            "log out",
+            "sign out",
+            "signout",
+            "username",
+            "password",
+            "register",
+            "signup",
+        )
+    )
+
+
 def _build_route_map(steps: list[ScenarioStep]) -> dict[str, str]:
     """Compact path → element_text mapping so A5 understands page transitions.
 
@@ -398,6 +591,16 @@ def _build_route_map(steps: list[ScenarioStep]) -> dict[str, str]:
             if path and path not in route_map:
                 route_map[path] = s.element_text or ""
     return route_map
+
+
+def _build_route_patterns(route_map: dict[str, str]) -> dict[str, str]:
+    """Expose dynamic route shapes separately from exact recorded routes."""
+    patterns: dict[str, str] = {}
+    for path, label in route_map.items():
+        pattern = _route_pattern(path)
+        if pattern and pattern not in patterns:
+            patterns[pattern] = label
+    return patterns
 
 
 def _path_from_url(url: str | None) -> str | None:
@@ -500,16 +703,20 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
                 .limit(1)
             ).scalar_one_or_none()
 
-        # Phase-2 recorded steps for this scenario (gold-standard selectors).
+        # Phase-2 recorded steps for this scenario. These are evidence of real
+        # UI behavior, not a replay contract for A5/A7.
         recorded_steps: list[ScenarioStep] = []
+        recorded_step_indexes: set[int] = set()
         if latest_recording is not None:
             recorded_steps = list(
                 db.execute(
                     select(ScenarioStep)
                     .where(ScenarioStep.recording_session_id == latest_recording.id)
+                    .where(ScenarioStep.is_noise.is_(False))
                     .order_by(ScenarioStep.step_index)
                 ).scalars()
             )
+            recorded_step_indexes = {s.step_index for s in recorded_steps}
 
         recorded_transitions: list[RecordedRouteTransition] = []
         flow_pages: list[RouteVariant] = []
@@ -522,6 +729,15 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
                     .order_by(RecordedRouteTransition.step_index)
                 ).scalars()
             )
+            # Transitions share ScenarioStep.step_index with their source
+            # action. Since Phase 2 step indexes are sequential per recording,
+            # filtering transitions by the retained non-noise step indexes
+            # excludes transitions caused only by ad/captcha/consent noise.
+            if recorded_step_indexes:
+                recorded_transitions = [
+                    row for row in recorded_transitions
+                    if row.step_index in recorded_step_indexes
+                ]
             flow_pages = list(
                 db.execute(
                     select(RouteVariant)
@@ -567,19 +783,20 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
         assertions_by_snapshot_payload = _serialize_assertion_candidates(recorded_assertions)
         variant_elements_payload = _serialize_variant_elements(latest_variant)
         route_map_payload = _build_route_map(recorded_steps)
+        route_patterns_payload = _build_route_patterns(route_map_payload)
         tc_title = tc.title
         tc_steps = tc.steps
         tc_acceptance_criteria = tc.acceptance_criteria or []
         tc_assertion_evidence = tc.assertion_evidence or []
         tc_declared_target_page = tc.target_page
-        # Reconcile A3's target_page against Phase-2 recorded ground truth.
+        tc_auth_mode = tc.auth_mode or "authenticated"
+        # Reconcile A3's target_page against Phase-2 recorded evidence.
         tc_target_page, override_reason = _resolve_target_page(
-            tc_declared_target_page, recorded_steps,
+            tc_declared_target_page, recorded_steps, tc_auth_mode,
         )
         if override_reason:
             logger.warning("agent4: target_page override test_id=%s — %s", test_id, override_reason)
         tc_depends_on = [str(d) for d in (tc.depends_on or [])]
-        tc_auth_mode = tc.auth_mode or "authenticated"
         tc_credential_id = str(tc.credential_id) if tc.credential_id else None
         tc_credential_role = tc.credential_role
         # Phase-2 derived login URL (replaces hardcoded `/` assumption).
@@ -643,6 +860,7 @@ async def build_context(test_id: str, project_id: str) -> dict[str, Any]:
         },
         "recorded_variant_elements": variant_elements_payload,
         "route_map": route_map_payload,
+        "route_patterns": route_patterns_payload,
         "route_snapshots": route_snapshots,
     }
 

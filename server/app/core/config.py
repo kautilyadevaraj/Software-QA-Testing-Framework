@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = Field(
         validation_alias=AliasChoices("JWT_SECRET_KEY", "JWT_SECRET", "jwt_secret_key", "jwt_secret")
     )
+    credential_encryption_key: str | None = None
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
@@ -44,29 +45,16 @@ class Settings(BaseSettings):
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
 
-    # LLM provider: "groq" | "gemini" | "openrouter" | "nim"
-    llm_provider: str = "groq"
+    # LLM provider: "anthropic" | "groq"
+    llm_provider: str = "anthropic"
+
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_max_tokens: int = 4096
 
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
     groq_max_tokens: int = 1024
-
-    # Google Gemini (free tier 1500 RPD on 2.5-flash; better at structured prompts).
-    gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
-    gemini_max_tokens: int = 2048
-
-    # NVIDIA NIM (OpenAI-compatible)
-    nim_api_key: str | None = None
-    nim_model: str = "qwen/qwen2.5-coder-32b-instruct"
-    nim_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nim_max_tokens: int = 2048
-
-    # OpenRouter (OpenAI-compatible, free tier available)
-    openrouter_api_key: str | None = None
-    openrouter_model: str = "qwen/qwen3-coder:free"
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_max_tokens: int = 1500
 
     scenario_agent_batch_chars: int = 4500
     scenario_agent_batch_size: int = 4
@@ -102,6 +90,7 @@ class Settings(BaseSettings):
     rabbitmq_dlx: str = "phase3.dlx"
     rabbitmq_dlq: str = "phase3_test_jobs.dead"
     phase3_max_attempts: int = 3
+    phase3_agent_retry_attempts: int = 3
     chromium_workers: int = 3
     phase3_embedded_workers: bool = True
     phase3_external_run_timeout_s: int = 3600
@@ -128,8 +117,17 @@ class Settings(BaseSettings):
     state_json_path: str = "state.json"
     generated_scripts_dir: str = "tests/generated"
 
+    # Generic generated test data defaults. Projects with locale-sensitive
+    # validation can override these without changing A3/A4/A5 code.
+    phase3_test_data_name: str = "Test User"
+    phase3_test_data_postal_code: str = "12345"
+    phase3_test_data_phone: str = "9000000000"
+    phase3_test_data_search: str = "test"
+    phase3_test_data_email: str = "qa.user@example.test"
+
     # Auth-state cleanup — expired storageState files + DB rows
     auth_state_retention_hours: int = 24
+    auth_setup_timeout_s: int = 90
     auth_state_cleanup_interval_minutes: int = 60
     auth_state_cleanup_enabled: bool = True
 
@@ -153,7 +151,7 @@ class Settings(BaseSettings):
 
     # LLM resilience — max in-flight calls, fallback chain, and retry policy
     llm_max_concurrent: int = 4
-    llm_fallback_chain: str = "groq,gemini,openrouter,nim"   # primary first, others as fallback
+    llm_fallback_chain: str = "anthropic,groq"   # primary first, others as fallback
     llm_retry_attempts: int = 3
     llm_retry_backoff_base_s: float = 2.0
 

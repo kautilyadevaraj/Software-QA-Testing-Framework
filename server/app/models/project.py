@@ -148,6 +148,8 @@ class CredentialProfile(Base):
     password_ciphertext: Mapped[str] = mapped_column(Text, nullable=False, default="")
     role: Mapped[str] = mapped_column(String(100), nullable=False, default="user")
     auth_type: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    auth_strategy: Mapped[str] = mapped_column(String(100), nullable=False, default="inline_login")
+    auth_script: Mapped[str | None] = mapped_column(String(255), nullable=True)
     endpoint: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

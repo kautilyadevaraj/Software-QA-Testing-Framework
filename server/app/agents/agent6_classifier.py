@@ -28,7 +28,7 @@ _NEGATIVE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _INFRA_ERROR_RE = re.compile(
-    r"(Missing env var|ECONNREFUSED|ERR_CONNECTION_REFUSED|net::ERR_|"
+    r"(Missing env var|ECONNREFUSED|ERR_CONNECTION_REFUSED|net::ERR_(?!ABORTED\b)|"
     r"browser executable|Cannot find module|No such file|ENOTFOUND|EAI_AGAIN|"
     r"Timed out waiting for external|Test timed out$)",
     re.IGNORECASE,
@@ -41,7 +41,10 @@ _AUTH_ERROR_RE = re.compile(
 _REPAIRABLE_SCRIPT_RE = re.compile(
     r"(locator|strict mode|Timeout .*locator|waiting for selector|not visible|"
     r"waitForURL|navigation|Target page|Element is not|has no method|"
-    r"ReferenceError|TypeError|SyntaxError)",
+    r"ReferenceError|TypeError|SyntaxError|"
+    r"Element is detached from the DOM|frame was detached|"
+    r"Execution context was destroyed|page\.waitForSelector: Timeout|"
+    r"Test timeout of \d+ms exceeded|net::ERR_ABORTED)",
     re.IGNORECASE | re.DOTALL,
 )
 _STATIC_ASSET_RE = re.compile(
@@ -91,9 +94,6 @@ def _test_intent_text(test_id: str) -> str:
             return " ".join(
                 [
                     tc.title or "",
-                    tc.auth_mode or "",
-                    tc.credential_role or "",
-                    " ".join(str(s) for s in (tc.steps or [])),
                     " ".join(str(a) for a in (tc.acceptance_criteria or [])),
                 ]
             )

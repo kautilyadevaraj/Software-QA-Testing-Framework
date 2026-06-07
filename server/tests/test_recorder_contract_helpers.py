@@ -5,7 +5,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "x" * 32)
 
 from app.schemas.scenario import RecorderStepCreate
 from app.models.scenario import ScenarioStep
-from app.agents import agent4_context_builder, agent5_script_generator
+from app.agents import agent3_planner, agent4_context_builder, agent5_script_generator
 from app.services import recorder_service
 
 
@@ -221,6 +221,278 @@ def test_phase3_matches_recorded_submit_for_click_intent() -> None:
 
 
 # ── Phase 2 quality tests ──────────────────────────────────────────────────
+
+def test_phase3_a4_filters_noise_steps_before_context() -> None:
+    steps = [
+        ScenarioStep(
+            step_index=0,
+            action_type="click",
+            selector='[data-test="real-action"]',
+            is_noise=False,
+        ),
+        ScenarioStep(
+            step_index=1,
+            action_type="click",
+            selector="div#ad-close",
+            is_noise=True,
+            noise_reason="ad_or_tracker_domain:googleads.g.doubleclick.net",
+        ),
+    ]
+
+    clean = agent4_context_builder._non_noise_steps(steps)
+
+    assert [s.step_index for s in clean] == [0]
+
+
+def test_phase3_a4_serializes_selector_quality_and_field_identity() -> None:
+    step = ScenarioStep(
+        step_index=3,
+        action_type="fill",
+        selector='input[placeholder="Type for hints..."]',
+        selector_candidates=['input[placeholder="Type for hints..."]'],
+        selector_quality_reason="placeholder",
+        semantic_context={
+            "field_identity": {
+                "route_path": "/web/index.php/pim/viewEmployeeList",
+                "field_label": "Employee Name",
+                "placeholder": "Type for hints...",
+            }
+        },
+    )
+
+    payload = agent4_context_builder._serialize_recorded_steps([step])
+
+    assert payload[0]["selector_quality_reason"] == "placeholder"
+    assert payload[0]["field_identity"]["route_path"] == "/web/index.php/pim/viewEmployeeList"
+    assert payload[0]["field_identity"]["field_label"] == "Employee Name"
+
+
+def test_phase3_a4_adds_abstract_selector_and_intent_hints() -> None:
+    step = ScenarioStep(
+        step_index=4,
+        action_type="click",
+        selector='a[href="/product_details/24"]',
+        element_type="a",
+    )
+
+    payload = agent4_context_builder._serialize_recorded_steps([step])
+
+    assert payload[0]["selector_hint"] == 'a[href*="/product_details/"]'
+    assert payload[0]["intent_hint"] == "product details link"
+
+
+def test_phase3_a4_builds_dynamic_route_patterns() -> None:
+    patterns = agent4_context_builder._build_route_patterns({
+        "/product_details/24": "View Product",
+        "/cart": "Cart",
+    })
+
+    assert patterns == {"/product_details/{id}": "View Product"}
+
+
+def test_phase3_a4_few_shot_abstracts_dynamic_selector_and_value() -> None:
+    step = ScenarioStep(
+        step_index=5,
+        action_type="fill",
+        selector='input[name="quantity"]',
+        value="2",
+    )
+
+    rendered = agent4_context_builder._render_few_shot_step(step)
+
+    assert rendered == "  await page.locator('input[name=\"quantity\"]').fill('1');"
+
+
+def test_phase3_a4_few_shot_does_not_replay_specific_product_detail_id() -> None:
+    step = ScenarioStep(
+        step_index=6,
+        action_type="click",
+        selector='a[href="/product_details/2"]',
+        element_type="a",
+    )
+
+    rendered = agent4_context_builder._render_few_shot_step(step)
+
+    assert rendered == '  await page.locator(\'a[href*="/product_details/"]\').click();'
+    assert "/product_details/2" not in rendered
+
+
+def test_phase3_a4_test_id_detection_ignores_noise_steps() -> None:
+    steps = [
+        ScenarioStep(
+            step_index=0,
+            action_type="click",
+            selector='[data-test="login-button"]',
+            is_noise=False,
+        ),
+        ScenarioStep(
+            step_index=1,
+            action_type="click",
+            selector='[data-cy="ad-close"]',
+            is_noise=True,
+        ),
+        ScenarioStep(
+            step_index=2,
+            action_type="click",
+            selector='[data-cy="tracker-close"]',
+            is_noise=True,
+        ),
+    ]
+
+    assert agent4_context_builder._detect_test_id_attribute(steps) == "data-test"
+
+
+def test_phase3_a3_warns_on_recorded_specific_generic_route_leakage() -> None:
+    item = {
+        "title": "Product Details",
+        "steps": ["click product 24 details link", "navigate to /product_details/24"],
+        "acceptance_criteria": ["Product detail page is visible"],
+    }
+    warnings = agent3_planner._recording_leakage_warnings(
+        item,
+        [{"selector": 'a[href="/product_details/24"]', "url": "https://example.test/product_details/24"}],
+        "User can view a product details page",
+    )
+
+    assert "recorded-specific route '/product_details/24'" in warnings
+
+
+def test_phase3_a3_preserves_explicit_recorded_route_when_requirement_names_it() -> None:
+    item = {
+        "title": "Specific Product Details",
+        "steps": ["navigate to /product_details/24"],
+        "acceptance_criteria": ["Specific product detail page is visible"],
+    }
+    warnings = agent3_planner._recording_leakage_warnings(
+        item,
+        [{"selector": 'a[href="/product_details/24"]', "url": "https://example.test/product_details/24"}],
+        "Requirement: verify /product_details/24 opens successfully",
+    )
+
+    assert warnings == []
+
+
+def test_phase3_a5_uses_selector_hint_for_generic_business_object() -> None:
+    selector, index = agent5_script_generator._recorded_selector_for_action(
+        [
+            {
+                "action": "click",
+                "selector": 'a[href="/product_details/24"]',
+                "selector_hint": 'a[href*="/product_details/"]',
+                "element_type": "a",
+            }
+        ],
+        "click",
+        set(),
+        "click a product details link",
+    )
+
+    assert selector == 'a[href*="/product_details/"]'
+    assert index == 0
+
+
+def test_phase3_a5_keeps_stable_control_selector() -> None:
+    selector, index = agent5_script_generator._recorded_selector_for_action(
+        [
+            {
+                "action": "submit",
+                "selector": '[data-test="checkout"]',
+                "accessible_name": "Checkout",
+                "element_type": "button",
+            }
+        ],
+        "click",
+        set(),
+        "click the Checkout button",
+    )
+
+    assert selector == '[data-test="checkout"]'
+    assert index == 0
+
+
+def test_phase3_a5_uses_configured_valid_fill_values(monkeypatch) -> None:
+    monkeypatch.setattr(agent5_script_generator.settings, "phase3_test_data_name", "QA Person")
+    monkeypatch.setattr(agent5_script_generator.settings, "phase3_test_data_postal_code", "560001")
+
+    assert agent5_script_generator._valid_runtime_value_for_fill("a valid name", "#first-name", "fill first name with a valid name") == "'QA Person'"
+    assert agent5_script_generator._valid_runtime_value_for_fill("a valid code", "#postal-code", "fill postal code with a valid code") == "'560001'"
+    assert agent5_script_generator._valid_runtime_value_for_fill("a valid quantity", "#quantity", "fill quantity with a valid quantity") == "'1'"
+
+
+def test_phase3_a5_does_not_match_add_record_to_records_link() -> None:
+    context = {
+        "dom": {
+            "interactive_elements": [
+                {"selector": 'a[href="/records"]', "text": "Records", "role": "a", "tag": "a"},
+                {"selector": 'button.add-record', "text": "Add record", "role": "button", "tag": "button"},
+            ]
+        },
+        "route_snapshots": {},
+    }
+
+    selector = agent5_script_generator._element_selector_for_step(
+        context,
+        "click",
+        "click the Add record button",
+    )
+
+    assert selector == "button.add-record"
+
+
+def test_phase3_a5_deterministic_fallback_uses_grounded_assertion_not_body() -> None:
+    context = {
+        "title": "Guest User Product Search",
+        "steps": ["assert the search results page displays a list of matching products"],
+        "recorded_steps": [
+            {
+                "action": "click",
+                "selector": 'a[href="/product_details/2"]',
+                "selector_hint": 'a[href*="/product_details/"]',
+            }
+        ],
+        "recording_flow": {"assertion_candidates_by_snapshot": {}},
+        "dom": {"interactive_elements": []},
+    }
+
+    lines = agent5_script_generator._deterministic_lines_from_steps(context, page_var="page")
+
+    assert "page.locator('body')" not in "\n".join(lines)
+    assert "a[href*=\"/product_details/\"]" in "\n".join(lines)
+
+
+def test_phase3_a5_inserts_recorded_navigation_bridge_before_later_control() -> None:
+    context = {
+        "title": "Add Item to Cart",
+        "steps": ["click the Add to Cart button"],
+        "recorded_steps": [
+            {
+                "action": "click",
+                "selector": 'a[href="/product_details/2"]',
+                "selector_hint": 'a[href*="/product_details/"]',
+                "element_text": "View Product",
+                "url": "https://example.test/products",
+                "from_url": "https://example.test/products",
+                "to_url": "https://example.test/product_details/2",
+            },
+            {
+                "action": "click",
+                "selector": "button.cart",
+                "element_text": "Add to cart",
+                "url": "https://example.test/product_details/2",
+                "from_url": "https://example.test/product_details/2",
+                "to_url": "https://example.test/product_details/2",
+            },
+        ],
+        "recording_flow": {"assertion_candidates_by_snapshot": {}},
+        "dom": {"interactive_elements": []},
+    }
+
+    lines = agent5_script_generator._deterministic_lines_from_steps(context, page_var="page")
+    text = "\n".join(lines)
+
+    assert "a[href*=\"/product_details/\"]" in text
+    assert "button.cart" in text
+
 
 def test_noise_ad_domain_marked_as_noise() -> None:
     payload = RecorderStepCreate(

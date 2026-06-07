@@ -597,9 +597,11 @@ async def _execute_hls_independent(
             build_single_test_job(
                 project_id=project_id,
                 run_id=run_id,
+                plan_run_id=plan_run_id,
                 test_id=tid,
                 script_path=script_path,
                 storage_state_path=ctx.get("auth_state_path"),
+                credential_id=str(ctx.get("credential_id")) if ctx.get("credential_id") else None,
             )
         )
         enqueued += 1
@@ -784,17 +786,9 @@ async def run_phase3(project_id: str, run_id: str, plan_run_id: str | None = Non
         _update_run(run_id, status="completed", total=0, duration_seconds=0)
         return
 
+    # Inline-login mode: credentials come from CredentialProfile rows at worker
+    # runtime. Do not create/pass Playwright storageState files.
     auth_state_paths: dict[str, str] = {}
-    if plan_run_id:
-        with SessionLocal() as db:
-            from app.services.auth_state_service import prepare_auth_states_for_run
-
-            auth_state_paths = prepare_auth_states_for_run(
-                db,
-                project_id=project_id,
-                execute_run_id=run_id,
-                plan_run_id=plan_run_id,
-            )
 
     # In local/demo embedded-worker mode, each execution run owns the worker
     # lifecycle. Purge stale RabbitMQ messages so an old run cannot starve the
@@ -862,9 +856,10 @@ async def run_phase3(project_id: str, run_id: str, plan_run_id: str | None = Non
                         )
                     else:
                         resumable_jobs.append(
-                                build_single_test_job(
+                            build_single_test_job(
                                 project_id=project_id,
                                 run_id=run_id,
+                                plan_run_id=plan_run_id,
                                 test_id=str(tc.test_id),
                                 script_path=sp,
                                 storage_state_path=(
@@ -872,6 +867,7 @@ async def run_phase3(project_id: str, run_id: str, plan_run_id: str | None = Non
                                     if tc.credential_id
                                     else None
                                 ),
+                                credential_id=str(tc.credential_id) if tc.credential_id else None,
                             )
                         )
                     for test_id in ordered_ids:

@@ -103,9 +103,16 @@ def _build_env(
     *,
     storage_state_path: str | None = None,
     test_id: str | None = None,
+    credential_id: str | None = None,
+    plan_run_id: str | None = None,
 ) -> dict[str, str]:
-    """Build subprocess environment with credentials forwarded."""
+    """Build subprocess environment with DB credential-profile values.
+
+    App credentials intentionally come from uploaded CSV -> CredentialProfile
+    rows, not server/.env and not prebuilt Playwright storageState files.
+    """
     env = os.environ.copy()
+    env.pop("AUTH_STATE_PATH", None)
     env["PLAYWRIGHT_HEADED"] = "true" if settings.playwright_headed else "false"
     env["PLAYWRIGHT_SLOW_MO_MS"] = str(settings.playwright_slow_mo_ms)
     logger.info(
@@ -124,17 +131,21 @@ def _build_env(
         test_timeout_ms = max(test_timeout_ms, _HEADED_DEMO_MIN_TIMEOUT_MS, slow_mo_budget)
     env["PLAYWRIGHT_TEST_TIMEOUT_MS"] = str(test_timeout_ms)
     env["BASE_URL"] = settings.base_url
-    env["USER_EMAIL"] = settings.user_email
-    env["USER_PASSWORD"] = settings.user_password
-    env["ADMIN_EMAIL"] = settings.admin_email
-    env["ADMIN_PASSWORD"] = settings.admin_password
-    if storage_state_path:
-        env["AUTH_STATE_PATH"] = storage_state_path
+    # Legacy app-user .env values are intentionally not forwarded. Phase 3 app
+    # credentials must be project-scoped CredentialProfile rows.
+    for key in (
+        "USER_EMAIL",
+        "USER_PASSWORD",
+        "ADMIN_EMAIL",
+        "ADMIN_PASSWORD",
+        "AUTH_STATE_PATH",
+    ):
+        env.pop(key, None)
     if run_id:
         try:
             from sqlalchemy import select
             from app.db.session import SessionLocal
-            from app.models.phase3 import AuthState, TestCase, TestRun
+            from app.models.phase3 import TestCase, TestRun
             from app.models.project import CredentialProfile, Project
             from app.services.credential_service import get_profile_password
 
@@ -148,33 +159,52 @@ def _build_env(
                 if project_row and (project_row.url or "").strip():
                     env["BASE_URL"] = project_row.url.rstrip("/")
 
-                query = (
-                    select(AuthState, CredentialProfile, Project)
-                    .join(CredentialProfile, AuthState.credential_id == CredentialProfile.id)
-                    .join(Project, AuthState.project_id == Project.id)
-                    .where(AuthState.run_id == uuid.UUID(run_id), AuthState.status == "ready")
-                )
+                tc_row: TestCase | None = None
                 if test_id:
-                    query = (
-                        query.join(TestCase, TestCase.credential_id == AuthState.credential_id)
-                        .where(TestCase.test_id == uuid.UUID(test_id))
+                    tc_query = select(TestCase).where(TestCase.test_id == uuid.UUID(test_id))
+                    if plan_run_id:
+                        tc_query = tc_query.where(TestCase.run_id == uuid.UUID(plan_run_id))
+                    tc_row = db.execute(tc_query.limit(1)).scalar_one_or_none()
+
+                    if plan_run_id and tc_row is None:
+                        raise RuntimeError(
+                            "No Phase 3 test case found for this planning run "
+                            f"(test_id={test_id}, plan_run_id={plan_run_id}, execute_run_id={run_id})"
+                        )
+
+                resolved_credential_id = credential_id
+                if not resolved_credential_id and tc_row is not None:
+                    resolved_credential_id = tc_row.credential_id
+                    resolved_credential_id = str(resolved_credential_id) if resolved_credential_id else None
+
+                if not resolved_credential_id:
+                    if tc_row is not None and (tc_row.auth_mode or "authenticated").lower() in {"authenticated", "login_flow"}:
+                        raise RuntimeError(
+                            "Credentialed Phase 3 test has no bound project credential "
+                            f"(test_id={test_id}, plan_run_id={plan_run_id}, auth_mode={tc_row.auth_mode})"
+                        )
+                    return env
+
+                row = db.execute(
+                    select(CredentialProfile, Project)
+                    .join(Project, CredentialProfile.project_id == Project.id)
+                    .where(CredentialProfile.id == uuid.UUID(str(resolved_credential_id)))
+                    .limit(1)
+                ).first()
+                if row is None:
+                    raise RuntimeError(
+                        "No credential profile found for the required Phase 3 test "
+                        f"(run_id={run_id}, test_id={test_id}, credential_id={resolved_credential_id})"
                     )
-                row = db.execute(query.limit(1)).first()
-                if row is None and test_id:
-                    row = db.execute(
-                        select(AuthState, CredentialProfile, Project)
-                        .join(CredentialProfile, AuthState.credential_id == CredentialProfile.id)
-                        .join(Project, AuthState.project_id == Project.id)
-                        .where(AuthState.run_id == uuid.UUID(run_id), AuthState.status == "ready")
-                        .limit(1)
-                    ).first()
-                if row:
-                    _state, profile, project = row
-                    env["BASE_URL"] = (profile.endpoint or project.url or settings.base_url).rstrip("/")
-                    env["USER_EMAIL"] = profile.username
-                    env["USER_PASSWORD"] = get_profile_password(profile)
-                    env["AUTH_STATE_PATH"] = storage_state_path or _state.storage_state_path
+                profile, project = row
+                env["BASE_URL"] = (profile.endpoint or project.url or settings.base_url).rstrip("/")
+                env["TEST_USERNAME"] = profile.username
+                env["TEST_PASSWORD"] = get_profile_password(profile)
+                env["TEST_ROLE"] = profile.role or ""
+                env["TEST_LOGIN_URL"] = (profile.endpoint or project.url or settings.base_url).rstrip("/")
         except Exception as exc:
+            if test_id or credential_id:
+                raise
             logger.warning("worker: failed to load run-scoped env for run_id=%s: %s", run_id, exc)
     return env
 
@@ -185,6 +215,8 @@ def _run_spec(
     *,
     storage_state_path: str | None = None,
     test_id: str | None = None,
+    credential_id: str | None = None,
+    plan_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a .spec.ts file via npx playwright test --reporter=json.
 
@@ -219,7 +251,13 @@ def _run_spec(
             text=True,
             timeout=timeout_s,
             shell=False,
-            env=_build_env(run_id, storage_state_path=storage_state_path, test_id=test_id),
+            env=_build_env(
+                run_id,
+                storage_state_path=storage_state_path,
+                test_id=test_id,
+                credential_id=credential_id,
+                plan_run_id=plan_run_id,
+            ),
             cwd=_server_cwd(),   # server/ (where playwright.config.ts lives)
         )
     except subprocess.TimeoutExpired:
@@ -348,6 +386,40 @@ def _update_review_rerun_status(review_item_id: str | None, classification: str)
         )
 
 
+def _write_worker_review_queue(
+    test_id: str,
+    run_id: str,
+    *,
+    category: str,
+    reason: str,
+    evidence: dict[str, Any] | None = None,
+) -> None:
+    """Create a durable review item for worker-level failures."""
+    try:
+        from app.db.session import SessionLocal
+        from app.models.phase3 import ReviewQueueItem
+
+        payload = {
+            "category": category,
+            "reason": reason,
+            **(evidence or {}),
+        }
+        with SessionLocal() as db:
+            db.add(ReviewQueueItem(
+                test_id=uuid.UUID(str(test_id)),
+                run_id=uuid.UUID(str(run_id)),
+                review_type="TASK",
+                evidence=payload,
+                status="pending",
+            ))
+            db.commit()
+    except Exception as exc:
+        logger.warning(
+            "worker: failed to create review item for test_id=%s run_id=%s category=%s: %s",
+            test_id, run_id, category, exc,
+        )
+
+
 def _update_artifact_manifest(
     *,
     project_id: str,
@@ -470,6 +542,8 @@ def _run_grouped_spec(
     script_path: Path | None = None,
     ordered_test_ids: list[str] | None = None,
     storage_state_path: str | None = None,
+    credential_id: str | None = None,
+    plan_run_id: str | None = None,
 ) -> None:
     """Run {hls_id}.spec.ts and write one TestResult per subtask.
 
@@ -504,7 +578,13 @@ def _run_grouped_spec(
         )
         return
 
-    run = _run_spec(script_path, run_id, storage_state_path=storage_state_path)
+    run = _run_spec(
+        script_path,
+        run_id,
+        storage_state_path=storage_state_path,
+        credential_id=credential_id,
+        plan_run_id=plan_run_id,
+    )
     results = list(_walk_specs(run["report"]))
 
     if not results:
@@ -594,6 +674,33 @@ def _run_grouped_spec(
                 mcp_server.save_test_result(test_id=test_id, status="BLOCKED", run_id=run_id)
                 state_store.update_state(test_id, "BLOCKED", run_id=run_id, blocked_by=first_failed_id)
                 logger.info("worker: BLOCKED test_id=%s title=%r (blocked_by=%s)", test_id, title, first_failed_id)
+
+    if len(results) < len(ordered_test_ids):
+        missing_ids = ordered_test_ids[len(results):]
+        reason = (
+            "Playwright returned fewer results than expected for this grouped spec. "
+            "This usually means a compile error, beforeAll crash, or reporter truncation "
+            "prevented later tests from producing result records."
+        )
+        logger.warning(
+            "worker: grouped hls_id=%s returned %d/%d result(s); marking leftovers HUMAN_REVIEW: %s",
+            hls_id, len(results), len(ordered_test_ids), missing_ids,
+        )
+        for tid in missing_ids:
+            mcp_server.save_test_result(test_id=tid, status="HUMAN_REVIEW", run_id=run_id)
+            state_store.update_state(tid, "HUMAN_REVIEW", run_id=run_id)
+            _write_worker_review_queue(
+                tid,
+                run_id,
+                category="GROUPED_RESULT_MISSING",
+                reason=reason,
+                evidence={
+                    "hls_id": hls_id,
+                    "expected_results": len(ordered_test_ids),
+                    "actual_results": len(results),
+                    "stage": "worker",
+                },
+            )
 
 
 # â”€â”€ Worker loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -716,6 +823,8 @@ def worker_loop(
                         script_path=job_script_path(job),
                         ordered_test_ids=ordered_ids,
                         storage_state_path=job.get("storage_state_path"),
+                        credential_id=job.get("credential_id"),
+                        plan_run_id=job.get("plan_run_id"),
                     )
                 elif job["job_type"] == "single_test":
                     test_id = str(job["test_id"])
@@ -728,6 +837,8 @@ def worker_loop(
                         job_run_id,
                         storage_state_path=job.get("storage_state_path"),
                         test_id=test_id,
+                        credential_id=job.get("credential_id"),
+                        plan_run_id=job.get("plan_run_id"),
                     )
                     classification = _classify_single_run_result(test_id, job_run_id, result)
                     _update_artifact_manifest(
@@ -834,6 +945,8 @@ def standalone_worker_loop(*, idle_timeout_s: int = 0) -> None:
                             script_path=job_script_path(job),
                             ordered_test_ids=[str(tid) for tid in job.get("ordered_test_ids", [])],
                             storage_state_path=job.get("storage_state_path"),
+                            credential_id=job.get("credential_id"),
+                            plan_run_id=job.get("plan_run_id"),
                         )
                     elif job["job_type"] == "single_test":
                         test_id = str(job["test_id"])
@@ -842,6 +955,8 @@ def standalone_worker_loop(*, idle_timeout_s: int = 0) -> None:
                             job_run_id,
                             storage_state_path=job.get("storage_state_path"),
                             test_id=test_id,
+                            credential_id=job.get("credential_id"),
+                            plan_run_id=job.get("plan_run_id"),
                         )
                         classification = _classify_single_run_result(test_id, job_run_id, result)
                         _update_artifact_manifest(

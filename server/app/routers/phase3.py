@@ -43,7 +43,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
-from app.models.phase3 import Phase3Artifact, Phase3ExecutionState, ReviewQueueItem, TestCase, TestResult, TestRun
+from app.models.phase3 import AuthState, Phase3Artifact, Phase3ExecutionState, Phase3HlsGroup, ReviewQueueItem, TestCase, TestResult, TestRun
 from app.models.project import CredentialProfile, HighLevelScenario, Project, ProjectJiraConfig
 from app.models.scenario import RecordingSession
 from app.models.user import User
@@ -1443,6 +1443,7 @@ def rerun_review_item(
     _get_project_or_404(db, current_user.id, project_id)
 
     item = _get_review_item_for_project_or_404(db, project_id, item_id)
+    tc = db.get(TestCase, item.test_id)
 
     test_id_str = str(item.test_id)
     run_id_str = str(item.run_id)
@@ -1474,9 +1475,11 @@ def rerun_review_item(
         build_single_test_job(
             project_id=str(project_id),
             run_id=run_id_str,
+            plan_run_id=str(tc.run_id) if tc and tc.run_id else None,
             test_id=test_id_str,
             script_path=script_path,
             review_item_id=str(item.id),
+            credential_id=str(tc.credential_id) if tc and tc.credential_id else None,
         )
     )
     if not queued:
@@ -1769,6 +1772,10 @@ def reset_phase3(
     deleted_reviews  = 0
     deleted_tcs      = 0
     deleted_runs     = 0
+    deleted_exec     = 0
+    deleted_auth     = 0
+    deleted_hls      = 0
+    archived_artifacts = 0
 
     if scope == "current_run":
         # Find the most recent run; if none, nothing to do.
@@ -1786,6 +1793,10 @@ def reset_phase3(
                 "deleted_test_cases":   0,
                 "deleted_test_results": 0,
                 "deleted_review_items": 0,
+                "deleted_execution_state": 0,
+                "deleted_auth_states": 0,
+                "deleted_hls_groups": 0,
+                "archived_artifacts": 0,
                 "deleted_runs":         0,
             }
 
@@ -1798,6 +1809,9 @@ def reset_phase3(
         ).scalars().all()
 
         if tc_ids:
+            deleted_exec = db.query(Phase3ExecutionState).filter(
+                Phase3ExecutionState.test_id.in_(tc_ids)
+            ).delete(synchronize_session=False)
             deleted_results = db.query(TestResult).filter(
                 TestResult.test_id.in_(tc_ids)
             ).delete(synchronize_session=False)
@@ -1813,6 +1827,19 @@ def reset_phase3(
         deleted_reviews += db.query(ReviewQueueItem).filter(
             ReviewQueueItem.run_id == run_id
         ).delete(synchronize_session=False)
+        deleted_exec += db.query(Phase3ExecutionState).filter(
+            Phase3ExecutionState.run_id == run_id
+        ).delete(synchronize_session=False)
+        deleted_auth = db.query(AuthState).filter(
+            AuthState.run_id == run_id
+        ).delete(synchronize_session=False)
+        deleted_hls = db.query(Phase3HlsGroup).filter(
+            Phase3HlsGroup.run_id == run_id
+        ).delete(synchronize_session=False)
+        archived_artifacts = db.query(Phase3Artifact).filter(
+            Phase3Artifact.run_id == run_id,
+            Phase3Artifact.status != "DELETED",
+        ).update({"status": "DELETED"}, synchronize_session=False)
 
         deleted_runs = db.query(TestRun).filter(
             TestRun.run_id == run_id
@@ -1822,8 +1849,9 @@ def reset_phase3(
         state_store.clear_tests({str(tid) for tid in tc_ids})
 
         logger.info(
-            "reset_phase3(current_run): project_id=%s run_id=%s deleted tcs=%d results=%d reviews=%d runs=%d",
-            project_id, run_id, deleted_tcs, deleted_results, deleted_reviews, deleted_runs,
+            "reset_phase3(current_run): project_id=%s run_id=%s deleted tcs=%d results=%d reviews=%d exec=%d auth=%d hls=%d artifacts=%d runs=%d",
+            project_id, run_id, deleted_tcs, deleted_results, deleted_reviews,
+            deleted_exec, deleted_auth, deleted_hls, archived_artifacts, deleted_runs,
         )
         return {
             "scope":                 scope,
@@ -1831,6 +1859,10 @@ def reset_phase3(
             "deleted_test_cases":    deleted_tcs,
             "deleted_test_results":  deleted_results,
             "deleted_review_items":  deleted_reviews,
+            "deleted_execution_state": deleted_exec,
+            "deleted_auth_states":   deleted_auth,
+            "deleted_hls_groups":    deleted_hls,
+            "archived_artifacts":    archived_artifacts,
             "deleted_runs":          deleted_runs,
         }
 
@@ -1841,6 +1873,9 @@ def reset_phase3(
     ).scalars().all()
 
     if tc_ids:
+        deleted_exec = db.query(Phase3ExecutionState).filter(
+            Phase3ExecutionState.test_id.in_(tc_ids)
+        ).delete(synchronize_session=False)
         deleted_results = db.query(TestResult).filter(
             TestResult.test_id.in_(tc_ids)
         ).delete(synchronize_session=False)
@@ -1848,6 +1883,24 @@ def reset_phase3(
         deleted_reviews = db.query(ReviewQueueItem).filter(
             ReviewQueueItem.test_id.in_(tc_ids)
         ).delete(synchronize_session=False)
+
+    run_ids = db.execute(
+        select(TestRun.run_id).where(TestRun.project_id == project_id)
+    ).scalars().all()
+    if run_ids:
+        deleted_exec += db.query(Phase3ExecutionState).filter(
+            Phase3ExecutionState.run_id.in_(run_ids)
+        ).delete(synchronize_session=False)
+        deleted_auth = db.query(AuthState).filter(
+            AuthState.run_id.in_(run_ids)
+        ).delete(synchronize_session=False)
+        deleted_hls = db.query(Phase3HlsGroup).filter(
+            Phase3HlsGroup.run_id.in_(run_ids)
+        ).delete(synchronize_session=False)
+        archived_artifacts = db.query(Phase3Artifact).filter(
+            Phase3Artifact.run_id.in_(run_ids),
+            Phase3Artifact.status != "DELETED",
+        ).update({"status": "DELETED"}, synchronize_session=False)
 
     deleted_tcs = db.query(TestCase).filter(
         TestCase.project_id == project_id
@@ -1861,14 +1914,19 @@ def reset_phase3(
     state_store.clear_tests({str(tid) for tid in tc_ids})
 
     logger.info(
-        "reset_phase3(all): project_id=%s deleted tcs=%d results=%d reviews=%d runs=%d",
-        project_id, deleted_tcs, deleted_results, deleted_reviews, deleted_runs,
+        "reset_phase3(all): project_id=%s deleted tcs=%d results=%d reviews=%d exec=%d auth=%d hls=%d artifacts=%d runs=%d",
+        project_id, deleted_tcs, deleted_results, deleted_reviews,
+        deleted_exec, deleted_auth, deleted_hls, archived_artifacts, deleted_runs,
     )
     return {
         "scope":                 scope,
         "deleted_test_cases":    deleted_tcs,
         "deleted_test_results":  deleted_results,
         "deleted_review_items":  deleted_reviews,
+        "deleted_execution_state": deleted_exec,
+        "deleted_auth_states":   deleted_auth,
+        "deleted_hls_groups":    deleted_hls,
+        "archived_artifacts":    archived_artifacts,
         "deleted_runs":          deleted_runs,
     }
 

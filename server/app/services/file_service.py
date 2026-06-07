@@ -144,7 +144,12 @@ def delete_project_file(db: Session, project: Project, file_id: uuid.UUID) -> No
     file_path = Path(file.absolute_path)
     if file_path.exists() and file_path.is_file():
         file_path.unlink()
-        
+
+    if file.file_type == FileType.CREDENTIALS:
+        from app.services.credential_service import delete_profiles_for_credentials_file
+
+        delete_profiles_for_credentials_file(db, project.id, file.id)
+
     db.delete(file)
     db.commit()
 

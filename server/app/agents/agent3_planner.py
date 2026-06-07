@@ -187,9 +187,9 @@ Definition:
    GOOD:  "click the Login button"
    BAD:   "the user should be able to log in"
 3. Use ENV placeholder tokens for ALL sensitive values — NEVER hardcode:
-     {{USER_EMAIL}}, {{USER_PASSWORD}}, {{BASE_URL}}
+     {{TEST_USERNAME}}, {{TEST_PASSWORD}}, {{BASE_URL}}
 4. Do NOT invent pages not in the provided pages list.
-5. If recorded tester actions are provided, use them as ground truth for what
+5. If recorded tester actions are provided, use them as evidence for what
    the app supports. Generate QA validations from the HLS/BRD intent, but keep
    every navigation/action/assertion grounded in recorded actions, discovered
    pages, app context, DOM evidence, or Swagger capability.
@@ -205,7 +205,10 @@ Definition:
 9. Do not create a separate dependent test case for the final assertion of a
    previous flow. Merge the final verification into the complete business-flow
    test case.
-10. Prefer fewer, fuller QA flows over many tiny replayed actions.
+10. Be concise — steps should be 5–10 words. Acceptance criteria should be 5–12
+   words. Return at most 4 test cases per HLS. Extra verbosity wastes tokens and
+   produces no additional coverage value.
+10b. Prefer fewer, fuller QA flows over many tiny replayed actions.
 11. Negative validation cases must be grounded. Only use domain-specific
    "invalid value" data when the HLS, recordings, DOM/app context, BRD, or
    Swagger explicitly shows that validation rule. If a form-validation negative
@@ -227,6 +230,25 @@ Definition:
 15. Do not output bare tag selectors such as `click div`, `click a`,
    `click button`, or `select select`. Use the stable recorded/DOM selector or
    a business-readable action grounded in evidence.
+16. Phase-2 recording is evidence, not replay. Do not copy exact recorded
+   business objects, route ids, row ids, record ids, employee ids, search
+   terms, quantities, or detail URLs unless the HLS/BRD explicitly names that
+   exact object/value.
+   GOOD for generic intent: "click a details link for an available record",
+   "select an available item", "fill quantity with a valid quantity",
+   "search using a valid representative keyword".
+   BAD for generic intent: "click record 2", "navigate to /details/2",
+   "fill quantity with 2" when 2 only came from the recording.
+17. Stable controls may keep exact selectors when grounded: login fields,
+   submit/search buttons, menu links, workflow navigation, and primary action buttons. Dynamic
+   business objects should be described by intent unless explicitly named.
+18. Every item must set `auth_mode` explicitly:
+   - "authenticated": credentials/login are setup for a non-auth business flow.
+     Include login steps using {{TEST_USERNAME}}/{{TEST_PASSWORD}} when the app
+     requires a session.
+   - "login_flow": login/logout/register/reset/credential behavior itself is
+     under test.
+   - "anonymous": no credentials/session are needed.
 
 Document usage:
 - Requirement/document context is business evidence, not an automation script.
@@ -249,6 +271,7 @@ Document usage:
       "verifiable pass condition 1",
       "verifiable pass condition 2"
     ],
+    "auth_mode": "authenticated | login_flow | anonymous",
     "depends_on": [],
     "target_page": "/exact/page/path"
   }}
@@ -272,6 +295,7 @@ and "expected result" with terms found in the HLS/recordings/app context.
       "Expected result or state change is visible",
       "No application or network error is shown"
     ],
+    "auth_mode": "authenticated",
     "depends_on": [],
     "target_page": "<recorded-start-path>"
   }},
@@ -289,6 +313,7 @@ and "expected result" with terms found in the HLS/recordings/app context.
       "Clear validation feedback is shown",
       "No incomplete record or state transition is created"
     ],
+    "auth_mode": "authenticated",
     "depends_on": [],
     "target_page": "<recorded-start-path>"
   }}
@@ -309,7 +334,7 @@ Available pages:
 def _format_recorded_steps(recorded_steps: list[dict[str, Any]]) -> str:
     if not recorded_steps:
         return ""
-    capped = recorded_steps[:50]
+    capped = recorded_steps[:20]
     lines  = ["\nRecorded tester actions (grounding evidence — do not copy 1:1):"]
     for i, step in enumerate(capped, 1):
         action   = step.get("action_type", "unknown")
@@ -324,6 +349,82 @@ def _format_recorded_steps(recorded_steps: list[dict[str, Any]]) -> str:
     if len(recorded_steps) > 50:
         lines.append(f"  ... ({len(recorded_steps) - 50} more steps truncated)")
     return "\n".join(lines)
+
+
+def _path_from_recorded_value(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+        path = parsed.path or ""
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        return path or None
+    except Exception:
+        return None
+
+
+def _looks_recording_specific_selector(selector: str) -> bool:
+    lower = str(selector or "").lower()
+    if not lower:
+        return False
+    if "nth-of-type" in lower:
+        return True
+    return bool(re.search(r"""\bhref\s*=\s*['"][^'"]*/(?:\d+|[0-9a-f]{8,})(?:[/?#'"]|$)""", lower))
+
+
+def _looks_dynamic_route(path: str) -> bool:
+    return bool(re.search(r"(?<=/)(?:\d+|[0-9a-f]{8,})(?=/|$)", str(path or ""), re.IGNORECASE))
+
+
+def _is_sensitive_or_generic_recorded_value(value: str) -> bool:
+    lower = str(value or "").strip().lower()
+    if not lower:
+        return True
+    if lower.startswith("{") and lower.endswith("}"):
+        return True
+    if "password" in lower or "secret" in lower or "token" in lower or "@" in lower:
+        return True
+    if lower in {"test", "testing", "sample", "dummy", "value", "yes", "no", "on", "off"}:
+        return True
+    return False
+
+
+def _recording_leakage_warnings(
+    item: dict[str, Any],
+    recorded_steps: list[dict[str, Any]] | None,
+    explicit_evidence_text: str,
+) -> list[str]:
+    """Flag likely replay leakage without rewriting the testcase."""
+    if not recorded_steps:
+        return []
+    item_text = _text_from_item(item)
+    evidence = str(explicit_evidence_text or "").lower()
+    warnings: list[str] = []
+
+    for recorded in recorded_steps:
+        selector = str(recorded.get("selector") or "").strip()
+        if selector and _looks_recording_specific_selector(selector) and selector.lower() in item_text:
+            if selector.lower() not in evidence:
+                warnings.append(f"recorded-specific selector {selector!r}")
+
+        for key in ("url", "url_before", "url_after", "from_url", "to_url"):
+            path = _path_from_recorded_value(str(recorded.get(key) or ""))
+            if path and _looks_dynamic_route(path) and path.lower() in item_text and path.lower() not in evidence:
+                warnings.append(f"recorded-specific route {path!r}")
+
+        value = str(recorded.get("value") or "").strip()
+        if (
+            value
+            and not _is_sensitive_or_generic_recorded_value(value)
+            and len(value) <= 40
+            and value.lower() in item_text
+            and value.lower() not in evidence
+        ):
+            warnings.append(f"recorded-specific value {value!r}")
+
+    return list(dict.fromkeys(warnings))
 
 
 _DOC_CONTEXT_STOP_WORDS = {
@@ -426,19 +527,43 @@ def _parse_plan(raw: str) -> list[dict[str, Any]]:
 
     Pitfall 1: prose / markdown fence wrapping → handled by '[...]' slicing.
     Pitfall 2: invalid backslash escapes inside strings → one-shot repair pass.
+    Pitfall 3: truncated output (free-tier model output ceiling) → strip the
+    last incomplete object and return the complete items we have.
     """
     cleaned = raw.strip()
     start = cleaned.find("[")
     end = cleaned.rfind("]")
     if start == -1 or end == -1:
+        # Try partial recovery: no closing ']' means the output was cut off.
+        # Walk back from the end to find the last complete '}'.
+        if start != -1:
+            last_close = cleaned.rfind("}", start)
+            if last_close != -1:
+                candidate = cleaned[start: last_close + 1] + "]"
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    pass
         raise ValueError("No JSON array found in LLM response")
     payload = cleaned[start: end + 1]
     try:
         return json.loads(payload)
     except json.JSONDecodeError as exc:
-        if "Invalid \\escape" not in str(exc) and "escape" not in str(exc).lower():
-            raise
-        return json.loads(_repair_invalid_escapes(payload))
+        err = str(exc)
+        if "Invalid \\escape" in err or "escape" in err.lower():
+            try:
+                return json.loads(_repair_invalid_escapes(payload))
+            except json.JSONDecodeError:
+                pass
+        # Partial recovery: strip the last incomplete object (truncated output).
+        last_close = payload.rfind("}", 0, len(payload) - 1)
+        if last_close != -1:
+            candidate = payload[: last_close + 1] + "]"
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+        raise
 
 
 def _make_tc_number(sequence: int) -> str:
@@ -460,7 +585,42 @@ def _infer_auth_mode(title: str, steps: list[str]) -> str:
     "signup"/"sign up" landed in anonymous_terms which was inconsistent with
     "register" landing in login_terms.
     """
+    title_text = (title or "").lower()
     text = " ".join([title, *steps]).lower()
+    auth_behavior_terms = (
+        "login",
+        "log in",
+        "sign in",
+        "signin",
+        "logout",
+        "log out",
+        "sign out",
+        "signout",
+        "register",
+        "signup",
+        "sign up",
+        "forgot password",
+        "reset password",
+    )
+    authenticated_setup_terms = (
+        "authenticated user",
+        "logged-in user",
+        "logged in user",
+        "already authenticated",
+        "already logged in",
+        "stored session",
+        "credential profile",
+        "project credential",
+    )
+    if any(term in title_text for term in authenticated_setup_terms) and not any(
+        term in title_text for term in auth_behavior_terms
+    ):
+        return "authenticated"
+    if (
+        any(term in text for term in ("credential profile", "project credential"))
+        and not any(term in title_text for term in auth_behavior_terms)
+    ):
+        return "authenticated"
     login_terms = (
         "login",
         "log in",
@@ -483,6 +643,75 @@ def _infer_auth_mode(title: str, steps: list[str]) -> str:
     if any(term in text for term in anonymous_terms):
         return "anonymous"
     return "authenticated"
+
+
+_AUTH_MODES = {"authenticated", "login_flow", "anonymous"}
+
+
+def _normalize_auth_mode(value: Any) -> str | None:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "auth": "authenticated",
+        "logged_in": "authenticated",
+        "loggedin": "authenticated",
+        "requires_auth": "authenticated",
+        "requires_login": "authenticated",
+        "login": "login_flow",
+        "auth_flow": "login_flow",
+        "authentication_flow": "login_flow",
+        "unauthenticated": "anonymous",
+        "public": "anonymous",
+        "guest": "anonymous",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _AUTH_MODES else None
+
+
+def _auth_mode_for_item(item: dict[str, Any]) -> str:
+    """Use model-emitted auth_mode first; infer only as fallback."""
+    explicit = _normalize_auth_mode(item.get("auth_mode"))
+    if explicit:
+        return explicit
+    return _infer_auth_mode(
+        str(item.get("title") or ""),
+        [str(step) for step in (item.get("steps") or [])],
+    )
+
+
+def _item_has_login_step(item: dict[str, Any]) -> bool:
+    return _contains_any(
+        " ".join(str(step) for step in (item.get("steps") or [])).lower(),
+        (
+            "login",
+            "log in",
+            "sign in",
+            "signin",
+            "credential profile",
+            "project credential",
+            "{test_username}",
+            "{test_password}",
+            "test_username",
+            "test_password",
+        ),
+    )
+
+
+def _ensure_inline_login_setup(item: dict[str, Any]) -> dict[str, Any]:
+    """For inline-auth mode, authenticated business tests must include login setup."""
+    auth_mode = _auth_mode_for_item(item)
+    if auth_mode != "authenticated" or _item_has_login_step(item):
+        updated = dict(item)
+        updated["auth_mode"] = auth_mode
+        return updated
+
+    updated = dict(item)
+    updated["auth_mode"] = auth_mode
+    steps = [str(step) for step in (item.get("steps") or [])]
+    updated["steps"] = [
+        'login using the project credential profile for the required role',
+        *steps,
+    ]
+    return updated
 
 
 def _role_tokens(value: str) -> set[str]:
@@ -589,12 +818,6 @@ _BUSINESS_FLOW_TERMS = (
     "search",
     "filter",
     "sort",
-    "product",
-    "catalog",
-    "cart",
-    "checkout",
-    "order",
-    "payment",
     "booking",
     "reservation",
     "dashboard",
@@ -617,6 +840,12 @@ _BUSINESS_FLOW_TERMS = (
     "update",
     "notification",
     "message",
+    "record",
+    "item",
+    "request",
+    "task",
+    "workflow",
+    "transaction",
 )
 
 _DESTRUCTIVE_BRIDGE_TERMS = (
@@ -642,7 +871,6 @@ _LIFECYCLE_TERMS = (
     "customer",
     "user",
     "account",
-    "order",
     "profile",
     "case",
     "claim",
@@ -960,7 +1188,7 @@ def _bridge_step_from_recorded(
     if selector and selector.lower() not in _BARE_TAG_SELECTORS:
         verb = "click" if not action or action == "unknown" else action
         return f"{verb} {selector}"
-    # Avoid preserving ambiguous text-only links/buttons such as cart badge
+    # Avoid preserving ambiguous text-only links/buttons such as notification
     # counters ("1"). If there is no stable selector, a text-only bridge must
     # be descriptive enough to be reviewable and automatable.
     if text and len(text) >= 3 and re.search(r"[A-Za-z]", text):
@@ -973,7 +1201,7 @@ def _route_semantic_label(path: str) -> str | None:
     """Convert a recorded destination route into a reviewable UI target label.
 
     This avoids app-specific selectors while keeping UI tests user-like:
-    `/cart.html` -> `cart`, `/order-review` -> `order review`.
+    `/records.html` -> `records`, `/case-review` -> `case review`.
     """
     clean = str(path or "").split("?", 1)[0].split("#", 1)[0].strip("/")
     if not clean:
@@ -1027,10 +1255,6 @@ def _recorded_step_is_transition_bridge(recorded_step: dict[str, Any]) -> bool:
     return _contains_any(
         text,
         (
-            "cart",
-            "basket",
-            "bag",
-            "checkout",
             "continue",
             "next",
             "review",
@@ -1038,6 +1262,9 @@ def _recorded_step_is_transition_bridge(recorded_step: dict[str, Any]) -> bool:
             "details",
             "confirm",
             "submit",
+            "save",
+            "update",
+            "remove",
         ),
     )
 
@@ -1241,9 +1468,9 @@ def _field_tokens(field: str) -> set[str]:
 def _valid_value_for_field(field: str, recorded_value: str | None = None) -> str:
     tokens = _field_tokens(field)
     if {"password", "pass"} & tokens:
-        return "{USER_PASSWORD}"
+        return "{TEST_PASSWORD}"
     if {"user", "username", "email", "login"} & tokens:
-        return "{USER_EMAIL}"
+        return "{TEST_USERNAME}"
     if {"postal", "postcode", "zip", "zipcode", "pin", "pincode"} & tokens:
         return recorded_value or "a valid postal code"
     if {"first", "firstname", "given"} & tokens:
@@ -1763,13 +1990,15 @@ def _valid_planned_items(
     source_evidence_text = (
         f"{hls_title} {hls_description} {_evidence_text(recorded_steps)} {document_context}"
     ).lower()
+    explicit_requirement_text = f"{hls_title} {hls_description} {document_context}".lower()
 
     for item in items:
         item = _normalise_unsupported_invalid_input_case(item, source_evidence_text)
+        item = _ensure_inline_login_setup(item)
         # Resolve prose/bare planned actions before bridge insertion. Otherwise
         # a step like "click the Checkout button" cannot be matched to the
-        # recorded "#checkout" action, and A3 misses required intermediate UI
-        # surfaces such as cart/review/detail pages.
+        # recorded transition action, and A3 misses required intermediate UI
+        # surfaces such as review/detail pages.
         item = _clean_planned_steps(item, recorded_steps, project_id)
         item = _preserve_recorded_bridge_steps(item, recorded_steps, project_id)
         item = _clean_planned_steps(item, recorded_steps, project_id)
@@ -1802,6 +2031,19 @@ def _valid_planned_items(
                 item.get("title"),
             )
             item["depends_on"] = []
+        leakage_warnings = _recording_leakage_warnings(
+            item,
+            recorded_steps,
+            explicit_requirement_text,
+        )
+        if leakage_warnings:
+            logger.warning(
+                "agent3: rejecting Phase-2 replay leakage in testcase %r: %s",
+                item.get("title"),
+                leakage_warnings,
+            )
+            granularity_rejects += 1
+            continue
         # Guarantee acceptance_criteria is always present
         if not item.get("acceptance_criteria"):
             item["acceptance_criteria"] = ["Test completes without errors"]
@@ -1952,7 +2194,7 @@ def extract_assertion_evidence(
     )
     for attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw = call_llm(prompt, max_tokens=1000)
+            raw = call_llm(prompt, max_tokens=3200)
             parsed = _parse_plan(raw)
             allowed_source = " ".join(
                 [
@@ -2175,7 +2417,7 @@ async def plan(
     items: list[dict[str, Any]] = []
     for attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw   = call_llm(prompt, max_tokens=1600)
+            raw   = call_llm(prompt, max_tokens=3200)
             items = _parse_plan(raw)
             break
         except Exception as exc:
@@ -2196,7 +2438,7 @@ async def plan(
             htc_title,
         )
         try:
-            raw = call_llm(prompt + _GRANULARITY_RETRY_PROMPT, max_tokens=1600)
+            raw = call_llm(prompt + _GRANULARITY_RETRY_PROMPT, max_tokens=3200)
             items = _parse_plan(raw)
             filtered_items, _ = _valid_planned_items(
                 items, pages, htc_title, htc_description, recorded_steps, document_context_section, project_id
@@ -2255,7 +2497,7 @@ async def plan(
             acceptance_criteria = item["acceptance_criteria"],
             depends_on          = resolved_deps,
             target_page         = item.get("target_page", ""),
-            auth_mode           = _infer_auth_mode(item["title"], item["steps"]),
+            auth_mode           = _auth_mode_for_item(item),
             credential_role     = _infer_credential_role(
                 project_id=project_id,
                 title=item["title"],
