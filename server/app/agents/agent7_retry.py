@@ -367,6 +367,15 @@ def _find_grouped_test_blocks(script: str) -> list[dict[str, Any]]:
     return blocks
 
 
+def _extract_repaired_test_block(raw: str) -> str:
+    """Return the first Playwright test() block when an LLM wraps it in prose."""
+    text = str(raw or "").strip()
+    blocks = _find_grouped_test_blocks(text)
+    if not blocks:
+        return text
+    return blocks[0]["text"].strip()
+
+
 _A7_COMMENT_RE = re.compile(r"^\s*//\s*A7:", re.MULTILINE)
 _LOCATOR_LITERAL_RE = re.compile(r"""\.locator\(\s*(['"])(?P<selector>[^'"]+)\1""")
 _USER_FACING_LOCATOR_RE = re.compile(
@@ -739,15 +748,22 @@ async def _repair_grouped(
     last_grounding_errors: list[str] = []
     for llm_attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw = _strip_fences(call_llm(prompt, max_tokens=2000))
+            raw = _extract_repaired_test_block(_strip_fences(call_llm(prompt, max_tokens=2000)))
             raw = _post_process_block(
                 raw, title, is_grouped=True,
                 auth_mode=(tc.auth_mode if tc else None),
-                    auth_login_path=a4_context.get("auth_login_path"),
+                auth_login_path=a4_context.get("auth_login_path"),
+                context=a4_context,
             )
-            if not _validate_grouped_block(raw):
-                last_validation_reason = "A5 grouped validation rejected repaired block"
-                logger.warning("agent7-grouped LLM attempt %d: invalid output", llm_attempt + 1)
+            from app.agents.agent5_script_generator import _grouped_validation_errors
+            validation_errors = _grouped_validation_errors(raw, a4_context)
+            if validation_errors:
+                last_validation_reason = "; ".join(validation_errors[:6])
+                logger.warning(
+                    "agent7-grouped LLM attempt %d: A5 validation rejected output errors=%s",
+                    llm_attempt + 1,
+                    validation_errors,
+                )
                 continue
             if not _a7_comment_discipline_ok(target_block["text"], raw):
                 last_validation_reason = "A7 comment used while changing test body"
@@ -938,17 +954,25 @@ async def repair(test_id: str, run_id: str, error_log: str) -> None:
     last_grounding_errors: list[str] = []
     for llm_attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw = _strip_fences(call_llm(prompt, max_tokens=4096))
+            raw = _extract_repaired_test_block(_strip_fences(call_llm(prompt, max_tokens=4096)))
             raw = _post_process_block(
                 raw,
                 tc.title if tc else "",
                 is_grouped=False,
                 auth_mode=(tc.auth_mode if tc else None),
                 auth_login_path=a4_context.get("auth_login_path"),
+                target_page=a4_context.get("target_page"),
+                context=a4_context,
             )
-            if not _validate_script(raw):
-                last_validation_reason = "A5 validation rejected repaired block"
-                logger.warning("agent7 LLM attempt %d: A5 validation rejected output", llm_attempt + 1)
+            from app.agents.agent5_script_generator import _script_validation_errors
+            validation_errors = _script_validation_errors(raw, a4_context)
+            if validation_errors:
+                last_validation_reason = "; ".join(validation_errors[:6])
+                logger.warning(
+                    "agent7 LLM attempt %d: A5 validation rejected output errors=%s",
+                    llm_attempt + 1,
+                    validation_errors,
+                )
                 continue
             if not _a7_comment_discipline_ok(original_block_text, raw):
                 last_validation_reason = "A7 comment used while changing test body"

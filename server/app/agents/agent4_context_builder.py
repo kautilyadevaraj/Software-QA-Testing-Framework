@@ -514,6 +514,23 @@ def _first_authenticated_route_path(recorded_steps: list[ScenarioStep]) -> str |
     except Exception:
         first_path = first_url or ""
 
+    # The most reliable post-auth start for a business testcase is the page
+    # where the first non-auth business action occurs. Recorder url_after for
+    # login submits can occasionally reflect a later SPA/history state, while
+    # the next action's url_before is the page the tester actually used.
+    for step in recorded_steps:
+        if _scenario_step_is_auth_setup_control(step):
+            continue
+        candidate = step.url_before or step.url
+        if not candidate:
+            continue
+        try:
+            candidate_path = urlparse(candidate).path or "/"
+        except Exception:
+            candidate_path = candidate
+        if candidate_path and candidate_path != first_path:
+            return candidate_path
+
     for step in recorded_steps:
         after = step.url_after or step.url
         if not after:
@@ -527,18 +544,6 @@ def _first_authenticated_route_path(recorded_steps: list[ScenarioStep]) -> str |
         if _scenario_step_is_auth_setup_control(step):
             return after_path
 
-    for step in recorded_steps:
-        if _scenario_step_is_auth_setup_control(step):
-            continue
-        candidate = step.url_before or step.url or step.url_after
-        if not candidate:
-            continue
-        try:
-            candidate_path = urlparse(candidate).path or "/"
-        except Exception:
-            candidate_path = candidate
-        if candidate_path and candidate_path != first_path:
-            return candidate_path
     return None
 
 

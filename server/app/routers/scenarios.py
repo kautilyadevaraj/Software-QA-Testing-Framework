@@ -15,7 +15,7 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
 from app.models.project import HighLevelScenario, Project
-from app.models.scenario import DiscoveredRoute, RecordingSession, RouteVariant, ScenarioStep
+from app.models.scenario import DiscoveredRoute, RecordingFlow, RecordingSession, RouteVariant, ScenarioStep
 from app.models.user import User
 from app.schemas.scenario import (
     ApproveScenariosRequest,
@@ -39,7 +39,50 @@ settings = get_settings()
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _scenario_response(row: HighLevelScenario, completed_by_name: str | None = None) -> HighLevelScenarioResponse:
+def _latest_recording_info(db: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> dict:
+    session = db.execute(
+        select(RecordingSession)
+        .where(
+            RecordingSession.project_id == project_id,
+            RecordingSession.scenario_id == scenario_id,
+        )
+        .order_by(RecordingSession.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if session is None:
+        return {
+            "recording_status": None,
+            "recording_step_count": 0,
+            "recording_phase3_ready": None,
+            "recording_quality_failure_reasons": [],
+        }
+
+    step_count = db.execute(
+        select(func.count(ScenarioStep.id)).where(ScenarioStep.recording_session_id == session.id)
+    ).scalar_one()
+    flow = db.execute(
+        select(RecordingFlow)
+        .where(RecordingFlow.recording_id == session.id)
+        .order_by(RecordingFlow.flow_index.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    metadata = flow.metadata_json if flow and isinstance(flow.metadata_json, dict) else {}
+    reasons = metadata.get("quality_failure_reasons") if isinstance(metadata, dict) else []
+
+    return {
+        "recording_status": session.status,
+        "recording_step_count": int(step_count or 0),
+        "recording_phase3_ready": bool(flow.phase3_ready) if flow else None,
+        "recording_quality_failure_reasons": [str(reason) for reason in (reasons or [])],
+    }
+
+
+def _scenario_response(
+    row: HighLevelScenario,
+    completed_by_name: str | None = None,
+    recording_info: dict | None = None,
+) -> HighLevelScenarioResponse:
+    recording_info = recording_info or {}
     return HighLevelScenarioResponse(
         id=row.id,
         project_id=row.project_id,
@@ -49,6 +92,10 @@ def _scenario_response(row: HighLevelScenario, completed_by_name: str | None = N
         status=row.status,  # type: ignore[arg-type]
         completed_by=row.completed_by,
         completed_by_name=completed_by_name,
+        recording_status=recording_info.get("recording_status"),
+        recording_step_count=recording_info.get("recording_step_count") or 0,
+        recording_phase3_ready=recording_info.get("recording_phase3_ready"),
+        recording_quality_failure_reasons=recording_info.get("recording_quality_failure_reasons") or [],
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -70,7 +117,7 @@ def _get_scenario_with_completed_by_name(
     if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
     scenario, completed_by_name = result
-    return _scenario_response(scenario, completed_by_name)
+    return _scenario_response(scenario, completed_by_name, _latest_recording_info(db, project_id, scenario.id))
 
 
 def _recordings_base() -> Path:
@@ -185,7 +232,12 @@ def list_scenarios(
         .where(HighLevelScenario.project_id == project_id)
         .order_by(HighLevelScenario.id.asc())
     ).all()
-    return ScenarioListResponse(scenarios=[_scenario_response(row, name) for row, name in rows])
+    return ScenarioListResponse(
+        scenarios=[
+            _scenario_response(row, name, _latest_recording_info(db, project_id, row.id))
+            for row, name in rows
+        ]
+    )
 
 
 # ── Create (manual) ────────────────────────────────────────────────────────
@@ -483,7 +535,13 @@ def get_scenario_recording_status(
         .order_by(RecordingSession.created_at.desc())
     ).scalars().first()
     session_status = latest_session.status if latest_session else "none"
-    return {"session_status": session_status}
+    info = _latest_recording_info(db, project_id, scenario_id)
+    return {
+        "session_status": session_status,
+        "phase3_ready": info["recording_phase3_ready"],
+        "step_count": info["recording_step_count"],
+        "quality_failure_reasons": info["recording_quality_failure_reasons"],
+    }
 
 
 @router.post("/{project_id}/scenarios/{scenario_id}/stop-recording")
@@ -514,13 +572,6 @@ def stop_scenario_recording(
         from sqlalchemy.sql import func
         session.status = "completed"
         session.completed_at = func.now()
-        
-        scenario = db.get(HighLevelScenario, scenario_id)
-        if scenario:
-            scenario.status = "completed"
-            scenario.completed_by = current_user.id
-            
         db.commit()
         
     return {"status": "stopped"}
-

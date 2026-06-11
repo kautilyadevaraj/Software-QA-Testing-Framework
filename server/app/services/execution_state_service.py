@@ -45,6 +45,7 @@ def upsert_execution_state(
     blocked_by: str | uuid.UUID | None = None,
     jira_ticket: str | None = None,
     trace_path: str | None = None,
+    screenshot_path: str | None = None,
     network_logs_count: int | None = None,
 ) -> None:
     tid = _as_uuid(test_id)
@@ -81,6 +82,8 @@ def upsert_execution_state(
             row.jira_ticket = jira_ticket
         if trace_path is not None:
             row.trace_path = trace_path
+        if screenshot_path is not None:
+            row.screenshot_path = screenshot_path
         if network_logs_count is not None:
             row.network_logs_count = network_logs_count
 
@@ -226,6 +229,7 @@ def list_execution_state(db: Session, project_id: uuid.UUID, run_id: uuid.UUID |
             review_category = evidence.get("category") or review.review_type if review else None
         failure_reason = _reason_from_evidence(evidence)
         trace_path = state.trace_path or (latest_result.trace_path if latest_result else None)
+        screenshot_path = state.screenshot_path or (latest_result.screenshot_path if latest_result else None)
         result.append(
             {
                 "test_id": str(state.test_id),
@@ -243,6 +247,7 @@ def list_execution_state(db: Session, project_id: uuid.UUID, run_id: uuid.UUID |
                 "review_status": review.status if review else None,
                 "jira_ref": review.jira_ref if review else state.jira_ticket,
                 "trace_path": trace_path,
+                "screenshot_path": screenshot_path,
             }
         )
 

@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 from app.agents.agent3_planner import (
     _auth_mode_for_item,
+    _deterministic_xray_metadata_from_chunks,
     _infer_auth_mode,
+    _merge_xray_metadata_fallback,
     _valid_planned_items,
 )
 from app.agents.agent4_context_builder import _resolve_target_page
@@ -678,6 +680,130 @@ def test_llm_provider_chain_is_anthropic_and_groq_only(monkeypatch):
     llm._register_providers()
 
     assert set(llm._PROVIDER_FUNCS) == {"anthropic", "groq"}
+
+
+def test_xray_requirement_fallback_fills_all_cases_from_single_brd_requirement():
+    chunks = [
+        {
+            "category": "brd",
+            "text": (
+                "FR-001 The application shall allow authenticated shoppers to "
+                "login, browse products, manage cart contents, and complete checkout."
+            ),
+        }
+    ]
+    tc_rows = [
+        {
+            "title": "Standard user login lands on inventory page",
+            "steps": ["login with valid credentials"],
+            "acceptance_criteria": ["inventory is visible"],
+        },
+        {
+            "title": "Complete full checkout flow to confirmation",
+            "steps": ["add product to cart", "complete checkout"],
+            "acceptance_criteria": ["confirmation is shown"],
+        },
+    ]
+
+    metadata = _deterministic_xray_metadata_from_chunks(chunks, tc_rows)
+
+    assert metadata["standard user login lands on inventory page"]["requirement"] == "FR-001"
+    assert metadata["complete full checkout flow to confirmation"]["requirement"] == "FR-001"
+
+
+def test_xray_requirement_fallback_only_replaces_missing_requirement():
+    primary = {
+        "login": {"requirement": "TBD", "labels": "Positive,Functional"},
+        "checkout": {"requirement": "FR-999", "labels": "Regression"},
+    }
+    fallback = {
+        "login": {"requirement": "FR-001", "priority": "High"},
+        "checkout": {"requirement": "FR-002", "priority": "Medium"},
+    }
+
+    merged = _merge_xray_metadata_fallback(primary, fallback)
+
+    assert merged["login"]["requirement"] == "FR-001"
+    assert merged["checkout"]["requirement"] == "FR-999"
+
+
+def test_xray_requirement_fallback_overrides_wrong_llm_requirement_when_brd_match_is_strong():
+    primary = {
+        "remove product from cart updates cart state": {"requirement": "FR-007", "labels": "Positive,Functional"},
+    }
+    fallback = {
+        "remove product from cart updates cart state": {
+            "requirement": "FR-008",
+            "_requirement_score": "54",
+        },
+    }
+
+    merged = _merge_xray_metadata_fallback(primary, fallback)
+
+    assert merged["remove product from cart updates cart state"]["requirement"] == "FR-008"
+
+
+def test_xray_requirement_mapper_uses_primary_intent_not_setup_steps():
+    chunks = [
+        {
+            "category": "brd",
+            "text": """
+4. Functional Requirements
+ID
+Requirement
+Acceptance Criteria
+FR-006
+Product detail page is reachable from inventory.
+Opening a product displays its detail page and Back to products returns to inventory.
+FR-007
+Adding a product updates cart state.
+Add to Cart changes to Remove and cart badge increments.
+FR-008
+Removing a product updates cart state.
+Remove changes product state back and cart badge/count updates.
+FR-011
+Checkout customer information is required.
+First Name, Last Name, and Zip/Postal Code are required before continuing.
+FR-014
+Checkout completion confirms the order.
+Finish navigates to checkout complete and shows a confirmation message.
+FR-015
+Logout ends the session.
+Logout returns to login page and login controls are visible.
+5. Required QA Test Coverage
+Remove product from cart should not be swallowed into the previous requirement.
+""",
+        }
+    ]
+    tc_rows = [
+        {
+            "title": "Remove product from cart updates cart state",
+            "steps": ["login", "add product to cart as setup", "remove product from cart"],
+            "acceptance_criteria": ["removed item no longer appears"],
+        },
+        {
+            "title": "Checkout required fields validation prevents continuation",
+            "steps": ["start checkout", "leave first name last name and postal code empty"],
+            "acceptance_criteria": ["required field validation prevents continuing"],
+        },
+        {
+            "title": "Back to products returns to inventory page",
+            "steps": ["open product detail", "click Back to products"],
+            "acceptance_criteria": ["inventory page is shown"],
+        },
+        {
+            "title": "Logout returns user to login page",
+            "steps": ["open menu", "click logout"],
+            "acceptance_criteria": ["login controls are visible"],
+        },
+    ]
+
+    metadata = _deterministic_xray_metadata_from_chunks(chunks, tc_rows)
+
+    assert metadata["remove product from cart updates cart state"]["requirement"] == "FR-008"
+    assert metadata["checkout required fields validation prevents continuation"]["requirement"] == "FR-011"
+    assert metadata["back to products returns to inventory page"]["requirement"] == "FR-006"
+    assert metadata["logout returns user to login page"]["requirement"] == "FR-015"
 
 
 def test_llm_anthropic_call_parses_text(monkeypatch):

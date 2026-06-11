@@ -2062,16 +2062,18 @@ def _xray_hls_context(hls_items: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _xray_chunk_text_batches(project_id: str) -> tuple[list[str], int]:
+def _xray_chunk_text_batches(project_id: str) -> tuple[list[str], int, list[dict[str, Any]]]:
     chunks = scroll_chunks(project_id, _BRD_CATEGORIES)
     fragments: list[str] = []
+    usable_chunks: list[dict[str, Any]] = []
     for index, chunk in enumerate(chunks, 1):
         text = str(chunk.get("text") or "").strip()
         if not text:
             continue
+        usable_chunks.append(chunk)
         category = str(chunk.get("category") or "document").strip() or "document"
         fragments.append(f"Chunk {index} ({category}):\n{text}")
-    return build_text_batches(fragments, max_chars=7000, max_items=3), len(fragments)
+    return build_text_batches(fragments, max_chars=7000, max_items=3), len(fragments), usable_chunks
 
 
 def _xray_test_case_context(tc_rows: list[dict[str, Any]]) -> str:
@@ -2109,6 +2111,242 @@ def _normalise_xray_metadata_item(item: dict[str, Any]) -> dict[str, str]:
         "priority": clean(item.get("priority"), "High"),
         "pre_condition_data": precondition or "Approved Phase 3 automation testcase",
     }
+
+
+_XRAY_REQUIREMENT_KEY_RE = re.compile(
+    r"\b(?P<key>(?:REQ|FR|NFR|BRD|PRD|FSD|US|STORY|UC|AC|SR)[-_ ]?\d{1,5}(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+_XRAY_TOKEN_STOP_WORDS = {
+    "and", "are", "for", "from", "into", "page", "shall", "should", "test",
+    "that", "the", "this", "user", "with", "without", "when", "then",
+    "valid", "verify", "visible", "current", "application", "system",
+}
+_XRAY_REQUIREMENT_OVERRIDE_SCORE = 8
+_XRAY_PRIMARY_INTENT_GROUPS = (
+    {"add", "adding", "added", "create", "creating", "created"},
+    {"remove", "removing", "removed", "delete", "deleting", "deleted", "clear", "clearing", "cleared"},
+    {"required", "missing", "empty", "validation", "error", "prevents", "prevent", "continuation", "continue", "continuing"},
+    {"detail", "details"},
+    {"back", "return", "returns", "returned"},
+    {"sort", "sorting", "order", "ascending", "descending"},
+    {"logout", "logged", "session"},
+    {"checkout", "confirmation", "complete", "completion", "confirms", "summary", "finish", "order"},
+)
+_XRAY_OPPOSING_INTENT_GROUPS = (
+    (
+        {"add", "adding", "added", "create", "creating", "created"},
+        {"remove", "removing", "removed", "delete", "deleting", "deleted", "clear", "clearing", "cleared"},
+    ),
+)
+
+
+def _normalise_requirement_key(value: Any) -> str:
+    raw = str(value or "").strip().upper().replace("_", "-").replace(" ", "-")
+    return re.sub(r"-+", "-", raw)
+
+
+def _xray_tokens(value: Any) -> set[str]:
+    tokens = set()
+    for token in re.findall(r"[a-z0-9]+", str(value or "").lower()):
+        if len(token) <= 2 or token in _XRAY_TOKEN_STOP_WORDS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _weighted_xray_tokens(*parts: tuple[Any, int]) -> dict[str, int]:
+    weights: dict[str, int] = {}
+    for value, weight in parts:
+        for token in _xray_tokens(value):
+            weights[token] = max(weights.get(token, 0), weight)
+    return weights
+
+
+def _xray_bigrams(value: Any) -> set[str]:
+    tokens = [
+        token for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if len(token) > 2 and token not in _XRAY_TOKEN_STOP_WORDS
+    ]
+    return {" ".join(pair) for pair in zip(tokens, tokens[1:])}
+
+
+def _score_requirement_segment(
+    segment: dict[str, str],
+    *,
+    case_text: str,
+    weighted_case_tokens: dict[str, int],
+    title_text: str,
+    single_requirement: bool,
+) -> int:
+    segment_text = segment["text"]
+    segment_tokens = _xray_tokens(segment_text)
+    title_tokens = _xray_tokens(title_text)
+    score = sum(weight for token, weight in weighted_case_tokens.items() if token in segment_tokens)
+    title_bigrams = _xray_bigrams(title_text)
+    segment_bigrams = _xray_bigrams(segment_text)
+    score += 4 * len(title_bigrams & segment_bigrams)
+    for group in _XRAY_PRIMARY_INTENT_GROUPS:
+        if not (title_tokens & group):
+            continue
+        if segment_tokens & group:
+            score += 12
+        else:
+            score -= 18
+    for left, right in _XRAY_OPPOSING_INTENT_GROUPS:
+        if (title_tokens & left) and not (title_tokens & right) and (segment_tokens & right) and not (segment_tokens & left):
+            score -= 20
+        if (title_tokens & right) and not (title_tokens & left) and (segment_tokens & left):
+            score -= 20
+    if segment["requirement"].lower() in case_text.lower():
+        score += 100
+    if single_requirement:
+        score += 1
+    return score
+
+
+def _requirement_segments_from_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, str]]:
+    segments: list[dict[str, str]] = []
+    for chunk in chunks:
+        text = str(chunk.get("text") or "").strip()
+        if not text:
+            continue
+        lines = text.splitlines() or [text]
+        requirement_line_indexes = [
+            (index, match)
+            for index, line in enumerate(lines)
+            if (match := _XRAY_REQUIREMENT_KEY_RE.search(line))
+        ]
+        for item_index, (line_index, match) in enumerate(requirement_line_indexes):
+            end_line = len(lines)
+            if item_index + 1 < len(requirement_line_indexes):
+                end_line = requirement_line_indexes[item_index + 1][0]
+            collected: list[str] = []
+            for current_index in range(line_index, min(end_line, line_index + 24)):
+                line = lines[current_index].strip()
+                if not line:
+                    if collected:
+                        break
+                    continue
+                if current_index > line_index and _is_xray_section_boundary(line):
+                    break
+                if current_index == line_index:
+                    line = line[match.start():].strip()
+                collected.append(line)
+            segment_text = "\n".join(collected).strip()
+            if not segment_text:
+                segment_text = text
+            segments.append(
+                {
+                    "requirement": _normalise_requirement_key(match.group("key")),
+                    "text": segment_text[:2000],
+                    "category": str(chunk.get("category") or "document"),
+                    "source": str(chunk.get("source") or chunk.get("filename") or ""),
+                }
+            )
+    # Preserve source order, but collapse duplicate requirement/body pairs.
+    unique: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for segment in segments:
+        identity = (segment["requirement"], segment["text"][:200])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(segment)
+    return unique
+
+
+def _is_xray_section_boundary(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    if re.match(r"^page\s+\d+\b", text, flags=re.IGNORECASE):
+        return True
+    if re.match(r"^\d+\.\s+\S+", text):
+        return True
+    if text.lower() in {"id", "requirement", "acceptance criteria", "suggested id", "type", "coverage area", "expected result"}:
+        return True
+    return False
+
+
+def _deterministic_xray_metadata_from_chunks(
+    chunks: list[dict[str, Any]],
+    tc_rows: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Map existing automation cases to BRD requirement keys without LLM help."""
+    segments = _requirement_segments_from_chunks(chunks)
+    if not segments:
+        return {}
+
+    out: dict[str, dict[str, str]] = {}
+    single_requirement = segments[0]["requirement"] if len({s["requirement"] for s in segments}) == 1 else ""
+    for tc in tc_rows:
+        title = str(tc.get("title") or "").strip()
+        title_key = title.lower()
+        if not title_key:
+            continue
+        steps_text = " ".join(str(step) for step in (tc.get("steps") or []))
+        acceptance_text = " ".join(str(ac) for ac in (tc.get("acceptance_criteria") or []))
+        scenario_text = str(tc.get("scenario_title") or "")
+        case_text = " ".join([title, steps_text, acceptance_text, scenario_text])
+        weighted_case_tokens = _weighted_xray_tokens(
+            (title, 6),
+            (acceptance_text, 4),
+            (steps_text, 2),
+            (scenario_text, 2),
+        )
+        best: tuple[int, dict[str, str]] | None = None
+        for segment in segments:
+            score = _score_requirement_segment(
+                segment,
+                case_text=case_text,
+                weighted_case_tokens=weighted_case_tokens,
+                title_text=title,
+                single_requirement=bool(single_requirement),
+            )
+            if best is None or score > best[0]:
+                best = (score, segment)
+        if best and (best[0] > 0 or single_requirement):
+            out[title_key] = {
+                "labels": "Functional",
+                "requirement": best[1]["requirement"],
+                "priority": "High",
+                "pre_condition_data": "Approved Phase 3 automation testcase",
+                "_requirement_score": str(best[0]),
+            }
+    return out
+
+
+def _merge_xray_metadata_fallback(
+    primary: dict[str, dict[str, str]],
+    fallback: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    merged = dict(primary)
+    for title_key, fallback_item in fallback.items():
+        existing = dict(merged.get(title_key) or {})
+        requirement = str(existing.get("requirement") or "").strip().upper()
+        try:
+            fallback_score = int(str(fallback_item.get("_requirement_score") or "0"))
+        except ValueError:
+            fallback_score = 0
+        fallback_requirement = str(fallback_item.get("requirement") or "").strip()
+        if (
+            fallback_requirement
+            and (
+                not requirement
+                or requirement == "TBD"
+                or (
+                    requirement != fallback_requirement.upper()
+                    and fallback_score >= _XRAY_REQUIREMENT_OVERRIDE_SCORE
+                )
+            )
+        ):
+            existing["requirement"] = fallback_item.get("requirement", "")
+        for field in ("labels", "priority", "pre_condition_data"):
+            if not str(existing.get(field) or "").strip():
+                existing[field] = fallback_item.get(field, "")
+        merged[title_key] = existing
+    return merged
 
 
 def _assertion_evidence_source_text(item: dict[str, Any]) -> str:
@@ -2244,7 +2482,7 @@ def plan_xray_metadata_for_cases(
         return {}, diagnostics
 
     try:
-        batches, chunk_count = _xray_chunk_text_batches(project_id)
+        batches, chunk_count, chunks = _xray_chunk_text_batches(project_id)
     except Exception as exc:
         diagnostics["source"] = "A3_FALLBACK"
         diagnostics["fallback_reason"] = f"Qdrant chunk lookup failed: {exc}"
@@ -2267,6 +2505,7 @@ def plan_xray_metadata_for_cases(
         return {}, diagnostics
 
     metadata_by_title: dict[str, dict[str, str]] = {}
+    deterministic_metadata = _deterministic_xray_metadata_from_chunks(chunks, tc_rows)
     hls_text = _xray_hls_context(hls_items)
     tc_text = _xray_test_case_context(tc_rows)
     for batch_index, batch in enumerate(batches, 1):
@@ -2293,6 +2532,7 @@ def plan_xray_metadata_for_cases(
         if len(metadata_by_title) >= len(title_keys):
             break
 
+    metadata_by_title = _merge_xray_metadata_fallback(metadata_by_title, deterministic_metadata)
     diagnostics["rows_generated"] = len(metadata_by_title)
     if metadata_by_title:
         logger.info(

@@ -154,6 +154,10 @@ class TestResult(Base):
     retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     jira_ticket: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Assertion screenshot captured after the last expect() for PASS tests.
+    # Mutually exclusive with trace_path in practice: PASS → screenshot_path,
+    # FAIL / HUMAN_REVIEW → trace_path.
+    screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -240,6 +244,8 @@ class Phase3ExecutionState(Base):
     blocked_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     jira_ticket: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Assertion screenshot captured after the last expect() for PASS tests.
+    screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     network_logs_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()

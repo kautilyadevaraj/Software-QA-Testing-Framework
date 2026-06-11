@@ -20,7 +20,8 @@ Legacy / unchanged:
   PATCH  /review-queue/{id}             — mark reviewed / store jira_ref
   GET    /review-queue/stream           — SSE stream of new review items
   GET    /script/{test_id}              — fetch generated .spec.ts content
-  GET    /trace/{test_id}               — download Playwright trace .zip
+  GET    /trace/{test_id}               — download Playwright trace .zip (FAIL/HUMAN_REVIEW)
+  GET    /screenshot/{test_id}          — download assertion screenshot .png (PASS)
   POST   /review-queue/{id}/rerun       — save edited script and re-enqueue
   POST   /raise-jira                    — raise a Jira issue prefixed with [TC-XXX]
 """
@@ -988,6 +989,7 @@ def download_execution_report_csv(
         "Network_Logs_Count",
         "Jira_Ref",
         "Trace_Path",
+        "Screenshot_Path",
         "Script_Path",
         "Steps",
         "Acceptance_Criteria",
@@ -1018,6 +1020,7 @@ def download_execution_report_csv(
             "Network_Logs_Count": state.network_logs_count if state else 0,
             "Jira_Ref": review.jira_ref if review else (state.jira_ticket if state else result.jira_ticket if result else ""),
             "Trace_Path": state.trace_path if state and state.trace_path else (result.trace_path if result else ""),
+            "Screenshot_Path": state.screenshot_path if state and state.screenshot_path else (result.screenshot_path if result else ""),
             "Script_Path": tc.script_path or "",
             "Steps": _csv_multiline(tc.steps),
             "Acceptance_Criteria": _csv_multiline(tc.acceptance_criteria),
@@ -1660,6 +1663,74 @@ def get_trace(
         path=trace_path,
         media_type="application/zip",
         filename=f"trace_{test_id}.zip",
+    )
+
+
+# ── GET /screenshot/{test_id} ────────────────────────────────────────────────
+
+
+@router.get("/screenshot/{test_id}")
+@limiter.limit(settings.rate_limit_api)
+def get_assertion_screenshot(
+    request: Request,
+    project_id: uuid.UUID,
+    test_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the assertion screenshot PNG captured after the last expect() for a PASS test.
+
+    Screenshots are produced by the SQAT assertion-screenshot injection in Agent A5:
+        if (process.env.SQAT_SCREENSHOT_PATH) {
+            await page.screenshot({ path: process.env.SQAT_SCREENSHOT_PATH });
+        }
+    and stored in tests/generated/<project_id>/<run_id>/traces/<test_id_short>/assertion_screenshot.png.
+
+    Returns 404 if no screenshot exists (FAIL tests have a trace instead; use GET /trace/{test_id}).
+    """
+    _get_project_or_404(db, current_user.id, project_id)
+
+    result_query = (
+        select(TestResult)
+        .join(TestCase, TestResult.test_id == TestCase.test_id)
+        .where(
+            TestResult.test_id == test_id,
+            TestCase.project_id == project_id,
+        )
+        .order_by(TestResult.created_at.desc())
+        .limit(1)
+    )
+    if run_id:
+        result_query = result_query.where(TestResult.run_id == run_id)
+    result = db.execute(result_query).scalar_one_or_none()
+
+    if not result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test result not found")
+
+    screenshot_path = result.screenshot_path
+    if not screenshot_path or not Path(screenshot_path).exists():
+        # Also check Phase3ExecutionState as a fallback (state may be ahead of test_results flush)
+        exec_state = db.execute(
+            select(Phase3ExecutionState)
+            .where(
+                Phase3ExecutionState.test_id == test_id,
+            )
+            .order_by(Phase3ExecutionState.updated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if exec_state and exec_state.screenshot_path and Path(exec_state.screenshot_path).exists():
+            screenshot_path = exec_state.screenshot_path
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No assertion screenshot available for this test. Screenshots are captured on PASS outcomes only.",
+            )
+
+    return FileResponse(
+        path=screenshot_path,
+        media_type="image/png",
+        filename=f"assertion_screenshot_{test_id}.png",
     )
 
 

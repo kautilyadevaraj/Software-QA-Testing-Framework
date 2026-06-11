@@ -23,7 +23,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.phase3 import Phase3ExecutionState, ReviewQueueItem, TestCase, TestResult, TestRun
 from app.models.project import HighLevelScenario, ProjectJiraConfig
-from app.models.scenario import ScenarioStep
+from app.models.scenario import RecordingFlow, ScenarioStep
 from app.services import mcp_server, state_store
 from app.services.artifact_paths import tc_document_path
 from app.services.artifact_registry import register_artifact
@@ -220,6 +220,19 @@ def _recording_is_plannable(hls_id: str) -> tuple[bool, str]:
             return False, "no recording session"
         if session.status != "completed":
             return False, f"recording status={session.status!r}"
+        flow = db.execute(
+            select(RecordingFlow)
+            .where(RecordingFlow.recording_id == session.id)
+            .order_by(RecordingFlow.flow_index.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if flow is None:
+            return False, "no recording flow"
+        if not flow.phase3_ready:
+            metadata = flow.metadata_json or {}
+            reasons = metadata.get("quality_failure_reasons") or []
+            reason_text = ", ".join(str(reason) for reason in reasons) if reasons else "quality gate failed"
+            return False, f"recording not phase3_ready: {reason_text}"
         step_count = db.execute(
             select(func.count(ScenarioStep.id))
             .where(ScenarioStep.scenario_id == uuid.UUID(hls_id))
@@ -571,11 +584,13 @@ async def _execute_hls_independent(
                 generate_script, ctx, label=f"A5-single[{tid[:8]}]",
             )
         if script_path is None:
+            validation_errors = list(ctx.get("last_validation_errors") or [])
+            validation_reason = "; ".join(str(error) for error in validation_errors[:6]) or "A5 returned no grounded Playwright script"
             logger.error(
-                "A5 failed for test_id=%s in hls_id=%s - marking HUMAN_REVIEW",
-                tid, hls_id,
+                "A5 failed for test_id=%s in hls_id=%s - marking HUMAN_REVIEW errors=%s",
+                tid, hls_id, validation_errors,
             )
-            mark_generation_failed(ctx, "A5 returned no grounded Playwright script")
+            mark_generation_failed(ctx, validation_reason)
             state_store.update_state(tid, "HUMAN_REVIEW", run_id=run_id)
             _write_generation_review_item(
                 tid,
@@ -585,7 +600,8 @@ async def _execute_hls_independent(
                 evidence={
                     "hls_id": hls_id,
                     "stage": "A5",
-                    "validation_reason": "A5 returned no grounded Playwright script",
+                    "validation_reason": validation_reason,
+                    "validation_errors": validation_errors,
                     "script_status": "HUMAN_REVIEW",
                     "action": "Review testcase steps/assertions and recorded selectors, then edit or rerun script generation.",
                 },

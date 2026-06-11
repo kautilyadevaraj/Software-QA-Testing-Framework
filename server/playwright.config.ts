@@ -27,7 +27,7 @@ export default defineConfig({
   use: {
     headless: !headed,
     baseURL: process.env.BASE_URL ?? "http://localhost:3000",
-    screenshot: "only-on-failure",
+    screenshot: "off",          // SQAT manages screenshots per outcome: assertion_screenshot.png (PASS) via spec injection; trace.zip (FAIL) via retain-on-failure.
     video: headed ? "on" : "off",
     // `on-first-retry` produces NOTHING when retries=0 (we disable Playwright
     // retries because A7 handles them at the agent level). `retain-on-failure`

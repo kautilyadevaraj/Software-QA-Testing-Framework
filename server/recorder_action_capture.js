@@ -26,6 +26,26 @@
     const s = window.getComputedStyle(el);
     return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
   }
+  function cleanHref(el) {
+    const href = attr(el, 'href');
+    return href ? href.trim() : '';
+  }
+  function meaningfulHref(el) {
+    const href = cleanHref(el).toLowerCase();
+    return !!href && href !== '#' && href !== 'javascript:void(0)' && href !== 'javascript:;';
+  }
+  function adLike(el) {
+    if (!el || !el.tagName) return false;
+    const bits = [
+      attr(el, 'aria-label'),
+      attr(el, 'title'),
+      attr(el, 'id'),
+      attr(el, 'name'),
+      attr(el, 'src'),
+      attr(el, 'class'),
+    ].join(' ').toLowerCase();
+    return /advertisement|googleads|doubleclick|pagead|adsystem|adservice|googlesyndication/.test(bits);
+  }
   function stableId(id) {
     return !!id && !/^[0-9a-f-]{16,}$/i.test(id) && !/^(ember|react|radix|headlessui|mui|chakra|mantine|rc|auto|generated)[-_]?[0-9]/i.test(id);
   }
@@ -81,7 +101,10 @@
     if (el.id && stableId(el.id)) return { selector: `#${css(el.id)}`, stability: 'high', quality_reason: 'stable_id' };
     if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, stability: 'medium', quality_reason: 'placeholder' };
     if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, stability: 'medium', quality_reason: 'placeholder' };
-    if (tag === 'a' && attr(el, 'href')) return { selector: `${tag}[href="${esc(attr(el, 'href'))}"]`, stability: 'medium', quality_reason: 'href' };
+    if (tag === 'a' && meaningfulHref(el)) return { selector: `${tag}[href="${esc(cleanHref(el))}"]`, stability: 'medium', quality_reason: 'href' };
+    const r = role(el);
+    const n = nameOf(el);
+    if (r && n && !['div', 'span', 'i', 'svg', 'path'].includes(tag)) return { selector: domPath(el) || tag, stability: 'low', quality_reason: 'role_name_fallback' };
     return { selector: domPath(el) || tag, stability: 'low', quality_reason: 'structural_fallback' };
   }
   function selectorCandidates(el) {
@@ -99,7 +122,7 @@
     if (el.id && stableId(el.id)) push(`#${css(el.id)}`);
     if (el.name) push(`${tag}[name="${esc(el.name)}"]`);
     if (el.placeholder) push(`${tag}[placeholder="${esc(el.placeholder)}"]`);
-    if (tag === 'a' && attr(el, 'href')) push(`${tag}[href="${esc(attr(el, 'href'))}"]`);
+    if (tag === 'a' && meaningfulHref(el)) push(`${tag}[href="${esc(cleanHref(el))}"]`);
     const l = label(el);
     if (l && ['input', 'textarea', 'select'].includes(tag)) push(`label:${l}`);
     const r = role(el);
@@ -223,6 +246,30 @@
       selector: selector(p)?.selector || null,
     } : null;
   }
+  function actionableTarget(el) {
+    if (!ok(el)) return null;
+    const target = el.closest?.([
+      'button',
+      'a[href]',
+      'input[type="button"]',
+      'input[type="submit"]',
+      'input[type="reset"]',
+      'label',
+      '[role="button"]',
+      '[role="link"]',
+      '[role="menuitem"]',
+      '[role="menuitemcheckbox"]',
+      '[role="menuitemradio"]',
+      '[role="tab"]',
+      '[role="option"]',
+      '[role="checkbox"]',
+      '[role="radio"]',
+      '[role="switch"]',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(','));
+    if (target && ok(target) && visible(target) && !adLike(target)) return target;
+    return adLike(el) ? null : el;
+  }
   function snapshot(el) {
     const s = selector(el);
     const r = role(el);
@@ -259,7 +306,7 @@
     };
   }
   function ok(el) {
-    return el && el.tagName && !['HTML', 'BODY'].includes(el.tagName) && !(el.closest && el.closest('#__sqat_capture_indicator__'));
+    return el && el.tagName && !['HTML', 'BODY'].includes(el.tagName) && !(el.closest && el.closest('#__sqat_capture_indicator__')) && !adLike(el);
   }
   function action(type, el, extra = {}) {
     const snap = snapshot(el);
@@ -359,7 +406,8 @@
   document.addEventListener('click', e => {
     if (!ok(e.target)) return;
     flushActiveInput('click');
-    const el = e.target;
+    const el = actionableTarget(e.target);
+    if (!el) return;
     const tag = el.tagName.toLowerCase();
     const nativeType = (el.type || '').toLowerCase();
     if (['input', 'textarea', 'select'].includes(tag) && !['button', 'submit', 'reset'].includes(nativeType)) return;
@@ -486,6 +534,18 @@ window.__sqat_get_elements__ = function () {
   const stableId = id => !!id && !/^[0-9a-f-]{16,}$/i.test(id);
   const role = el => attr(el, 'role') || (el.tagName || '').toLowerCase();
   const name = el => text(attr(el, 'aria-label')) || text(el.innerText || el.textContent || el.value);
+  const meaningfulHref = el => {
+    const href = String(attr(el, 'href') || '').trim().toLowerCase();
+    return !!href && href !== '#' && href !== 'javascript:void(0)' && href !== 'javascript:;';
+  };
+  const adLike = el => /advertisement|googleads|doubleclick|pagead|adsystem|adservice|googlesyndication/.test([
+    attr(el, 'aria-label'),
+    attr(el, 'title'),
+    attr(el, 'id'),
+    attr(el, 'name'),
+    attr(el, 'src'),
+    attr(el, 'class'),
+  ].join(' ').toLowerCase());
   const path = el => {
     const parts = [];
     let node = el;
@@ -520,7 +580,7 @@ window.__sqat_get_elements__ = function () {
     if (el.id && stableId(el.id)) push(`#${window.CSS && CSS.escape ? CSS.escape(el.id) : esc(el.id)}`);
     if (el.name) push(`${tag}[name="${esc(el.name)}"]`);
     if (el.placeholder) push(`${tag}[placeholder="${esc(el.placeholder)}"]`);
-    if (tag === 'a' && attr(el, 'href')) push(`${tag}[href="${esc(attr(el, 'href'))}"]`);
+    if (tag === 'a' && meaningfulHref(el)) push(`${tag}[href="${esc(attr(el, 'href'))}"]`);
     const labelled = el.id ? text(document.querySelector(`label[for="${esc(el.id)}"]`)?.textContent) : '';
     if (labelled && ['input', 'textarea', 'select'].includes(tag)) push(`label:${labelled}`);
     const r = role(el);
@@ -539,7 +599,7 @@ window.__sqat_get_elements__ = function () {
     if (el.id && stableId(el.id)) return { selector: `#${window.CSS && CSS.escape ? CSS.escape(el.id) : esc(el.id)}`, selector_stability: 'high' };
     if (el.name) return { selector: `${tag}[name="${esc(el.name)}"]`, selector_stability: 'medium' };
     if (el.placeholder) return { selector: `${tag}[placeholder="${esc(el.placeholder)}"]`, selector_stability: 'medium' };
-    if (tag === 'a' && attr(el, 'href')) return { selector: `${tag}[href="${esc(attr(el, 'href'))}"]`, selector_stability: 'medium' };
+    if (tag === 'a' && meaningfulHref(el)) return { selector: `${tag}[href="${esc(attr(el, 'href'))}"]`, selector_stability: 'medium' };
     return { selector: candidates(el).at(-1) || tag, selector_stability: 'low' };
   };
   const optionList = el => {
@@ -553,7 +613,7 @@ window.__sqat_get_elements__ = function () {
       seen.add(el);
       const rect = el.getBoundingClientRect();
       const style = getComputedStyle(el);
-      if (rect.width === 0 || rect.height === 0 || style.display === 'none' || style.visibility === 'hidden') return;
+      if (rect.width === 0 || rect.height === 0 || style.display === 'none' || style.visibility === 'hidden' || adLike(el)) return;
       const b = best(el);
       out.push({
         tag: el.tagName.toLowerCase(),
@@ -589,6 +649,7 @@ window.__sqat_get_elements__ = function () {
 window.__sqat_clean_html__ = function () {
   const clone = document.documentElement.cloneNode(true);
   clone.querySelectorAll('style,script,link[rel="stylesheet"],link[rel="preload"],noscript,meta,template,[aria-hidden="true"],#__sqat_capture_indicator__,#__sqat_capture_indicator_style__').forEach(el => el.remove());
+  clone.querySelectorAll('iframe[aria-label*="Advertisement" i],iframe[title*="Advertisement" i],iframe[src*="googleads"],iframe[src*="doubleclick"],iframe[src*="pagead"],iframe[src*="googlesyndication"],ins[id*="aswift"],div[id*="aswift"],iframe[name*="googlefc"]').forEach(el => el.remove());
   clone.querySelectorAll('svg *').forEach(el => {
     ['d', 'points', 'transform', 'viewBox', 'fill', 'stroke', 'clip-path', 'filter', 'mask', 'opacity'].forEach(a => el.removeAttribute(a));
   });

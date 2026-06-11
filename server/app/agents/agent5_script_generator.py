@@ -113,7 +113,7 @@ SELECTORS — NEVER use bare tag names ('div', 'span', 'input', 'button', 'a', '
   - Use: page.getByPlaceholder('Search')
   - Use: page.getByLabel('Reference')
   - Use: page.getByText('Continue')
-  - Use: page.locator('#specific-id') or page.locator('[data-testid="x"]')
+  - Use: page.locator('#specific-id') or page.locator('[data-testid=\"x\"]')
   - Phase-2 recording is evidence of available UI behavior, not a replay script.
   - Use exact recorded selectors for stable controls such as login fields,
     submit/search buttons, menu links, workflow navigation, and primary action buttons.
@@ -124,6 +124,17 @@ SELECTORS — NEVER use bare tag names ('div', 'span', 'input', 'button', 'a', '
   - Do NOT hardcode exact recorded business-object routes like /item/2 or
     /details/24 unless the testcase explicitly names that exact object.
   - If step is ambiguous like "click div", skip it silently
+
+DATA-TEST ATTRIBUTES — NEVER INVENT THEM:
+  - [data-test="x"], [data-testid="x"], [data-cy="x"] must come ONLY from the
+    RECORDED SELECTORS or Interactive elements sections below.
+  - If a recorded selector contains [data-test="add-to-cart-sauce-labs-backpack"],
+    you may use it. If no recorded selector covers the element you need (e.g. a
+    collection like cart items or search results), use CSS class selectors (.cart_item,
+    .inventory_item) or getByRole/getByText/filter({{ hasText: '...' }}) instead.
+  - NEVER guess a data-test attribute name. If it is not in the evidence, it does
+    not exist at runtime and your test will silently fail with 0 elements found.
+
 
 selectOption — NEVER pass a bare string. Always use an object form:
   - locator.selectOption({{ value: 'target-value' }})       ← match by <option value>
@@ -137,6 +148,12 @@ INVALID SYNTAX — NEVER use these:
 URLS — NEVER hardcode http://… or https://… literals. Always:
   - await page.goto(env('BASE_URL') + '/path');
   - Comparing URLs: page.url().endsWith('/path')   (NOT '== "https://site.com/path"')
+
+ROUTE GROUNDING - use page.goto() only for the initial page load, or when a
+  testcase step explicitly starts with navigate/open/visit/load/directly access.
+  Do NOT convert route-map paths into direct page.goto() workflow jumps. After
+  login or after any user action, reach the next state by clicking/submitting
+  recorded controls, then wait for the resulting URL or visible UI.
 
 AUTH / LOGIN STEPS:
   Follow the provided test-case Steps exactly. If the Steps include login,
@@ -162,15 +179,23 @@ ASSERTIONS — prove acceptance criteria and important user-visible state change
   Every test needs at least one business assertion, but do not assert every
   click/fill unless that step has an observable business outcome.
 
+ASSERTION SCREENSHOT — copy this block exactly, after your last expect() and before the
+  network evidence lines. SQAT_SCREENSHOT_PATH is intentionally accessed via process.env
+  (NOT env()) because it is optional — env() throws when a variable is missing, and this
+  path is only set for PASS-outcome tests. Do NOT apply the env() rule to this variable.
+  if (process.env.SQAT_SCREENSHOT_PATH) {{
+    await page.screenshot({{ path: process.env.SQAT_SCREENSHOT_PATH, fullPage: false }});
+  }}
+
+FINAL NETWORK EVIDENCE — always attach failures before asserting:
+  await testInfo.attach('network_logs', {{ body: JSON.stringify(monitor.failures, null, 2), contentType: 'application/json' }});
+  expect(monitor.failures, JSON.stringify(monitor.failures, null, 2)).toEqual([]);
+
 TEST DATA — do not fill literal English phrases:
   - "a valid name" -> configured PHASE3_TEST_DATA_NAME
   - "a valid code" -> configured PHASE3_TEST_DATA_POSTAL_CODE
   - "a valid quantity" -> "1"
   - generic search keyword -> configured PHASE3_TEST_DATA_SEARCH
-
-FINAL NETWORK EVIDENCE — always attach failures before asserting:
-  await testInfo.attach('network_logs', {{ body: JSON.stringify(monitor.failures, null, 2), contentType: 'application/json' }});
-  expect(monitor.failures, JSON.stringify(monitor.failures, null, 2)).toEqual([]);
 
 RETURN — ONLY the test() block.
   No imports. No preamble. No describe wrapper.
@@ -203,7 +228,8 @@ Known dynamic route patterns:
 Interactive elements on {target_page}:
 {interactive_elements}
 
-ENV Placeholders — use env('NAME'), NOT process.env.NAME:
+ENV Placeholders — use env('NAME') for all test credentials and URLs, NOT process.env.NAME.
+Exception: SQAT_SCREENSHOT_PATH must use process.env directly as shown in ASSERTION SCREENSHOT above.
 {env_placeholders}
 
 DOM excerpt (use selectors from this):
@@ -282,6 +308,14 @@ ASSERTIONS — prove acceptance criteria and important user-visible state change
 TEST DATA — do not fill literal English phrases. Use deterministic configured
   test data based on field intent, or "1" for numeric quantity/count fields.
 
+ASSERTION SCREENSHOT — copy this block exactly, after your last expect() and before the
+  network evidence lines. SQAT_SCREENSHOT_PATH is intentionally accessed via process.env
+  (NOT env()) because it is optional — env() throws when a variable is missing, and this
+  path is only set for PASS-outcome tests. Do NOT apply the env() rule to this variable.
+  if (process.env.SQAT_SCREENSHOT_PATH) {{
+    await sharedPage.screenshot({{ path: process.env.SQAT_SCREENSHOT_PATH, fullPage: false }});
+  }}
+
 FINAL NETWORK EVIDENCE — always attach failures before asserting:
   await testInfo.attach('network_logs', {{ body: JSON.stringify(monitor.failures, null, 2), contentType: 'application/json' }});
   expect(monitor.failures, JSON.stringify(monitor.failures, null, 2)).toEqual([]);
@@ -317,7 +351,8 @@ Known dynamic route patterns:
 Interactive elements on {target_page}:
 {interactive_elements}
 
-ENV Placeholders — use env('NAME') helper:
+ENV Placeholders — use env('NAME') for all test credentials and URLs, NOT process.env.NAME.
+Exception: SQAT_SCREENSHOT_PATH must use process.env directly as shown in ASSERTION SCREENSHOT above.
 {env_placeholders}
 
 DOM excerpt:
@@ -507,6 +542,11 @@ _GOTO_BASE_URL_TEMPLATE_RE = re.compile(
 _GOTO_BASE_URL_CONCAT_RE = re.compile(
     r"""goto\(\s*env\(\s*(['"])BASE_URL\1\s*\)\s*\+\s*(['"])(?P<path>/[^'"]*)\2\s*\)"""
 )
+_DIRECT_NAV_STEP_RE = re.compile(
+    r"^(?:navigate|go\s+to|open|visit|load|directly\s+access)\b",
+    re.IGNORECASE,
+)
+_STEP_PATH_RE = re.compile(r"(?P<path>/[A-Za-z0-9_./~%-]*(?:\?[A-Za-z0-9_./~%=&:-]*)?)")
 _OLD_MONITOR_ASSERT_RE = re.compile(
     r"""(?P<indent>[ \t]*)expect\(\s*monitor\.hasFailures\(\)\s*\)\.toBe\(\s*false\s*\)\s*;"""
 )
@@ -545,6 +585,124 @@ def _rewrite_login_goto(code: str, target_path: str) -> tuple[str, int]:
     out = _GOTO_BASE_URL_TEMPLATE_RE.sub(repl, code)
     out = _GOTO_BASE_URL_CONCAT_RE.sub(repl, out)
     return out, n
+
+
+def _normalise_path(path: str | None) -> str:
+    value = str(path or "").strip()
+    if not value:
+        return "/"
+    if not value.startswith("/"):
+        value = f"/{value}"
+    if len(value) > 1:
+        value = value.rstrip("/")
+    return value or "/"
+
+
+def _base_url_goto_paths(code: str) -> list[str]:
+    """Return BASE_URL-relative paths used in page.goto/sharedPage.goto calls."""
+    matches: list[tuple[int, str]] = []
+    for pattern in (_GOTO_BASE_URL_TEMPLATE_RE, _GOTO_BASE_URL_CONCAT_RE):
+        matches.extend(
+            (match.start(), _normalise_path(match.group("path")))
+            for match in pattern.finditer(code)
+        )
+    return [path for _index, path in sorted(matches, key=lambda item: item[0])]
+
+
+def _direct_navigation_paths_from_steps(context: dict[str, Any] | None) -> list[str]:
+    """Paths the testcase explicitly asks to open directly.
+
+    A step like "click Cart to navigate to /cart" is intentionally NOT a direct
+    navigation instruction. That path should be reached through the recorded
+    click, otherwise A5 turns route-map knowledge into brittle deep links.
+    """
+    if not context:
+        return []
+    paths: list[str] = []
+    for raw_step in context.get("steps") or []:
+        step = str(raw_step or "").strip()
+        if not _DIRECT_NAV_STEP_RE.search(step):
+            continue
+        for match in _STEP_PATH_RE.finditer(step):
+            paths.append(_normalise_path(match.group("path")))
+    return list(dict.fromkeys(paths))
+
+
+def _allowed_initial_goto_paths(context: dict[str, Any] | None) -> set[str]:
+    allowed = set(_direct_navigation_paths_from_steps(context))
+    if context:
+        for key in ("auth_login_path", "target_page"):
+            value = context.get(key)
+            if value:
+                allowed.add(_normalise_path(str(value)))
+    allowed.add("/")
+    return allowed
+
+
+def _ungrounded_route_navigation_errors(
+    code: str,
+    context: dict[str, Any] | None,
+    *,
+    is_grouped: bool,
+) -> list[str]:
+    """Reject invented deep-link jumps after the initial app entry.
+
+    Route maps and captured URLs are evidence for waits/assertions. They are not
+    blanket permission to call goto() for every workflow transition. After the
+    first page load, scripts should move through the app using the planned UI
+    actions unless a testcase step explicitly says to open a URL directly.
+    """
+    paths = _base_url_goto_paths(code)
+    if not paths:
+        return []
+
+    direct_paths = set(_direct_navigation_paths_from_steps(context))
+    allowed_initial = _allowed_initial_goto_paths(context)
+    errors: list[str] = []
+
+    if paths[0] not in allowed_initial:
+        errors.append(
+            f"initial goto {paths[0]!r} is not grounded in target page or direct navigation steps"
+        )
+
+    if is_grouped and int((context or {}).get("step_index") or 0) > 0:
+        errors.append("grouped non-initial test must not call goto(); continue from sharedPage state")
+
+    ungrounded_later = [
+        path for path in paths[1:]
+        if path not in direct_paths and path != paths[0]
+    ]
+    if ungrounded_later:
+        errors.append(
+            "direct route jumps after initial navigation "
+            f"{ungrounded_later[:5]}; use recorded UI actions plus waitForURL"
+        )
+    return errors
+
+
+def _non_code_outside_test_block_errors(code: str) -> list[str]:
+    """Reject LLM explanations saved beside the Playwright test block."""
+    text = code.strip()
+    if not text:
+        return []
+
+    match = re.search(r"(?m)^\s*test\s*\(", text)
+    if not match:
+        return []
+
+    prefix = text[:match.start()].strip()
+    if prefix:
+        comment_only = all(
+            line.strip().startswith(("//", "/*", "*")) or line.strip().endswith("*/")
+            for line in prefix.splitlines()
+            if line.strip()
+        )
+        if not comment_only:
+            return ["non-code text before Playwright test() block"]
+
+    if not re.search(r"\}\s*\)\s*;?\s*$", text):
+        return ["test block must end with closing }); and no prose after it"]
+    return []
 
 
 def _ensure_test_info_signature(code: str, *, is_grouped: bool) -> tuple[str, int]:
@@ -588,6 +746,42 @@ def _ensure_network_evidence_assertion(code: str) -> tuple[str, int]:
         return patched, 0
     insertion = "\n" + "\n".join(_network_evidence_lines())
     return patched[:index] + insertion + patched[index:], 1
+
+
+# Matches the testInfo.attach('network_logs', ...) line so we can insert
+# the screenshot block immediately before it.
+_ATTACH_LINE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)await testInfo\.attach\('network_logs'",
+    re.MULTILINE,
+)
+
+
+def _ensure_screenshot_block(code: str, *, page_var: str = "page") -> tuple[str, int]:
+    """Deterministically inject the SQAT_SCREENSHOT_PATH screenshot block.
+
+    The LLM is instructed to include this block but sometimes omits it.
+    This post-processor guarantees it is always present immediately before
+    the testInfo.attach('network_logs', ...) line, which is the canonical
+    position in every generated test.
+
+    Idempotent: if the block is already present, the code is returned unchanged.
+    """
+    if "SQAT_SCREENSHOT_PATH" in code:
+        return code, 0  # already present — nothing to do
+
+    match = _ATTACH_LINE_RE.search(code)
+    if not match:
+        return code, 0  # can't locate the anchor line — leave untouched
+
+    indent = match.group("indent")
+    screenshot_block = (
+        f"{indent}if (process.env.SQAT_SCREENSHOT_PATH) {{\n"
+        f"{indent}  await {page_var}.screenshot({{ path: process.env.SQAT_SCREENSHOT_PATH, fullPage: false }});\n"
+        f"{indent}}}\n"
+    )
+    insert_pos = match.start()
+    return code[:insert_pos] + screenshot_block + code[insert_pos:], 1
+
 
 
 def _normalize_raw_credential_fills(code: str) -> tuple[str, int]:
@@ -963,9 +1157,19 @@ def _expected_action_type_counts(context: dict[str, Any] | None) -> dict[str, in
     if not context:
         return {}
     counts: dict[str, int] = {}
+    empty_selectors = _explicit_empty_selectors(context)
     for raw_step in context.get("steps") or []:
-        action = _desired_action_for_step(str(raw_step).strip())
+        step = str(raw_step).strip()
+        action = _desired_action_for_step(step)
         if action not in {"click", "fill", "select", "check", "upload"}:
+            continue
+        selector = _selector_from_step(step)
+        if (
+            action == "fill"
+            and selector
+            and _selector_identity(selector) in empty_selectors
+            and not _strip_step_number(step).lower().startswith(("leave", "clear"))
+        ):
             continue
         normalized = {
             "select": "select",
@@ -1453,6 +1657,7 @@ def _script_validation_errors(code: str, context: dict[str, Any] | None = None) 
     errors: list[str] = []
     if not code.strip():
         return ["empty response"]
+    errors.extend(_non_code_outside_test_block_errors(code))
     if "test(" not in code:
         errors.append("missing Playwright test() block")
     if not _PAGE_FIXTURE_RE.search(code) or "testInfo" not in code:
@@ -1474,7 +1679,9 @@ def _script_validation_errors(code: str, context: dict[str, Any] | None = None) 
     errors.extend(_sorting_assertion_errors(code, context))
     errors.extend(_negative_validation_flow_errors(code, context))
     errors.extend(_ungrounded_assertion_selector_errors(code, context))
+    errors.extend(_ambiguous_get_by_text_assertion_errors(code, context))
     errors.extend(_evidence_driven_assertion_errors(code, context))
+    errors.extend(_ungrounded_route_navigation_errors(code, context, is_grouped=False))
     return errors
 
 
@@ -1487,6 +1694,7 @@ def _grouped_validation_errors(code: str, context: dict[str, Any] | None = None)
     )
     if not code.strip():
         return ["empty response"]
+    errors.extend(_non_code_outside_test_block_errors(code))
     if "test(" not in code:
         errors.append("missing Playwright test() block")
     if "sharedPage" not in code:
@@ -1510,7 +1718,9 @@ def _grouped_validation_errors(code: str, context: dict[str, Any] | None = None)
     errors.extend(_sorting_assertion_errors(code, context))
     errors.extend(_negative_validation_flow_errors(code, context))
     errors.extend(_ungrounded_assertion_selector_errors(code, context))
+    errors.extend(_ambiguous_get_by_text_assertion_errors(code, context))
     errors.extend(_evidence_driven_assertion_errors(code, context))
+    errors.extend(_ungrounded_route_navigation_errors(code, context, is_grouped=True))
     return errors
 
 
@@ -1559,6 +1769,7 @@ def _post_process_block(
     auth_mode: str | None = None,
     auth_login_path: str | None = None,
     target_page: str | None = None,
+    context: dict[str, Any] | None = None,
 ) -> str:
     """Deterministic patches applied to every generated test block.
 
@@ -1615,10 +1826,18 @@ def _post_process_block(
             patched = new_patched
             changes.append("initial-goto")
 
+    new_patched, n = _ensure_screenshot_block(
+        patched, page_var="sharedPage" if is_grouped else "page"
+    )
+    if n:
+        patched = new_patched
+        changes.append("screenshot-block")
+
     new_patched, n = _ensure_network_evidence_assertion(patched)
     if n:
         patched = new_patched
         changes.append("network-evidence")
+
 
     new_patched, n = _normalize_raw_credential_fills(patched)
     if n:
@@ -1634,6 +1853,11 @@ def _post_process_block(
     if n:
         patched = new_patched
         changes.append(f"uppercase-text-assert x{n}")
+
+    new_patched, n = _rewrite_get_by_text_assertions(patched, context)
+    if n:
+        patched = new_patched
+        changes.append(f"getByText-assert-selector x{n}")
 
     if changes:
         logger.info(
@@ -1772,6 +1996,230 @@ def _path_from_step(step: str) -> str | None:
     return None
 
 
+def _workflow_target_path_from_step(step: str) -> str | None:
+    """Return the destination path of an action step, not its source context.
+
+    "on /list, click Details" names a source page, while
+    "click Cart to navigate to /cart" names a destination. Only the latter
+    should produce waitForURL().
+    """
+    text = str(step or "")
+    patterns = (
+        r"\bto\s+navigate\s+to\s+(?P<path>/[A-Za-z0-9_./?=&%-]+)",
+        r"\bto\s+go\s+to\s+(?P<path>/[A-Za-z0-9_./?=&%-]+)",
+        r"\bto\s+(?:reach|open|load|return\s+to|advance\s+to)\s+(?P<path>/[A-Za-z0-9_./?=&%-]+)",
+        r"\b(?:navigates|redirects|returns|advances)\s+to\s+(?P<path>/[A-Za-z0-9_./?=&%-]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group("path")
+    return None
+
+
+def _path_base(path: str | None) -> str:
+    value = _normalise_path(path)
+    return value.split("#", 1)[0]
+
+
+def _route_paths_match(recorded_path: str | None, requested_path: str | None) -> bool:
+    recorded = _path_base(recorded_path)
+    requested = _path_base(requested_path)
+    if not recorded or not requested:
+        return False
+    if recorded == requested:
+        return True
+    requested_no_query = requested.split("?", 1)[0]
+    recorded_no_query = recorded.split("?", 1)[0]
+    if requested.endswith(("?", "=")):
+        return recorded.startswith(requested)
+    if requested_no_query and recorded_no_query == requested_no_query:
+        return True
+    return False
+
+
+def _recorded_step_index_map(recorded_steps: list[dict[str, Any]]) -> dict[int, tuple[int, dict[str, Any]]]:
+    out: dict[int, tuple[int, dict[str, Any]]] = {}
+    for index, recorded in enumerate(recorded_steps):
+        try:
+            step_index = int(recorded.get("step_index"))
+        except Exception:
+            continue
+        out[step_index] = (index, recorded)
+    return out
+
+
+def _used_recorded_step_reaches_path(
+    recorded_steps: list[dict[str, Any]],
+    used_recorded: set[int],
+    target_path: str,
+) -> bool:
+    for index in used_recorded:
+        if index < 0 or index >= len(recorded_steps):
+            continue
+        recorded = recorded_steps[index]
+        if _route_paths_match(str(recorded.get("to_url") or ""), target_path):
+            return True
+    return False
+
+
+def _transition_lines_between_paths(
+    context: dict[str, Any],
+    from_path: str | None,
+    target_path: str,
+    *,
+    page_var: str,
+    used_recorded: set[int],
+) -> list[str]:
+    if not from_path:
+        return []
+    recorded_steps = list(context.get("recorded_steps") or [])
+    step_index_map = _recorded_step_index_map(recorded_steps)
+    best: tuple[float, dict[str, Any], str, int | None] | None = None
+    for transition in context.get("recorded_route_transitions") or []:
+        if not isinstance(transition, dict):
+            continue
+        if not _route_paths_match(str(transition.get("from_path") or transition.get("from_url") or ""), from_path):
+            continue
+        if not _route_paths_match(str(transition.get("to_path") or transition.get("to_url") or ""), target_path):
+            continue
+        selector, recorded_index = _transition_selector(context, transition, recorded_steps, step_index_map)
+        if not selector:
+            continue
+        if recorded_index is not None and recorded_index in used_recorded:
+            continue
+        score = 5.0
+        try:
+            score += float(transition.get("confidence") or 0)
+        except Exception:
+            pass
+        if best is None or score > best[0]:
+            best = (score, transition, selector, recorded_index)
+    if not best:
+        return []
+    _score, transition, selector, recorded_index = best
+    if recorded_index is not None:
+        used_recorded.add(recorded_index)
+    wait_path = str(transition.get("to_path") or target_path or "").strip() or target_path
+    return [
+        f"  await {page_var}.locator('{_ts_string(selector)}').click();",
+        f"  await {page_var}.waitForURL('**{_ts_string(wait_path)}**');",
+    ]
+
+
+def _transition_selector(
+    context: dict[str, Any],
+    transition: dict[str, Any],
+    recorded_steps: list[dict[str, Any]],
+    step_index_map: dict[int, tuple[int, dict[str, Any]]],
+) -> tuple[str | None, int | None]:
+    recorded_index: int | None = None
+    recorded: dict[str, Any] | None = None
+    try:
+        transition_step_index = int(transition.get("step_index"))
+    except Exception:
+        transition_step_index = -1
+    if transition_step_index in step_index_map:
+        recorded_index, recorded = step_index_map[transition_step_index]
+
+    if recorded is not None:
+        selector = _stable_selector_for_recorded_step(context, recorded)
+        if selector:
+            return selector, recorded_index
+
+    selector = str(transition.get("selector") or "").strip()
+    if selector and not _is_bare_tag_selector(selector):
+        return selector, recorded_index
+    return None, recorded_index
+
+
+def _recorded_transition_for_step(
+    context: dict[str, Any],
+    step_text: str,
+    target_path: str,
+    *,
+    desired_action: str,
+    used_recorded: set[int],
+) -> tuple[dict[str, Any] | None, str | None, int | None]:
+    recorded_steps = list(context.get("recorded_steps") or [])
+    step_index_map = _recorded_step_index_map(recorded_steps)
+    step_tokens = _semantic_tokens(step_text)
+    best: tuple[float, dict[str, Any], str, int | None] | None = None
+
+    for transition in context.get("recorded_route_transitions") or []:
+        if not isinstance(transition, dict):
+            continue
+        if not _route_paths_match(str(transition.get("to_path") or transition.get("to_url") or ""), target_path):
+            continue
+        action = str(transition.get("action_type") or "").lower()
+        if desired_action and not _recorded_action_matches(desired_action, action):
+            continue
+        selector, recorded_index = _transition_selector(context, transition, recorded_steps, step_index_map)
+        if not selector:
+            continue
+        if recorded_index is not None and recorded_index in used_recorded:
+            continue
+        haystack = " ".join(
+            str(transition.get(key) or "")
+            for key in ("selector", "element_text", "accessible_name", "from_path", "to_path")
+        ).lower()
+        score = 5.0 + len(step_tokens & _semantic_tokens(haystack))
+        if selector and selector.lower() in step_text.lower():
+            score += 4
+        if str(transition.get("to_path") or "") == target_path:
+            score += 2
+        confidence = transition.get("confidence")
+        try:
+            score += float(confidence or 0)
+        except Exception:
+            pass
+        if best is None or score > best[0]:
+            best = (score, transition, selector, recorded_index)
+
+    if best:
+        return best[1], best[2], best[3]
+    return None, None, None
+
+
+def _transition_lines_to_path(
+    context: dict[str, Any],
+    step_text: str,
+    target_path: str,
+    *,
+    page_var: str,
+    desired_action: str,
+    used_recorded: set[int],
+) -> list[str]:
+    transition, selector, recorded_index = _recorded_transition_for_step(
+        context,
+        step_text,
+        target_path,
+        desired_action=desired_action,
+        used_recorded=used_recorded,
+    )
+    if not transition or not selector:
+        return []
+    if recorded_index is not None:
+        used_recorded.add(recorded_index)
+    wait_path = str(transition.get("to_path") or target_path or "").strip() or target_path
+    return [
+        f"  await {page_var}.locator('{_ts_string(selector)}').click();",
+        f"  await {page_var}.waitForURL('**{_ts_string(wait_path)}**');",
+    ]
+
+
+def _explicit_empty_selectors(context: dict[str, Any]) -> set[str]:
+    selectors: set[str] = set()
+    for raw_step in context.get("steps") or []:
+        step = _strip_step_number(str(raw_step or "").strip())
+        lower = step.lower()
+        if not lower.startswith(("leave", "clear")) and " empty" not in lower:
+            continue
+        for selector in re.findall(r"(\[[^\]]+\]|#[A-Za-z0-9_-]+|\.[A-Za-z][A-Za-z0-9_-]+)", step):
+            selectors.add(_selector_identity(selector))
+    return selectors
+
+
 def _selector_from_step(step: str) -> str | None:
     masked = re.sub(r"\{BASE_URL\}\s*[^\s'\"]*", " ", step)
     masked = re.sub(r"env\(['\"]BASE_URL['\"]\)\s*\+\s*['\"][^'\"]+['\"]", " ", masked)
@@ -1795,20 +2243,50 @@ def _bare_selector_from_step(step: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _selector_identity(selector: Any) -> str:
+    value = str(selector or "").strip()
+    value = value.replace("\\'", "'").replace('\\"', '"')
+    value = re.sub(r"""\[\s*([^=\]\s]+)\s*=\s*(['"])(.*?)\2\s*\]""", r"[\1='\3']", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.lower()
+
+
 def _recorded_selector_matching_raw(
     recorded_steps: list[dict[str, Any]],
     action: str,
     raw_selector: str,
     used: set[int],
 ) -> tuple[str | None, int | None]:
+    raw_identity = _selector_identity(raw_selector)
     for index, recorded in enumerate(recorded_steps):
         if index in used:
             continue
         if not _recorded_action_matches(action, str(recorded.get("action") or "")):
             continue
-        if str(recorded.get("selector") or "").strip().lower() == raw_selector.lower():
+        if _selector_identity(recorded.get("selector")) == raw_identity:
             return str(recorded.get("selector") or "").strip(), index
     return None, None
+
+
+def _recorded_index_for_selector_action(
+    recorded_steps: list[dict[str, Any]],
+    action: str,
+    selector: str | None,
+    used: set[int],
+) -> int | None:
+    raw_selector = _selector_identity(selector)
+    if not raw_selector:
+        return None
+    for index, recorded in enumerate(recorded_steps):
+        if index in used:
+            continue
+        if not _recorded_action_matches(action, str(recorded.get("action") or "")):
+            continue
+        if _selector_identity(recorded.get("selector")) == raw_selector:
+            return index
+        if _selector_identity(recorded.get("selector_hint")) == raw_selector:
+            return index
+    return None
 
 
 _EXACT_DYNAMIC_HREF_RE = re.compile(r"""\bhref\s*=\s*['"][^'"]*/(?:\d+|[0-9a-f]{8,})(?:[/?#'"]|$)""", re.IGNORECASE)
@@ -1862,6 +2340,7 @@ def _recorded_selector_for_action(
     step_text: str = "",
 ) -> tuple[str | None, int | None]:
     step_tokens = _semantic_tokens(step_text)
+    required_action_terms = _required_action_terms_for_step(step_text) if action in {"click", "submit"} else set()
     best: tuple[int, int, str] | None = None
     for index, recorded in enumerate(recorded_steps):
         if index in used or not _recorded_action_matches(action, str(recorded.get("action") or "")):
@@ -1883,7 +2362,12 @@ def _recorded_selector_for_action(
             and _contract_mentions(haystack, ("add", "remove", "delete", "clear"))
         ):
             continue
-        score = len(step_tokens & _semantic_tokens(haystack))
+        haystack_tokens = _semantic_tokens(haystack)
+        if required_action_terms and not (required_action_terms & haystack_tokens):
+            continue
+        score = len(step_tokens & haystack_tokens)
+        if required_action_terms & haystack_tokens:
+            score += 8
         if best is None or score > best[0]:
             best = (score, index, selector)
     if best is None:
@@ -1904,6 +2388,27 @@ def _recorded_selector_for_action(
             return selector_hint, best[1]
         return None, None
     return best[2], best[1]
+
+
+def _required_action_terms_for_step(step_text: str) -> set[str]:
+    """Return imperative action tokens that must appear in the chosen control.
+
+    This prevents generic fallback from binding a destructive intent like
+    "remove item" to a nearby item title/link just because both share product
+    nouns. The groups are app-neutral UI verbs, not product or route names.
+    """
+    tokens = _semantic_tokens(step_text)
+    groups = (
+        {"remove", "delete", "clear", "discard", "detach", "unselect"},
+        {"add", "create", "attach", "select"},
+        {"save", "submit", "finish", "confirm", "complete"},
+        {"continue", "next", "proceed"},
+        {"cancel", "close", "dismiss"},
+    )
+    for group in groups:
+        if tokens & group:
+            return set(group)
+    return set()
 
 
 def _recorded_action_matches(desired_action: str, recorded_action: str) -> bool:
@@ -2084,6 +2589,8 @@ def _recorded_step_is_auth_setup_control(recorded: dict[str, Any]) -> bool:
 
 
 def _step_is_login_setup(step: str) -> bool:
+    if _selector_from_step(step):
+        return False
     lower = f" {_strip_step_number(step).lower()} "
     return _contract_mentions(
         lower,
@@ -2144,9 +2651,9 @@ def _strip_step_number(step: str) -> str:
 def _desired_action_for_step(step: str) -> str | None:
     step = _strip_step_number(step)
     lower = f" {step.lower()} "
-    if "navigate to" in lower or " go to " in lower or " open " in lower:
-        return "navigate"
     if lower.strip().startswith(("fill", "enter", "type")) or " fill " in lower:
+        return "fill"
+    if lower.strip().startswith(("leave", "clear")) and _selector_from_step(step):
         return "fill"
     if lower.strip().startswith(("select", "choose")) or " select " in lower:
         if _select_step_is_click_intent(step):
@@ -2158,6 +2665,10 @@ def _desired_action_for_step(step: str) -> str | None:
         return "upload"
     if lower.strip().startswith(("click", "tap", "press", "submit", "add", "remove")):
         return "click"
+    if " click " in lower or " submit " in lower:
+        return "click"
+    if _DIRECT_NAV_STEP_RE.search(step):
+        return "navigate"
     if lower.strip().startswith("assert") and "visible" in lower:
         return "assert_visible"
     return None
@@ -2333,11 +2844,24 @@ def _grounded_selectors_from_context(context: dict[str, Any] | None) -> set[str]
                 add(element.get("selector"))
     for candidate in _recorded_assertion_candidates(context):
         add(candidate.get("selector"))
+    for evidence in context.get("assertion_evidence") or []:
+        if isinstance(evidence, dict):
+            add(evidence.get("observable_hint"))
     return selectors
 
 
 _ASSERT_LOCATOR_SELECTOR_RE = re.compile(
     r"""expect\(\s*(?:await\s+)?(?:page|sharedPage)\.locator\(\s*(['"])(?P<selector>.+?)\1\s*\)""",
+    re.DOTALL,
+)
+_EXPECT_GET_BY_TEXT_RE = re.compile(
+    r"""expect\(\s*(?P<page>page|sharedPage)\.getByText\(\s*(?P<quote>['"])(?P<text>[^'"]+)(?P=quote)\s*(?:,\s*\{[^)]*\})?\s*\)\s*\)""",
+    re.DOTALL,
+)
+# Catches ANY page.locator('[data-test="x"]') call in the generated code, not just inside expect().
+# Used to validate that data-test/data-testid/data-cy attributes were not invented by the LLM.
+_ANY_DATA_ATTR_LOCATOR_RE = re.compile(
+    r"""(?:page|sharedPage)\.locator\(\s*(['"])(?P<selector>\[data-(?:test|testid|cy)=['"][^'"]+['"]\].*?)\1""",
     re.DOTALL,
 )
 
@@ -2347,11 +2871,128 @@ def _ungrounded_assertion_selector_errors(code: str, context: dict[str, Any] | N
     if not grounded:
         return []
     errors: list[str] = []
+    # 1. Check selectors inside expect(page.locator(...)) — assertion grounding
     for match in _ASSERT_LOCATOR_SELECTOR_RE.finditer(code):
         selector = match.group("selector").strip()
-        if selector and selector not in grounded:
+        if selector and all(_selector_identity(selector) != _selector_identity(item) for item in grounded):
             errors.append(f"assertion selector {selector!r} is not grounded in recorded DOM/assertion evidence")
+    # 2. Check data-test/data-testid/data-cy attributes used ANYWHERE in page.locator() —
+    #    catches invented attributes on action steps, .filter() chains, and variable assignments.
+    #    Only fires when we have grounded selectors so we never block tests with no recording.
+    for match in _ANY_DATA_ATTR_LOCATOR_RE.finditer(code):
+        selector = match.group("selector").strip()
+        if selector and all(_selector_identity(selector) != _selector_identity(item) for item in grounded):
+            errors.append(
+                f"data-attribute selector {selector!r} is not in recorded evidence — "
+                "use a CSS class or getByText/getByRole instead of inventing data-test names"
+            )
     return list(dict.fromkeys(errors))
+
+
+
+def _normalise_visible_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _text_assertion_selector_candidates(context: dict[str, Any] | None, text: str) -> list[tuple[float, str]]:
+    if not context:
+        return []
+    wanted = _normalise_visible_text(text)
+    if not wanted:
+        return []
+
+    rows: list[tuple[str, str, float]] = []
+
+    def add(selector: Any, candidate_text: Any, base_score: float = 0.0) -> None:
+        selector_text = str(selector or "").strip()
+        visible_text = _normalise_visible_text(candidate_text)
+        if not selector_text or _is_bare_tag_selector(selector_text) or not visible_text:
+            return
+        rows.append((selector_text, visible_text, base_score))
+
+    for candidate in _recorded_assertion_candidates(context):
+        add(candidate.get("selector"), candidate.get("text"), float(candidate.get("confidence") or 0.0) + 2.0)
+    for evidence in context.get("assertion_evidence") or []:
+        if isinstance(evidence, dict):
+            text_blob = " ".join(str(evidence.get(key) or "") for key in ("source_text", "outcome"))
+            add(evidence.get("observable_hint"), text_blob, float(evidence.get("confidence") or 0.0) + 1.5)
+    for recorded in context.get("recorded_steps") or []:
+        if isinstance(recorded, dict):
+            text_blob = " ".join(
+                str(recorded.get(key) or "")
+                for key in ("element_text", "accessible_name", "label", "value")
+            )
+            add(recorded.get("selector"), text_blob, 0.5)
+            add(recorded.get("selector_hint"), text_blob, 0.5)
+    dom = context.get("dom") or {}
+    for element in dom.get("interactive_elements") or []:
+        if isinstance(element, dict):
+            text_blob = " ".join(str(element.get(key) or "") for key in ("text", "name", "aria_label", "label"))
+            add(element.get("selector"), text_blob, 0.25)
+    for snapshot in (context.get("route_snapshots") or {}).values():
+        if not isinstance(snapshot, dict):
+            continue
+        for element in snapshot.get("interactive_elements") or []:
+            if isinstance(element, dict):
+                text_blob = " ".join(str(element.get(key) or "") for key in ("text", "name", "aria_label", "label"))
+                add(element.get("selector"), text_blob, 0.25)
+
+    scored: dict[str, tuple[float, str]] = {}
+    for selector, candidate_text, base_score in rows:
+        score = base_score
+        if candidate_text == wanted:
+            score += 20
+        elif wanted in candidate_text:
+            score += 8
+        elif candidate_text in wanted and len(candidate_text) >= 4:
+            score += 5
+        else:
+            continue
+        selector_lower = selector.lower()
+        if "data-test" in selector_lower or "data-testid" in selector_lower or "aria-label" in selector_lower:
+            score += 2
+        identity = _selector_identity(selector)
+        if score > scored.get(identity, (-1, ""))[0]:
+            scored[identity] = (score, selector)
+
+    return sorted(scored.values(), reverse=True)
+
+
+def _best_text_assertion_selector(context: dict[str, Any] | None, text: str) -> str | None:
+    candidates = _text_assertion_selector_candidates(context, text)
+    if not candidates:
+        return None
+    if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 2:
+        return None
+    return candidates[0][1]
+
+
+def _ambiguous_get_by_text_assertion_errors(code: str, context: dict[str, Any] | None) -> list[str]:
+    errors: list[str] = []
+    for match in _EXPECT_GET_BY_TEXT_RE.finditer(code):
+        text = match.group("text")
+        candidates = _text_assertion_selector_candidates(context, text)
+        if len(candidates) > 1:
+            errors.append(
+                f"ambiguous getByText assertion for {text!r}; use a grounded selector or scoped locator"
+            )
+    return list(dict.fromkeys(errors))
+
+
+def _rewrite_get_by_text_assertions(code: str, context: dict[str, Any] | None) -> tuple[str, int]:
+    if not context:
+        return code, 0
+    rewrites = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal rewrites
+        selector = _best_text_assertion_selector(context, match.group("text"))
+        if not selector:
+            return match.group(0)
+        rewrites += 1
+        return f"expect({match.group('page')}.locator('{_ts_string(selector)}').first())"
+
+    return _EXPECT_GET_BY_TEXT_RE.sub(replace, code), rewrites
 
 
 def _best_recorded_assertion_candidate(context: dict[str, Any], hint_text: str) -> dict[str, Any] | None:
@@ -2392,6 +3033,25 @@ def _recorded_visible_assertion_lines(
     *,
     page_var: str,
 ) -> list[str]:
+    step_lower = step.lower()
+    for evidence in context.get("assertion_evidence") or []:
+        if not isinstance(evidence, dict):
+            continue
+        kind = str(evidence.get("kind") or "").lower()
+        if kind not in {"error_message", "element_visible", "ui_text", "element_absent"}:
+            continue
+        outcome = " ".join(
+            str(evidence.get(key) or "")
+            for key in ("outcome", "source_text", "observable_hint")
+        ).lower()
+        if _contract_mentions(step_lower, ("validation", "error", "feedback", "required", "missing")):
+            if not _contract_mentions(outcome, ("validation", "error", "feedback", "required", "missing")):
+                continue
+        selector = str(evidence.get("observable_hint") or "").strip()
+        if selector and selector.startswith(("[", "#", ".")):
+            if kind == "element_absent":
+                return [f"  await expect({page_var}.locator('{_ts_string(selector)}')).not.toBeVisible();"]
+            return [f"  await expect({page_var}.locator('{_ts_string(selector)}')).toBeVisible();"]
     candidate = _best_recorded_assertion_candidate(context, step)
     if not candidate:
         return []
@@ -2502,7 +3162,9 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
     lines: list[str] = []
     used_recorded: set[int] = set()
     recorded_steps = list(context.get("recorded_steps") or [])
+    empty_selectors = _explicit_empty_selectors(context)
     sorting_assertion_index = 0
+    last_url_path: str | None = None
     for raw_step in context.get("steps") or []:
         step = _strip_step_number(str(raw_step).strip())
         lower = step.lower()
@@ -2513,16 +3175,39 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
             if login_lines:
                 lines.extend(login_lines)
             continue
-        if lower.startswith("navigate") or "navigate to" in lower:
+        if _DIRECT_NAV_STEP_RE.search(step):
             path = _path_from_step(step) or context.get("target_page") or "/"
             lines.append(f"  await {page_var}.goto(env('BASE_URL') + '{_ts_string(path)}');")
+            last_url_path = path
             continue
-        if lower.startswith("wait for url") or lower.startswith("assert url") or "url is" in lower or "url to contain" in lower:
+        if (
+            lower.startswith(("wait for url", "assert url", "verify current url"))
+            or "url is" in lower
+            or "url matches" in lower
+            or "url match" in lower
+            or "url to contain" in lower
+        ):
             path = _path_from_step(step)
             if path:
-                lines.append(f"  await {page_var}.waitForURL('**{_ts_string(path)}');")
+                if _used_recorded_step_reaches_path(recorded_steps, used_recorded, path):
+                    lines.append(f"  await {page_var}.waitForURL('**{_ts_string(path)}**');")
+                    last_url_path = path
+                    continue
+                between_lines = _transition_lines_between_paths(
+                    context,
+                    last_url_path,
+                    path,
+                    page_var=page_var,
+                    used_recorded=used_recorded,
+                )
+                if between_lines:
+                    lines.extend(between_lines)
+                    last_url_path = path
+                    continue
+                lines.append(f"  await {page_var}.waitForURL('**{_ts_string(path)}**');")
+                last_url_path = path
             continue
-        if lower.startswith("fill") or " fill " in f" {lower} ":
+        if lower.startswith(("leave", "clear")) or lower.startswith("fill") or " fill " in f" {lower} ":
             selector = _selector_from_step(step)
             recorded_index = None
             if not selector:
@@ -2537,10 +3222,14 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
             if not selector:
                 selector = _element_selector_for_step(context, "fill", step)
             if selector:
+                if recorded_index is None:
+                    recorded_index = _recorded_index_for_selector_action(recorded_steps, "fill", selector, used_recorded)
+                if _selector_identity(selector) in empty_selectors and not lower.startswith(("leave", "clear")):
+                    continue
                 if recorded_index is not None:
                     used_recorded.add(recorded_index)
                 value_match = re.search(r"\bwith\s+(.+)$", step, re.IGNORECASE)
-                fill_value = _valid_runtime_value_for_fill(
+                fill_value = "''" if lower.startswith(("leave", "clear")) else _valid_runtime_value_for_fill(
                     value_match.group(1) if value_match else "",
                     selector,
                     step,
@@ -2564,6 +3253,10 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
             if not selector:
                 selector = _element_selector_for_step(context, "fill", step)
             if selector:
+                if recorded_index is None:
+                    recorded_index = _recorded_index_for_selector_action(recorded_steps, "fill", selector, used_recorded)
+                if _selector_identity(selector) in empty_selectors:
+                    continue
                 if recorded_index is not None:
                     used_recorded.add(recorded_index)
                 value_match = re.search(r"\b(?:with|value|text)\s+(.+)$", step, re.IGNORECASE)
@@ -2591,12 +3284,30 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
             if not selector:
                 selector = _element_selector_for_step(context, "click", step)
             if selector:
+                if recorded_index is None:
+                    recorded_index = _recorded_index_for_selector_action(recorded_steps, "click", selector, used_recorded)
                 if recorded_index is not None:
                     lines.extend(_bridge_lines_before_recorded_action(
                         context, recorded_steps, recorded_index, used_recorded, page_var=page_var, emitted_lines=lines
                     ))
                     used_recorded.add(recorded_index)
                 lines.append(f"  await {page_var}.locator('{_ts_string(selector)}').click();")
+                target_path = _workflow_target_path_from_step(step)
+                if target_path:
+                    lines.append(f"  await {page_var}.waitForURL('**{_ts_string(target_path)}**');")
+                    last_url_path = target_path
+            else:
+                target_path = _workflow_target_path_from_step(step)
+                if target_path:
+                    lines.extend(_transition_lines_to_path(
+                        context,
+                        step,
+                        target_path,
+                        page_var=page_var,
+                        desired_action="click",
+                        used_recorded=used_recorded,
+                    ))
+                    last_url_path = target_path
             continue
         if lower.startswith(("submit", "add", "remove", "tap", "press")):
             selector = _selector_from_step(step)
@@ -2614,12 +3325,30 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
             if not selector:
                 selector = _element_selector_for_step(context, "click", step)
             if selector:
+                if recorded_index is None:
+                    recorded_index = _recorded_index_for_selector_action(recorded_steps, recorded_action, selector, used_recorded)
                 if recorded_index is not None:
                     lines.extend(_bridge_lines_before_recorded_action(
                         context, recorded_steps, recorded_index, used_recorded, page_var=page_var, emitted_lines=lines
                     ))
                     used_recorded.add(recorded_index)
                 lines.append(f"  await {page_var}.locator('{_ts_string(selector)}').click();")
+                target_path = _workflow_target_path_from_step(step)
+                if target_path:
+                    lines.append(f"  await {page_var}.waitForURL('**{_ts_string(target_path)}**');")
+                    last_url_path = target_path
+            else:
+                target_path = _workflow_target_path_from_step(step)
+                if target_path:
+                    lines.extend(_transition_lines_to_path(
+                        context,
+                        step,
+                        target_path,
+                        page_var=page_var,
+                        desired_action=recorded_action,
+                        used_recorded=used_recorded,
+                    ))
+                    last_url_path = target_path
             continue
         if lower.startswith("select") or " select " in f" {lower} ":
             selector = _selector_from_step(step)
@@ -2676,11 +3405,13 @@ def _deterministic_lines_from_steps(context: dict[str, Any], *, page_var: str) -
                 )
             continue
         if lower.startswith("assert") and "visible" in lower:
+            assertion_lines = _recorded_visible_assertion_lines(context, step, page_var=page_var)
+            if assertion_lines:
+                lines.extend(assertion_lines)
+                continue
             selector = _selector_from_step(step)
             if selector:
                 lines.append(f"  await expect({page_var}.locator('{_ts_string(selector)}')).toBeVisible();")
-            else:
-                lines.extend(_recorded_visible_assertion_lines(context, step, page_var=page_var))
 
     if not any("expect(" in line for line in lines):
         lines.extend(_grounded_fallback_assertion_lines(context, page_var=page_var))
@@ -2751,6 +3482,7 @@ async def generate_script(context: dict[str, Any]) -> str | None:
                     if _context_steps_include_login_setup(context) and context.get("auth_login_path")
                     else context.get("target_page")
                 ),
+                context=context,
             )
             raw, selector_fixes = _refine_bare_tag_locators(raw, context)
             if selector_fixes:
@@ -2762,6 +3494,7 @@ async def generate_script(context: dict[str, Any]) -> str | None:
                 test_block = raw
                 break
             last_errors = _script_validation_errors(raw, context)
+            context["last_validation_errors"] = last_errors
             logger.warning(
                 "agent5 attempt %d: script validation failed for test_id=%s errors=%s",
                 attempt + 1, test_id, last_errors,
@@ -2786,6 +3519,7 @@ async def generate_script(context: dict[str, Any]) -> str | None:
                     if _context_steps_include_login_setup(context) and context.get("auth_login_path")
                     else context.get("target_page")
                 ),
+                context=context,
             )
             fallback, selector_fixes = _refine_bare_tag_locators(fallback, context)
             if selector_fixes:
@@ -2799,14 +3533,19 @@ async def generate_script(context: dict[str, Any]) -> str | None:
                     test_id, grounding_reason, last_errors,
                 )
                 test_block = fallback
+            else:
+                last_errors = _script_validation_errors(fallback, context)
+                context["last_validation_errors"] = last_errors
         else:
             logger.error(
                 "agent5: refusing deterministic fallback for test_id=%s - %s",
                 test_id, grounding_reason,
             )
+            context["last_validation_errors"] = [grounding_reason]
 
     if not test_block:
         logger.error("agent5 exhausted retries for test_id=%s - marking HUMAN_REVIEW", test_id)
+        context.setdefault("last_validation_errors", last_errors or ["A5 returned no grounded Playwright script"])
         update_state(test_id, "HUMAN_REVIEW", run_id=context.get("run_id"))
         return None
 
@@ -2929,6 +3668,7 @@ async def generate_grouped_script(
                         if _context_steps_include_login_setup(context) and context.get("auth_login_path")
                         else context.get("target_page")
                     ),
+                    context=context,
                 )
                 raw, selector_fixes = _refine_bare_tag_locators(raw, context)
                 if selector_fixes:
@@ -2940,6 +3680,7 @@ async def generate_grouped_script(
                     block = raw
                     break
                 last_errors = _grouped_validation_errors(raw, context)
+                context["last_validation_errors"] = last_errors
                 logger.warning(
                     "agent5 grouped attempt %d: block validation failed test_id=%s errors=%s",
                     attempt + 1, test_id, last_errors,
@@ -2964,6 +3705,7 @@ async def generate_grouped_script(
                         if _context_steps_include_login_setup(context) and context.get("auth_login_path")
                         else context.get("target_page")
                     ),
+                    context=context,
                 )
                 fallback, selector_fixes = _refine_bare_tag_locators(fallback, context)
                 if selector_fixes:
@@ -2977,17 +3719,22 @@ async def generate_grouped_script(
                         test_id, grounding_reason, last_errors,
                     )
                     block = fallback
+                else:
+                    last_errors = _grouped_validation_errors(fallback, context)
+                    context["last_validation_errors"] = last_errors
             else:
                 logger.error(
                     "agent5: refusing deterministic grouped fallback for test_id=%s - %s",
                     test_id, grounding_reason,
                 )
+                context["last_validation_errors"] = [grounding_reason]
 
         if not block:
             logger.error(
                 "agent5: grouped block failed test_id=%s - aborting grouped script generation",
                 test_id,
             )
+            context.setdefault("last_validation_errors", last_errors or ["A5 returned no grounded grouped Playwright block"])
             update_state(test_id, "HUMAN_REVIEW", run_id=run_id)
             return None
 

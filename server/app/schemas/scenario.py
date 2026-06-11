@@ -109,6 +109,10 @@ class HighLevelScenarioResponse(BaseModel):
     status: ScenarioStatus
     completed_by: uuid.UUID | None
     completed_by_name: str | None
+    recording_status: str | None = None
+    recording_step_count: int = 0
+    recording_phase3_ready: bool | None = None
+    recording_quality_failure_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

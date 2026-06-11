@@ -507,6 +507,23 @@ def test_noise_ad_domain_marked_as_noise() -> None:
     assert reason is not None
 
 
+def test_noise_ad_iframe_with_advertisement_label_marked_as_noise() -> None:
+    payload = RecorderStepCreate(
+        step_index=5,
+        action_type="click",
+        selector="iframe",
+        element_type="iframe",
+        accessible_name="Advertisement",
+        url_before="https://automationexercise.com/product_details/2",
+        url="https://automationexercise.com/product_details/2",
+    )
+
+    is_noise, reason = recorder_service._is_noise_step(payload, "https://automationexercise.com")
+
+    assert is_noise is True
+    assert reason == "ad_iframe_element:advertisement"
+
+
 def test_noise_captcha_url_marked_as_noise() -> None:
     payload = RecorderStepCreate(
         step_index=6,

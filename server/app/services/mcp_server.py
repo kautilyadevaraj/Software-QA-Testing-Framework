@@ -217,6 +217,7 @@ def save_test_result(
     retries: int = 0,
     jira_ticket: str | None = None,
     trace_path: str | None = None,
+    screenshot_path: str | None = None,
     network_logs: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Immediately write a test result to the DB (used for APP_ERROR classification)."""
@@ -236,6 +237,7 @@ def save_test_result(
             existing.retries = retries
             existing.jira_ticket = jira_ticket
             existing.trace_path = trace_path
+            existing.screenshot_path = screenshot_path
             result = existing
         else:
             result = TestResult(
@@ -246,6 +248,7 @@ def save_test_result(
                 retries=retries,
                 jira_ticket=jira_ticket,
                 trace_path=trace_path,
+                screenshot_path=screenshot_path,
             )
             db.add(result)
             db.flush()
@@ -293,6 +296,7 @@ def flush_to_postgres(run_id: str) -> dict[str, int]:
                     existing.retries = entry.retries
                     existing.jira_ticket = entry.jira_ticket or existing.jira_ticket
                     existing.trace_path = entry.trace_path or existing.trace_path
+                    existing.screenshot_path = entry.screenshot_path or existing.screenshot_path
                 else:
                     db.add(TestResult(
                         id=uuid.uuid4(),
@@ -302,6 +306,7 @@ def flush_to_postgres(run_id: str) -> dict[str, int]:
                         retries=entry.retries,
                         jira_ticket=entry.jira_ticket,
                         trace_path=entry.trace_path,
+                        screenshot_path=entry.screenshot_path,
                     ))
                 flushed += 1
             except Exception as exc:

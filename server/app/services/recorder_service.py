@@ -308,6 +308,19 @@ def _is_noise_step(
 ) -> tuple[bool, str | None]:
     """Return (is_noise, noise_reason).  Noise steps are stored with is_noise=True,
     never silently dropped — Phase 3 skips them."""
+    selector_str = str(payload.selector or "").lower()
+    semantic_bits = " ".join(
+        str(v or "")
+        for v in (
+            payload.element_text,
+            payload.accessible_name,
+            payload.label,
+            payload.element_type,
+        )
+    ).lower()
+    if "iframe" in selector_str and "advertisement" in semantic_bits:
+        return True, "ad_iframe_element:advertisement"
+
     url = payload.url_before or payload.url or ""
     if not url:
         return False, None
@@ -345,7 +358,6 @@ def _is_noise_step(
             return True, f"consent_overlay:{host}"
 
     # Selector chain contains an ad iframe with external domain
-    selector_str = str(payload.selector or "").lower()
     if "iframe" in selector_str and is_external:
         return True, f"ad_iframe_element:{host}"
 
@@ -373,6 +385,7 @@ def _selector_quality_reason(selector: str | None) -> str | None:
     if not selector:
         return None
     s = selector.strip()
+    lower = s.lower()
     if re.search(r'\[data-testid|\[data-test|\[data-cy|\[data-qa', s):
         return "data_attr"
     if s.startswith("#") and not re.search(r'[0-9a-f-]{16,}', s, re.IGNORECASE):
@@ -384,10 +397,39 @@ def _selector_quality_reason(selector: str | None) -> str | None:
     if re.search(r'\[placeholder=', s):
         return "placeholder"
     if re.search(r'\[href=', s):
+        href_match = re.search(r"""href\s*=\s*["']([^"']+)["']""", s, re.IGNORECASE)
+        href = href_match.group(1).strip().lower() if href_match else ""
+        if href in {"#", "javascript:void(0)", "javascript:;"}:
+            return "structural_fallback"
         return "href"
-    if re.search(r':nth-of-type\(|:nth-child\(', s):
+    if re.search(r':nth-of-type\(|:nth-child\(', lower):
         return "structural_fallback"
     return "structural_fallback"
+
+
+def _recording_quality_failure_reasons(quality: dict | None) -> list[str]:
+    quality = quality or {}
+    reasons: list[str] = []
+    total = int(quality.get("total_steps") or 0)
+    stable = int(quality.get("stable_selector_count") or 0)
+    noise = int(quality.get("noise_step_count") or 0)
+    assertions = int(quality.get("assertion_candidate_count") or 0)
+
+    if total < 3:
+        reasons.append("too_few_recorded_steps")
+    if total > 0 and stable / total < 0.5:
+        reasons.append("insufficient_stable_selectors")
+    if total > 0 and noise / total > 0.3:
+        reasons.append("too_much_noise")
+    if bool(quality.get("blocked_by_security")):
+        reasons.append("blocked_by_security")
+    if assertions < 1:
+        reasons.append("missing_assertion_candidates")
+    return reasons
+
+
+def _quality_allows_scenario_completion(quality: dict | None) -> bool:
+    return bool((quality or {}).get("phase3_ready")) and not _recording_quality_failure_reasons(quality)
 
 
 # ── Semantic field identity ────────────────────────────────────────────────
@@ -860,6 +902,7 @@ def complete_session(
     session.status = "completed"
     session.completed_at = datetime.now(timezone.utc)
     flow = _latest_flow_for_session(db, session.id)
+    quality: dict | None = None
     if flow:
         flow.status = "completed"
         flow.completed_at = session.completed_at
@@ -868,16 +911,21 @@ def complete_session(
         quality = _compute_recording_quality(db, flow)
         flow_meta = dict(flow.metadata_json or {})
         flow_meta["quality_summary"] = quality
+        flow_meta["quality_failure_reasons"] = _recording_quality_failure_reasons(quality)
         flow.metadata_json = flow_meta
         flow.phase3_ready = quality["phase3_ready"]
         db.add(flow)
     db.commit()
 
-    # Mark the scenario as completed
+    # Only mark the HLS complete when Phase 2 evidence is strong enough for Phase 3.
     scenario = db.get(HighLevelScenario, session.scenario_id)
     if scenario:
-        scenario.status = "completed"
-        scenario.completed_by = project.owner_id
+        if _quality_allows_scenario_completion(quality):
+            scenario.status = "completed"
+            scenario.completed_by = project.owner_id
+        else:
+            scenario.status = "pending"
+            scenario.completed_by = None
         db.commit()
 
     db.refresh(session)

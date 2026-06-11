@@ -167,6 +167,12 @@ class TestSelectorQualityReason:
     def test_href(self) -> None:
         assert recorder_service._selector_quality_reason('a[href="/cart"]') == "href"
 
+    def test_placeholder_href_is_structural_fallback(self) -> None:
+        assert recorder_service._selector_quality_reason('a[href="#"]') == "structural_fallback"
+
+    def test_javascript_void_href_is_structural_fallback(self) -> None:
+        assert recorder_service._selector_quality_reason('a[href="javascript:void(0)"]') == "structural_fallback"
+
     def test_structural_nth_of_type(self) -> None:
         assert recorder_service._selector_quality_reason("div:nth-of-type(2) > button") == "structural_fallback"
 
@@ -192,3 +198,47 @@ class TestSecurityBlockedUrl:
 
     def test_dashboard_not_blocked(self) -> None:
         assert recorder_service._is_security_blocked_url("https://example.test/dashboard") is False
+
+
+class TestRecordingCompletionQualityDecision:
+    def test_quality_allows_scenario_completion_when_phase3_ready(self) -> None:
+        quality = {
+            "total_steps": 4,
+            "stable_selector_count": 3,
+            "noise_step_count": 0,
+            "assertion_candidate_count": 1,
+            "blocked_by_security": False,
+            "phase3_ready": True,
+        }
+
+        assert recorder_service._recording_quality_failure_reasons(quality) == []
+        assert recorder_service._quality_allows_scenario_completion(quality) is True
+
+    def test_quality_blocks_scenario_completion_for_bad_evidence(self) -> None:
+        quality = {
+            "total_steps": 3,
+            "stable_selector_count": 0,
+            "noise_step_count": 0,
+            "assertion_candidate_count": 0,
+            "blocked_by_security": False,
+            "phase3_ready": False,
+        }
+
+        assert recorder_service._recording_quality_failure_reasons(quality) == [
+            "insufficient_stable_selectors",
+            "missing_assertion_candidates",
+        ]
+        assert recorder_service._quality_allows_scenario_completion(quality) is False
+
+    def test_quality_blocks_scenario_completion_for_noisy_recording(self) -> None:
+        quality = {
+            "total_steps": 5,
+            "stable_selector_count": 4,
+            "noise_step_count": 3,
+            "assertion_candidate_count": 1,
+            "blocked_by_security": False,
+            "phase3_ready": False,
+        }
+
+        assert recorder_service._recording_quality_failure_reasons(quality) == ["too_much_noise"]
+        assert recorder_service._quality_allows_scenario_completion(quality) is False

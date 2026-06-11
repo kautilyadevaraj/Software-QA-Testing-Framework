@@ -58,8 +58,24 @@ def scripts_dir(project_id: str, run_id: str) -> Path:
 
 
 def traces_dir_from_script(script_path: Path) -> Path:
+    """Return the run-level traces directory (shared; kept for grouped-spec fallback)."""
     parent = script_path.parent
     path = parent.parent / "traces" if parent.name == "scripts" else parent / "traces"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def traces_dir_for_test(script_path: Path, test_id: str) -> Path:
+    """Return a *test-scoped* traces directory to prevent cross-test overwrites.
+
+    Layout:
+        tests/generated/<project_id>/<run_id>/traces/<test_id_short>/
+
+    Each single_test job receives its own directory so concurrent workers
+    writing trace.zip or assertion_screenshot.png never collide.
+    """
+    base = traces_dir_from_script(script_path)
+    path = base / short_id(test_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 

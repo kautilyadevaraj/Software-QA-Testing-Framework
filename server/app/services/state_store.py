@@ -85,6 +85,7 @@ def update_state(test_id: str | uuid.UUID, status: str, **extras: Any) -> None:
             blocked_by=extras.get("blocked_by"),
             jira_ticket=extras.get("jira_ticket"),
             trace_path=extras.get("trace_path"),
+            screenshot_path=extras.get("screenshot_path"),
             network_logs_count=(
                 len(extras["network_logs"]) if isinstance(extras.get("network_logs"), list) else None
             ),
@@ -124,6 +125,7 @@ def get_status(test_id: str | uuid.UUID) -> dict[str, Any] | None:
             "retries": row.retries,
             "jira_ticket": row.jira_ticket,
             "trace_path": row.trace_path,
+            "screenshot_path": row.screenshot_path,
             "blocked_by": str(row.blocked_by) if row.blocked_by else None,
         }
     except Exception:

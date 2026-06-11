@@ -32,7 +32,7 @@ from app.core.config import settings
 from app.services import mcp_server, state_store
 from app.services.job_claim_service import mark_job_completed, try_claim_job
 from app.services.phase3_jobs import job_script_path, parse_job, serialize_job
-from app.services.artifact_paths import generated_base, upsert_manifest_entry, traces_dir_from_script
+from app.services.artifact_paths import generated_base, upsert_manifest_entry, traces_dir_from_script, traces_dir_for_test
 from app.services.artifact_registry import register_artifact
 from app.services.queue_topology import declare_topology, republish_with_attempt
 
@@ -227,15 +227,44 @@ def _run_spec(
           "stderr": str,
           "report": dict,   # parsed JSON reporter output (may be {})
         }
+
+    Output directory is scoped to the individual test_id when available so that
+    concurrent workers in the same run never overwrite each other's trace.zip or
+    assertion_screenshot.png files (the overwrite bug fix).
     """
     # Subprocess wallclock — generous (default 600s) so a 6-test serial suite
     # with one or two hung tests can still complete and emit JSON results.
     # Decoupled from the per-test timeout (PLAYWRIGHT_TEST_TIMEOUT_MS, ~30s)
     # passed via env to playwright.config.ts.
     timeout_s = settings.resolved_worker_subprocess_timeout_ms / 1000
-    traces_dir = traces_dir_from_script(script_path)
+
+    # ── Per-test scoped output dir (overwrite bug fix) ─────────────────────────
+    # When test_id is available (single_test jobs), each test gets its own
+    # subdirectory:  <run_dir>/traces/<test_id_short>/
+    # Grouped jobs fall back to the shared run-level traces dir because they
+    # run multiple test() blocks in one Playwright process and A6 handles
+    # individual trace paths via reporter attachment.
+    if test_id:
+        output_dir = traces_dir_for_test(script_path, test_id)
+        # Tell the generated .spec.ts where to save the assertion screenshot.
+        screenshot_env_path = str(output_dir / "assertion_screenshot.png")
+    else:
+        output_dir = traces_dir_from_script(script_path)
+        screenshot_env_path = ""
 
     try:
+        env = _build_env(
+            run_id,
+            storage_state_path=storage_state_path,
+            test_id=test_id,
+            credential_id=credential_id,
+            plan_run_id=plan_run_id,
+        )
+        # Inject the screenshot path so page.screenshot({ path: process.env.SQAT_SCREENSHOT_PATH })
+        # inside the generated .spec.ts resolves to a unique, non-conflicting path.
+        if screenshot_env_path:
+            env["SQAT_SCREENSHOT_PATH"] = screenshot_env_path
+
         npx_cmd = "npx.cmd" if sys.platform == "win32" else "npx"
         proc = subprocess.run(
             [
@@ -245,19 +274,13 @@ def _run_spec(
                 # retain-on-failure: keep trace for failed tests without
                 # requiring PW retries (we set retries=0; A7 retries at agent level).
                 "--trace=retain-on-failure",
-                f"--output={traces_dir}",
+                f"--output={output_dir}",
             ],
             capture_output=True,
             text=True,
             timeout=timeout_s,
             shell=False,
-            env=_build_env(
-                run_id,
-                storage_state_path=storage_state_path,
-                test_id=test_id,
-                credential_id=credential_id,
-                plan_run_id=plan_run_id,
-            ),
+            env=env,
             cwd=_server_cwd(),   # server/ (where playwright.config.ts lives)
         )
     except subprocess.TimeoutExpired:
@@ -278,6 +301,9 @@ def _run_spec(
         "stdout": proc.stdout[:4000],
         "stderr": proc.stderr[:2000],
         "report": report,
+        # Surface the expected screenshot path so the caller can check existence
+        # after determining the test outcome (PASS → register, FAIL → skip).
+        "screenshot_env_path": screenshot_env_path,
     }
 
 
@@ -331,7 +357,60 @@ def _walk_specs(report: dict[str, Any]):
 # â”€â”€ Grouped HLS path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
-def _classify_single_run_result(test_id: str, run_id: str, run: dict[str, Any]) -> str:
+def _register_pass_screenshot(
+    test_id: str,
+    run_id: str,
+    screenshot_path: str,
+    *,
+    project_id: str,
+) -> None:
+    """Persist the assertion screenshot produced by a passing single_test job.
+
+    The screenshot is captured inside the .spec.ts via:
+        await page.screenshot({ path: process.env.SQAT_SCREENSHOT_PATH });
+    injected right after the final expect() call by Agent A5.
+    """
+    p = Path(screenshot_path)
+    if not p.exists():
+        logger.debug(
+            "worker: assertion screenshot not found at %s for test_id=%s — skipping",
+            screenshot_path, test_id,
+        )
+        return
+    try:
+        state_store.update_state(
+            test_id,
+            "PASS",
+            run_id=run_id,
+            screenshot_path=screenshot_path,
+        )
+        if project_id:
+            from app.services.artifact_registry import register_artifact
+            register_artifact(
+                project_id=project_id,
+                run_id=run_id,
+                test_id=test_id,
+                artifact_type="SCREENSHOT",
+                path=p,
+            )
+        logger.info(
+            "worker: assertion screenshot registered test_id=%s path=%s",
+            test_id, screenshot_path,
+        )
+    except Exception as exc:
+        logger.warning(
+            "worker: failed to register assertion screenshot for test_id=%s: %s",
+            test_id, exc,
+        )
+
+
+def _classify_single_run_result(
+    test_id: str,
+    run_id: str,
+    run: dict[str, Any],
+    *,
+    project_id: str = "",
+) -> str:
     """Parse a JSON reporter result for one spec and send it through A6."""
     from app.agents.agent6_classifier import classify
 
@@ -348,10 +427,23 @@ def _classify_single_run_result(test_id: str, run_id: str, run: dict[str, Any]) 
 
     for log in network_logs:
         state_store.append_network_log(test_id, log)
-    if trace_path:
+
+    is_pass = run.get("exit_code") == 0
+
+    if is_pass:
+        # On PASS: store the assertion screenshot (no trace needed).
+        screenshot_path = run.get("screenshot_env_path") or ""
+        if screenshot_path:
+            _register_pass_screenshot(
+                test_id, run_id, screenshot_path, project_id=project_id
+            )
+        else:
+            state_store.update_state(test_id, "PASS", run_id=run_id)
+    elif trace_path:
+        # On FAIL: persist the trace path so A6/A7 and the UI can access it.
         state_store.update_state(
             test_id,
-            "PASS" if run.get("exit_code") == 0 else "PENDING",
+            "PENDING",
             run_id=run_id,
             trace_path=trace_path,
         )
@@ -359,7 +451,7 @@ def _classify_single_run_result(test_id: str, run_id: str, run: dict[str, Any]) 
     return classify(
         test_id=test_id,
         run_id=run_id,
-        playwright_result="PASS" if run.get("exit_code") == 0 else "FAIL",
+        playwright_result="PASS" if is_pass else "FAIL",
         network_logs=network_logs,
         error_log=error_message or run.get("stderr", ""),
     )
@@ -450,19 +542,33 @@ def _register_playwright_artifacts(
     test_id: str,
     script_path: Path,
 ) -> None:
+    """Register any Playwright artifacts (traces, videos) found in the test-scoped dir.
+
+    For single_test jobs this is called AFTER _classify_single_run_result() which
+    already handles assertion screenshots on PASS. Here we pick up traces (FAIL) and
+    any video files (headed mode). PNG screenshots that are assertion screenshots
+    were already registered by _register_pass_screenshot(); we skip them here to
+    avoid double-registration.
+    """
     if not project_id:
         return
-    traces_dir = traces_dir_from_script(script_path)
-    if not traces_dir.exists():
+    # Prefer the test-scoped directory; fall back to the run-level traces dir.
+    scoped_dir = traces_dir_for_test(script_path, test_id)
+    search_dir = scoped_dir if scoped_dir.exists() else traces_dir_from_script(script_path)
+    if not search_dir.exists():
         return
     type_by_suffix = {
         ".zip": "TRACE",
         ".webm": "VIDEO",
-        ".png": "SCREENSHOT",
         ".json": "REPORT",
+        # NOTE: .png excluded here — assertion screenshots are registered by
+        # _register_pass_screenshot() to avoid double-registration.
     }
-    for file in traces_dir.rglob("*"):
+    for file in search_dir.rglob("*"):
         if not file.is_file():
+            continue
+        # Skip assertion screenshots already handled by _register_pass_screenshot()
+        if file.name == "assertion_screenshot.png":
             continue
         artifact_type = type_by_suffix.get(file.suffix.lower())
         if not artifact_type:
@@ -840,7 +946,12 @@ def worker_loop(
                         credential_id=job.get("credential_id"),
                         plan_run_id=job.get("plan_run_id"),
                     )
-                    classification = _classify_single_run_result(test_id, job_run_id, result)
+                    classification = _classify_single_run_result(
+                        test_id,
+                        job_run_id,
+                        result,
+                        project_id=str(job.get("project_id") or ""),
+                    )
                     _update_artifact_manifest(
                         project_id=str(job.get("project_id") or ""),
                         run_id=job_run_id,
@@ -958,7 +1069,12 @@ def standalone_worker_loop(*, idle_timeout_s: int = 0) -> None:
                             credential_id=job.get("credential_id"),
                             plan_run_id=job.get("plan_run_id"),
                         )
-                        classification = _classify_single_run_result(test_id, job_run_id, result)
+                        classification = _classify_single_run_result(
+                            test_id,
+                            job_run_id,
+                            result,
+                            project_id=str(job.get("project_id") or ""),
+                        )
                         _update_artifact_manifest(
                             project_id=str(job.get("project_id") or ""),
                             run_id=job_run_id,
