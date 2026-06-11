@@ -156,6 +156,54 @@ function scenarioTags(source: ScenarioSource) {
   return [sourceBadge(source).label];
 }
 
+function recordingFailureText(reasons: string[]) {
+  if (!reasons.length) return "Quality gate failed";
+  return reasons.map((reason) => reason.replace(/_/g, " ")).join(", ");
+}
+
+function recordingBadge(scenario: HighLevelScenario) {
+  if (!scenario.recording_status) {
+    return {
+      label: "Not recorded",
+      title: "No recording session has been saved yet.",
+      className: "border-zinc-200 bg-zinc-50 text-zinc-600",
+    };
+  }
+  if (scenario.recording_status === "in_progress") {
+    return {
+      label: "Recording",
+      title: "Recording is currently in progress.",
+      className: "border-red-200 bg-red-50 text-red-700",
+    };
+  }
+  if (scenario.recording_status === "failed") {
+    return {
+      label: "Recording failed",
+      title: "The latest recording session failed.",
+      className: "border-red-200 bg-red-50 text-red-700",
+    };
+  }
+  if (scenario.recording_status === "completed" && scenario.recording_phase3_ready === false) {
+    return {
+      label: "Needs re-recording",
+      title: recordingFailureText(scenario.recording_quality_failure_reasons),
+      className: "border-amber-200 bg-amber-50 text-amber-800",
+    };
+  }
+  if (scenario.recording_status === "completed" && scenario.recording_phase3_ready === true) {
+    return {
+      label: "Phase 3 ready",
+      title: `${scenario.recording_step_count} steps recorded.`,
+      className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    };
+  }
+  return {
+    label: "Recording pending",
+    title: "Recording session has been created but not started.",
+    className: "border-zinc-200 bg-zinc-100 text-zinc-700",
+  };
+}
+
 function tableInputClass() {
   return "min-h-10 w-full rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]";
 }
@@ -256,12 +304,16 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     let hasStarted = false;
     const interval = setInterval(async () => {
       try {
-        const { session_status } = await getScenarioRecordingStatus(projectId, recordingScenarioId);
+        const { session_status, phase3_ready, quality_failure_reasons } = await getScenarioRecordingStatus(projectId, recordingScenarioId);
         if (session_status === "in_progress") {
           hasStarted = true;
         } else if (hasStarted && (session_status === "completed" || session_status === "failed")) {
           setRecordingScenarioId(null);
           await loadApprovedScenarios();
+          if (session_status === "completed" && !phase3_ready) {
+            toast.warning(`Recording saved, but quality needs review: ${recordingFailureText(quality_failure_reasons)}`);
+            return;
+          }
           if (session_status === "completed") {
             toast.success("Recording finished — session saved.");
           } else {
@@ -834,6 +886,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                 {approvedScenarios.map((scenario) => {
                   const isEditing = approvedEditId === scenario.id;
                   const isDescriptionOpen = expandedDescriptionIds.includes(scenario.id);
+                  const recorderBadge = recordingBadge(scenario);
                   return (
                     <Fragment key={scenario.id}>
                       <tr className={cn("border-t border-black/10", isDescriptionOpen ? "bg-[#2a63f5]/[0.03]" : undefined)}>
@@ -865,18 +918,27 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <button
-                            type="button"
-                            onClick={() => void toggleStatus(scenario)}
-                            className={cn(
-                              "rounded-full border px-2 py-1 text-xs font-semibold",
-                              scenario.status === "completed"
-                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                : "border-zinc-200 bg-zinc-100 text-zinc-700",
-                            )}
-                          >
-                            {scenario.status === "completed" ? "Completed" : "Pending"}
-                          </button>
+                          <div className="grid gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void toggleStatus(scenario)}
+                              className={cn(
+                                "w-fit rounded-full border px-2 py-1 text-xs font-semibold",
+                                scenario.status === "completed"
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                  : "border-zinc-200 bg-zinc-100 text-zinc-700",
+                              )}
+                              title="Manual HLS completion status"
+                            >
+                              {scenario.status === "completed" ? "HLS completed" : "HLS pending"}
+                            </button>
+                            <span
+                              className={cn("w-fit rounded-full border px-2 py-1 text-xs font-semibold", recorderBadge.className)}
+                              title={recorderBadge.title}
+                            >
+                              {recorderBadge.label}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex justify-end gap-2">

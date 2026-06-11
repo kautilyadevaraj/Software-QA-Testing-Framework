@@ -109,6 +109,13 @@ RABBITMQ_QUEUE=phase3_test_jobs
 
 If you already have another RabbitMQ container using ports `5672` or `15672`, stop the old container or update the compose port mapping before starting this one.
 
+> **Worker mode:** For local development, set `PHASE3_EMBEDDED_WORKERS=true` in `server/.env`.
+> This runs the Phase 3 execution worker inside the uvicorn process — no separate command needed.
+> If you set `PHASE3_EMBEDDED_WORKERS=false`, jobs will be published to RabbitMQ but will sit
+> in the queue unconsumed until you also run `python -m app.services.phase3_worker` in a
+> separate terminal. The Docker Compose stack handles this automatically via the `phase3-worker`
+> service, but plain local dev requires the embedded mode or the separate worker command.
+
 ## 3. Backend
 
 ```powershell
@@ -132,6 +139,11 @@ QDRANT_API_KEY=your_qdrant_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 PUBLIC_API_URL=http://localhost:8000
+# Worker mode — REQUIRED for local dev:
+# true  = uvicorn runs workers in-process (default, recommended for local dev)
+# false = jobs go to RabbitMQ but nothing consumes them until you also run:
+#         python -m app.services.phase3_worker
+PHASE3_EMBEDDED_WORKERS=true
 ```
 
 For visible local demo execution:

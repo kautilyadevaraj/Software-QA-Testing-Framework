@@ -507,6 +507,14 @@ export type HighLevelScenario = {
 
   completed_by_name: string | null;
 
+  recording_status: RecordingStatus | null;
+
+  recording_step_count: number;
+
+  recording_phase3_ready: boolean | null;
+
+  recording_quality_failure_reasons: string[];
+
   created_at: string;
 
   updated_at: string;
@@ -1195,7 +1203,12 @@ export async function getScenarioRecordingStatus(
 
   scenarioId: string,
 
-): Promise<{ session_status: "none" | "pending" | "in_progress" | "completed" | "failed" }> {
+): Promise<{
+  session_status: "none" | RecordingStatus;
+  phase3_ready: boolean | null;
+  step_count: number;
+  quality_failure_reasons: string[];
+}> {
 
   return request(`/projects/${projectId}/scenarios/${scenarioId}/recording-status`, {
 
