@@ -1,12 +1,17 @@
 """Scenario management endpoints — called by the Next.js frontend."""
 
 
+import json
 import logging
+import queue
 import shutil
+import threading
 import uuid
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from uuid6 import uuid7
@@ -150,7 +155,7 @@ def _remove_recording_path(path: str | None, recordings_base: Path) -> bool:
 
 # ── Generate ───────────────────────────────────────────────────────────────
 
-@router.post("/{project_id}/scenarios/generate", response_model=GenerateScenariosResponse)
+@router.post("/{project_id}/scenarios/generate")
 @limiter.limit(settings.rate_limit_api)
 def generate_scenarios(
     request: Request,
@@ -158,32 +163,56 @@ def generate_scenarios(
     payload: GenerateScenariosRequest = Body(default=GenerateScenariosRequest()),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> GenerateScenariosResponse:
+) -> StreamingResponse:
     get_project_or_404(db, current_user.id, project_id)
-    try:
-        from app.graph.scenario_graph import run_scenario_graph
 
-        scenarios = run_scenario_graph(
-            str(project_id),
-            {
-                "max_scenarios": payload.max_scenarios,
-                "scenario_types": payload.scenario_types,
-                "access_mode": payload.access_mode,
-                "scenario_level": payload.scenario_level,
-            },
-            [
+    q = queue.Queue()
+
+    def progress_callback(msg: str):
+        q.put({"type": "progress", "message": msg})
+
+    def run_generation():
+        try:
+            from app.graph.scenario_graph import run_scenario_graph
+            scenarios = run_scenario_graph(
+                str(project_id),
                 {
-                    "title": scenario.title,
-                    "description": scenario.description,
-                    "source": scenario.source,
-                }
-                for scenario in payload.existing_scenarios
-            ],
-        )
-    except Exception as error:
-        logger.exception("Scenario generation failed for project_id=%s: %s", project_id, error)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Scenario generation failed") from error
-    return GenerateScenariosResponse(scenarios=scenarios)
+                    "max_scenarios": payload.max_scenarios,
+                    "scenario_types": payload.scenario_types,
+                    "access_mode": payload.access_mode,
+                    "scenario_level": payload.scenario_level,
+                    "progress_callback": progress_callback,
+                },
+                [
+                    {
+                        "title": scenario.title,
+                        "description": scenario.description,
+                        "source": scenario.source,
+                    }
+                    for scenario in payload.existing_scenarios
+                ],
+            )
+            q.put({"type": "complete", "scenarios": scenarios})
+        except Exception as error:
+            logger.exception("Scenario generation failed for project_id=%s: %s", project_id, error)
+            q.put({"type": "error", "message": str(error)})
+
+    threading.Thread(target=run_generation, daemon=True).start()
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        while True:
+            try:
+                # Use a small timeout so we don't block the async generator indefinitely
+                item = q.get(timeout=0.1)
+                yield json.dumps(item) + "\n"
+                if item["type"] in ("complete", "error"):
+                    break
+            except queue.Empty:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 
 # ── Approve ────────────────────────────────────────────────────────────────

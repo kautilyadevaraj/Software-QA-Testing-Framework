@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from difflib import SequenceMatcher
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, Callable
 
 from app.core.config import get_settings
 from app.utils.llm import call_llm_direct
@@ -115,6 +115,7 @@ class ScenarioGenerationOptions(TypedDict, total=False):
     scenario_types: list[ScenarioType]
     access_mode: ScenarioAccessMode
     scenario_level: ScenarioLevel
+    progress_callback: Callable[[str], None] | None
 
 
 STRICT_JSON_RETRY_SUFFIX = (
@@ -446,7 +447,12 @@ def limit_scenarios(scenarios: list[PreviewScenario], max_scenarios: int | None)
     return scenarios[:max_scenarios]
 
 
-def invoke_json_scenarios(prompt: str, agent_name: str, source: ScenarioSource | None = None) -> list[PreviewScenario]:
+def invoke_json_scenarios(
+    prompt: str,
+    agent_name: str,
+    source: ScenarioSource | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> list[PreviewScenario]:
     """Call the configured LLM (Claude primary via call_llm_direct) and parse the JSON array response.
 
     Uses _scenario_output_tokens() (default 2048) as the max_tokens cap.
@@ -459,10 +465,14 @@ def invoke_json_scenarios(prompt: str, agent_name: str, source: ScenarioSource |
 
     # First attempt
     logger.info("%s: calling LLM (max_tokens=%d)", agent_name, tokens)
+    if progress_callback:
+        progress_callback(f"{agent_name}: calling LLM...")
     try:
         raw = call_llm_direct(prompt, max_tokens=tokens)
         result = normalize_scenarios(parse_json_array(raw), source=source)
         logger.info("%s: got %d scenarios from LLM", agent_name, len(result))
+        if progress_callback:
+            progress_callback(f"{agent_name}: received {len(result)} scenarios")
         return result
     except (json.JSONDecodeError, ValueError) as first_error:
         logger.warning(
@@ -477,10 +487,14 @@ def invoke_json_scenarios(prompt: str, agent_name: str, source: ScenarioSource |
 
     # Retry with stricter JSON suffix
     logger.info("%s: retrying LLM call with strict JSON instruction", agent_name)
+    if progress_callback:
+        progress_callback(f"{agent_name}: retrying LLM call...")
     try:
         raw = call_llm_direct(prompt + STRICT_JSON_RETRY_SUFFIX, max_tokens=tokens)
         result = normalize_scenarios(parse_json_array(raw), source=source)
         logger.info("%s: got %d scenarios from LLM on retry", agent_name, len(result))
+        if progress_callback:
+            progress_callback(f"{agent_name}: received {len(result)} scenarios on retry")
         return result
     except (json.JSONDecodeError, ValueError) as retry_error:
         logger.warning("%s returned invalid JSON after retry: %s", agent_name, retry_error)
@@ -505,6 +519,7 @@ def generate_scenarios_from_batches(
     access_mode: str | None = None,
     scenario_level: str | None = None,
     existing_scenarios: list[PreviewScenario] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> list[PreviewScenario]:
     settings = get_settings()
     scenarios: list[PreviewScenario] = []
@@ -515,6 +530,8 @@ def generate_scenarios_from_batches(
 
     for batch_index, document_text in enumerate(text_batches, start=1):
         try:
+            if progress_callback:
+                progress_callback(f"{agent_name}: preparing batch {batch_index}/{len(text_batches)}")
             batch_scenarios = invoke_json_scenarios(
                 prompt_template.format(
                     document_text=document_text,
@@ -527,6 +544,7 @@ def generate_scenarios_from_batches(
                 ),
                 agent_name=f"{agent_name}_batch_{batch_index}",
                 source=source,
+                progress_callback=progress_callback,
             )
             scenarios.extend(batch_scenarios)
             scenarios = limit_scenarios(deduplicate_scenarios(scenarios), candidate_limit)
@@ -535,12 +553,16 @@ def generate_scenarios_from_batches(
                 new_unique = filter_new_scenarios(scenarios, existing_scenarios or [])
                 if len(new_unique) >= max_scenarios:
                     logger.info("%s reached target scenario count (%d) at batch %d/%d; stopping early.", agent_name, max_scenarios, batch_index, len(text_batches))
+                    if progress_callback:
+                        progress_callback(f"{agent_name}: reached target scenario count, stopping early")
                     break
 
             if batch_index < len(text_batches) and settings.scenario_agent_batch_delay_seconds > 0:
                 time.sleep(settings.scenario_agent_batch_delay_seconds)
         except Exception as error:
             logger.exception("%s skipped batch %s/%s after LLM failure: %s", agent_name, batch_index, len(text_batches), error)
+            if progress_callback:
+                progress_callback(f"{agent_name}: error in batch {batch_index}: {error}")
 
     return limit_scenarios(filter_new_scenarios(deduplicate_scenarios(scenarios), existing_scenarios or []), max_scenarios)
 

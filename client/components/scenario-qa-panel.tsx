@@ -11,7 +11,7 @@ import {
   clearScenarioRecording,
   createHighLevelScenario,
   deleteHighLevelScenario,
-  generateHighLevelScenarios,
+  generateHighLevelScenariosStream,
   getRecordingSetup,
   getScenarioRecordingStatus,
   listHighLevelScenarios,
@@ -38,11 +38,7 @@ type DraftScenario = {
   description: string;
 };
 
-const GENERATION_STEPS = [
-  "Agent 1: reading BRD / WBS / FSD / assumptions",
-  "Agent 2: reading Swagger / OpenAPI docs",
-  "Deduplication: merging and trimming tester scenarios",
-];
+
 
 const SCENARIO_LIMIT_OPTIONS = [
   { label: "1 - 20", value: "20" },
@@ -213,10 +209,9 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   const [previewScenarios, setPreviewScenarios] = useState<PreviewScenario[]>([]);
   const [isLoadingApproved, setIsLoadingApproved] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isApproving, setIsApproving] = useState(false);
-  const [activeStep, setActiveStep] = useState(0);
-  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
+  const [generationLogs, setGenerationLogs] = useState<string[]>([]);
   const [previewEditIndex, setPreviewEditIndex] = useState<number | null>(null);
+  const [isApproving, setIsApproving] = useState(false);
   const [previewDraft, setPreviewDraft] = useState<DraftScenario>({ title: "", description: "" });
   const [approvedEditId, setApprovedEditId] = useState<string | null>(null);
   const [approvedDraft, setApprovedDraft] = useState<DraftScenario>({ title: "", description: "" });
@@ -351,8 +346,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
 
   const handleGenerate = async () => {
     setIsGenerating(true);
-    setActiveStep(1);
-    setCompletedSteps([]);
+    setGenerationLogs([]);
     const maxScenarios =
       scenarioLimit === "max"
         ? null
@@ -369,23 +363,21 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
       ...previewScenarios,
     ];
 
-    const request = generateHighLevelScenarios(projectId, {
-      max_scenarios: maxScenarios,
-      scenario_types: scenarioTypes,
-      access_mode: accessMode,
-      scenario_level: scenarioLevel,
-      existing_scenarios: existingScenarios,
-    });
     try {
-      setActiveStep(1);
-      await sleep(1200);
-      setCompletedSteps([1]);
-      setActiveStep(2);
-      await sleep(1200);
-      setCompletedSteps([1, 2]);
-      setActiveStep(3);
-      const response = await request;
-      setCompletedSteps([1, 2, 3]);
+      const response = await generateHighLevelScenariosStream(
+        projectId,
+        {
+          max_scenarios: maxScenarios,
+          scenario_types: scenarioTypes,
+          access_mode: accessMode,
+          scenario_level: scenarioLevel,
+          existing_scenarios: existingScenarios,
+        },
+        (msg) => {
+          setGenerationLogs((current) => [...current, msg]);
+        }
+      );
+      
       setPreviewScenarios((current) => [...current, ...response.scenarios]);
       if (response.scenarios.length === 0) {
         toast.info(existingScenarios.length > 0 ? "No additional scenarios were found." : "No scenarios were generated from the ingested chunks.");
@@ -393,10 +385,9 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
         toast.success(`Generated ${response.scenarios.length} additional high level scenarios.`);
       }
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "Scenario generation failed.");
+      toast.error(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Scenario generation failed.");
     } finally {
       setIsGenerating(false);
-      setActiveStep(0);
     }
   };
 
@@ -704,26 +695,20 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
         ) : null}
       </div>
 
-      {isGenerating ? (
-        <div className="mt-4 grid gap-2">
-          {GENERATION_STEPS.map((label, index) => {
-            const step = index + 1;
-            const isDone = completedSteps.includes(step);
-            const isActive = activeStep === step && !isDone;
-            return (
-              <div key={label} className="flex items-center gap-3 rounded-md border border-black/10 px-3 py-2 text-sm">
-                <span className="font-semibold text-black/60">Step {step}</span>
-                <span className="flex-1 text-black">{label}</span>
-                {isDone ? (
-                  <Check className="h-4 w-4 text-emerald-600" />
-                ) : isActive ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-[#2a63f5]" />
-                ) : (
-                  <span className="h-4 w-4 rounded-full border border-black/20" />
-                )}
-              </div>
-            );
-          })}
+      {isGenerating || generationLogs.length > 0 ? (
+        <div className="mt-4 rounded-md border border-black/10 bg-black/[0.02] p-3 text-xs text-black/70 font-mono">
+          <div className="flex items-center gap-2 mb-2 pb-2 border-b border-black/5 font-sans font-medium text-black">
+            {isGenerating ? <Loader2 className="h-4 w-4 animate-spin text-[#2a63f5]" /> : <Check className="h-4 w-4 text-emerald-600" />}
+            {isGenerating ? "Generation in progress..." : "Generation complete"}
+          </div>
+          <div className="max-h-48 overflow-y-auto space-y-1">
+            {generationLogs.map((log, i) => (
+              <div key={i}>{log}</div>
+            ))}
+            {isGenerating && generationLogs.length === 0 && (
+              <div className="italic text-black/40">Waiting for agent cluster to spin up...</div>
+            )}
+          </div>
         </div>
       ) : null}
     </div>

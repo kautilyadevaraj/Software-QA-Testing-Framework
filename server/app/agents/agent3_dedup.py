@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 from app.agents.scenario_common import PreviewScenario, deduplicate_scenarios, filter_new_scenarios, invoke_json_scenarios, limit_scenarios
 from app.core.config import get_settings
@@ -49,11 +49,16 @@ def _scenario_json_batches(scenarios: list[PreviewScenario], max_chars: int) -> 
     return batches
 
 
-def _llm_dedup_batch(scenarios: list[PreviewScenario], agent_name: str) -> list[PreviewScenario]:
+def _llm_dedup_batch(
+    scenarios: list[PreviewScenario],
+    agent_name: str,
+    progress_callback: Callable[[str], None] | None = None,
+) -> list[PreviewScenario]:
     return invoke_json_scenarios(
         DEDUP_PROMPT.format(scenario_json=json.dumps(scenarios)),
         agent_name=agent_name,
         source=None,
+        progress_callback=progress_callback,
     )
 
 
@@ -61,6 +66,7 @@ def _smart_dedup(
     scenarios: list[PreviewScenario],
     max_scenarios: int | None,
     existing_scenarios: list[PreviewScenario],
+    progress_callback: Callable[[str], None] | None = None,
 ) -> list[PreviewScenario]:
     settings = get_settings()
     locally_clean = filter_new_scenarios(deduplicate_scenarios(scenarios), existing_scenarios)
@@ -72,9 +78,13 @@ def _smart_dedup(
 
     for index, batch in enumerate(batches, start=1):
         try:
-            llm_clean.extend(_llm_dedup_batch(batch, f"agent_3_batch_{index}"))
+            if progress_callback:
+                progress_callback(f"Agent 3: deduplicating batch {index}/{len(batches)}...")
+            llm_clean.extend(_llm_dedup_batch(batch, f"agent_3_batch_{index}", progress_callback))
         except Exception as error:
             logger.warning("agent_3 LLM dedup batch %s/%s failed; using local batch result: %s", index, len(batches), error)
+            if progress_callback:
+                progress_callback(f"Agent 3: dedup error in batch {index}, falling back to local dedup")
             llm_clean.extend(batch)
 
         if index < len(batches) and settings.scenario_agent_batch_delay_seconds > 0:
@@ -84,9 +94,13 @@ def _smart_dedup(
     merged_json = json.dumps(merged)
     if len(batches) > 1 and len(merged_json) <= settings.scenario_dedup_max_chars:
         try:
-            merged = deduplicate_scenarios(_llm_dedup_batch(merged, "agent_3_final"))
+            if progress_callback:
+                progress_callback("Agent 3: final deduplication pass...")
+            merged = deduplicate_scenarios(_llm_dedup_batch(merged, "agent_3_final", progress_callback))
         except Exception as error:
             logger.warning("agent_3 final LLM dedup failed; keeping hierarchical local result: %s", error)
+            if progress_callback:
+                progress_callback("Agent 3: final dedup error, keeping local hierarchical result")
 
     return limit_scenarios(filter_new_scenarios(deduplicate_scenarios(merged), existing_scenarios), max_scenarios)
 
@@ -101,10 +115,13 @@ def run_agent3_dedup(state: dict[str, Any]) -> dict[str, list[PreviewScenario]]:
 
     options = state.get("generation_options", {})
     max_scenarios = options.get("max_scenarios") if isinstance(options, dict) else None
+    progress_callback = options.get("progress_callback") if isinstance(options, dict) else None
     existing_scenarios = state.get("existing_scenarios", [])
 
     try:
-        return {"scenarios": _smart_dedup(combined, max_scenarios, existing_scenarios)}
+        return {"scenarios": _smart_dedup(combined, max_scenarios, existing_scenarios, progress_callback)}
     except Exception as error:
         logger.exception("agent_3 failed while smart-deduplicating %s scenarios; using local fallback: %s", len(combined), error)
+        if progress_callback:
+            progress_callback(f"Agent 3: dedup error: {error}")
         return {"scenarios": limit_scenarios(filter_new_scenarios(deduplicate_scenarios(combined), existing_scenarios), max_scenarios)}

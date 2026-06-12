@@ -1069,6 +1069,134 @@ export async function generateHighLevelScenarios(projectId: string, settings: Sc
 
 
 
+export async function generateHighLevelScenariosStream(
+
+  projectId: string,
+
+  settings: ScenarioGenerationSettings,
+
+  onProgress: (msg: string) => void
+
+): Promise<{ scenarios: PreviewScenario[] }> {
+
+  const response = await fetch(`${API_ROOT}/projects/${projectId}/scenarios/generate`, {
+
+    method: "POST",
+
+    headers: {
+
+      "Content-Type": "application/json",
+
+    },
+
+    body: JSON.stringify(settings),
+
+    credentials: "include",
+
+  });
+
+
+
+  if (!response.ok) {
+
+    let errorMessage = "Failed to generate scenarios";
+
+    try {
+
+      const errorPayload = await response.json();
+
+      errorMessage = getErrorMessage(errorPayload, errorMessage);
+
+    } catch {
+
+      // ignore
+
+    }
+
+    throw new ApiError(errorMessage, response.status);
+
+  }
+
+
+
+  if (!response.body) {
+
+    throw new Error("No response body returned from streaming endpoint");
+
+  }
+
+
+
+  const reader = response.body.getReader();
+
+  const decoder = new TextDecoder();
+
+  let buffer = "";
+
+  let finalScenarios: PreviewScenario[] = [];
+
+
+
+  while (true) {
+
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    
+
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+
+    buffer = lines.pop() || "";
+
+
+
+    for (const line of lines) {
+
+      if (!line.trim()) continue;
+
+      try {
+
+        const chunk = JSON.parse(line);
+
+        if (chunk.type === "progress") {
+
+          onProgress(chunk.message);
+
+        } else if (chunk.type === "complete") {
+
+          finalScenarios = chunk.scenarios;
+
+        } else if (chunk.type === "error") {
+
+          throw new Error(chunk.message);
+
+        }
+
+      } catch (err) {
+
+        if (err instanceof Error && err.message !== "Unexpected end of JSON input") {
+
+          throw err;
+
+        }
+
+      }
+
+    }
+
+  }
+
+
+
+  return { scenarios: finalScenarios };
+
+}
+
+
+
 export async function approveHighLevelScenarios(projectId: string, scenarios: PreviewScenario[]) {
 
   return request<{ saved: number }>(`/projects/${projectId}/scenarios/approve`, {
