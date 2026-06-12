@@ -1,0 +1,29 @@
+[Unit]
+Description=SQAT FastAPI Backend
+Documentation=https://github.com/kautilyadevaraj/Software-QA-Testing-Framework
+After=network.target postgresql.service docker.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__WORKDIR__
+ExecStart=__VENV__/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=__ENVFILE__
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sqat
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

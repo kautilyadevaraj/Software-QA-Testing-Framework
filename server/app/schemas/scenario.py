@@ -109,6 +109,10 @@ class HighLevelScenarioResponse(BaseModel):
     status: ScenarioStatus
     completed_by: uuid.UUID | None
     completed_by_name: str | None
+    recording_status: str | None = None
+    recording_step_count: int = 0
+    recording_phase3_ready: bool | None = None
+    recording_quality_failure_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -200,18 +204,24 @@ class RecorderSessionCreate(BaseModel):
 class RecorderSessionResponse(BaseModel):
     id: uuid.UUID
     status: str
+    flow_id: uuid.UUID | None = None
 
 
 class RecorderRouteUpsert(BaseModel):
     session_id: uuid.UUID
     scenario_id: uuid.UUID
+    flow_id: uuid.UUID | None = None
+    snapshot_index: int | None = None
+    snapshot_kind: str | None = None
     url: str
     title: str | None = None
     html_base64: str | None = None          # base64-encoded page HTML
     accessibility_tree: dict | None = None
     interactive_elements: list[dict] | None = None
+    assertion_candidates: list[dict] | None = None
     screenshot_base64: str | None = None    # base64-encoded PNG
     network_calls: list[dict] | None = None
+    metadata_json: dict | None = None
 
 
 class RecorderRouteResponse(BaseModel):
@@ -222,14 +232,33 @@ class RecorderRouteResponse(BaseModel):
 
 class RecorderStepCreate(BaseModel):
     step_index: int
-    action_type: str   # navigate | click | fill | select | hover | keypress | scroll
+    flow_id: uuid.UUID | None = None
+    action_type: str   # navigate | click | fill | select | hover | keypress | scroll | check | uncheck | slide | submit
     url: str | None = None
     selector: str | None = None
+    selector_candidates: list[str] | None = None
     value: str | None = None
+    input_value_kind: str | None = None
     element_text: str | None = None
     element_type: str | None = None
+    selector_stability: str | None = None
+    playwright_locator: str | None = None
+    accessible_name: str | None = None
+    role: str | None = None
+    label: str | None = None
+    input_type: str | None = None
+    url_before: str | None = None
+    url_after: str | None = None
+    caused_navigation: bool | None = None
+    route_variant_before_id: uuid.UUID | None = None
+    route_variant_after_id: uuid.UUID | None = None
+    semantic_context: dict | None = None
     screenshot_base64: str | None = None
     network_calls: list[dict] | None = None
+    # Phase 2 step-quality fields
+    is_noise: bool = False
+    noise_reason: str | None = None
+    selector_quality_reason: str | None = None
 
 
 class RecorderStepResponse(BaseModel):

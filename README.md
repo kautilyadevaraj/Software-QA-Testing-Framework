@@ -1,542 +1,515 @@
-# SQAT - Software QA Testing Framework
+# SQAT — Software QA Testing Framework
 
-Autonomous QA pipeline: upload project documents, verify the target URL, configure credentials, and raise Jira tickets - all from a single unified interface.
+SQAT is an AI-assisted end-to-end QA automation platform. It turns your project documents, live application recordings, and AI agents into reviewable test cases, executable Playwright scripts, classified results, and Jira defects — with a human approval gate at every critical step.
+
+## End-to-End Flow
+
+```text
+Upload Docs/URLs/Credentials (Phase 1)
+        ↓
+AI generates High-Level Scenarios + QA Engineer records app (Phase 2)
+        ↓
+A3 decomposes HLS → TC document (Phase 3 Planning)
+        ↓
+QA Engineer reviews & approves test cases (Human Gate)
+        ↓
+A4 builds context · A5 generates Playwright scripts (Phase 3 Execution)
+        ↓
+Chromium workers execute scripts in parallel
+        ↓
+A6 classifies results (PASS / APP_ERROR / SCRIPT_ERROR / HUMAN_REVIEW)
+        ↓
+A7 auto-repairs broken scripts and re-queues
+        ↓
+Review queue → Raise Jira · Edit & Re-run (Human Gate)
+        ↓
+Final execution report + X-Ray CSV export (Phase 4)
+```
 
 ## Tech Stack
 
 | Layer | Technology |
-|---|---|
-| **Frontend** | Next.js 16 (App Router), TypeScript, Vanilla CSS |
-| **Backend** | FastAPI (Python 3.11+), SQLAlchemy 2, Alembic |
-| **Database** | PostgreSQL 14+ |
-| **Extraction** | PyMuPDF (PDF), Prance (Swagger/OpenAPI), Playwright (Auth/E2E) |
-| **Auth** | JWT (access + refresh tokens, HTTP-only cookies) |
-| **Vector DB** | Qdrant Cloud |
-| **Embeddings** | Hugging Face (Sentence Transformers) |
-| **Ticketing** | Jira Cloud REST API v3 |
-| **File Storage** | Local filesystem (`server/uploads/`) |
+| --- | --- |
+| Frontend | Next.js 16, TypeScript, Tailwind CSS 4 |
+| Backend | FastAPI, SQLAlchemy, Alembic |
+| Database | PostgreSQL 14+ |
+| Message Queue | RabbitMQ |
+| Vector Store | Qdrant |
+| LLM Providers | Anthropic Claude (primary), Groq (fallback) |
+| Test Execution | Playwright / Chromium |
+| Ticketing | Jira Cloud REST API v3 |
+| Dependency Manager | `uv` (Python), `npm` (Node) |
+
+## Repository Layout
+
+```text
+Software-QA-Testing-Framework/
+├── client/                         # Next.js 16 frontend
+│   ├── app/                        # Next.js App Router pages
+│   │   ├── login/ signup/          # Auth pages
+│   │   └── projects/               # Project list + [projectId] detail
+│   ├── components/                 # Phase 2 & 3 panel components
+│   │   ├── scenario-qa-panel.tsx   # Phase 2 HLS generation + recording UI
+│   │   ├── phase3-panel.tsx        # Phase 3 plan/approve/execute UI
+│   │   ├── phase3-review-queue.tsx # Live SSE review queue
+│   │   └── raise-ticket-modal.tsx  # Jira issue creation modal
+│   └── lib/                        # API helpers, hooks
+│
+├── server/                         # FastAPI backend + agent pipeline
+│   ├── app/
+│   │   ├── agents/                 # AI agent pipeline
+│   │   │   ├── agent1_brd.py       # A1: BRD chunking and embedding
+│   │   │   ├── agent2_swagger.py   # A2: Swagger/OpenAPI ingestion
+│   │   │   ├── agent3_dedup.py     # A3: Scenario deduplication
+│   │   │   ├── agent3_planner.py   # A3: HLS → test cases + X-Ray metadata
+│   │   │   ├── agent4_context_builder.py # A4: DOM + recording context assembly
+│   │   │   ├── agent5_script_generator.py # A5: Playwright .spec.ts generation
+│   │   │   ├── agent6_classifier.py       # A6: Result classification (rule-based)
+│   │   │   ├── agent7_retry.py            # A7: LLM script repair on SCRIPT_ERROR
+│   │   │   ├── scenario_common.py  # Shared utilities for scenario agents
+│   │   │   └── xray_csv_generator.py # X-Ray CSV export formatter
+│   │   ├── core/                   # Settings, config
+│   │   ├── db/                     # SQLAlchemy session, base
+│   │   ├── graph/                  # LangGraph orchestration
+│   │   │   ├── phase3_graph.py     # Phase 3 planning + execution graph
+│   │   │   └── scenario_graph.py   # Phase 2 scenario generation graph
+│   │   ├── models/                 # SQLAlchemy ORM models
+│   │   ├── routers/                # FastAPI route handlers
+│   │   │   ├── auth.py             # JWT auth (login, refresh, signup)
+│   │   │   ├── files.py            # Document upload
+│   │   │   ├── members.py          # Project members
+│   │   │   ├── projects.py         # Project CRUD + credentials
+│   │   │   ├── scenarios.py        # HLS management + recording control
+│   │   │   ├── recorder.py         # Recorder daemon API (token auth)
+│   │   │   └── phase3.py           # Phase 3 plan/approve/execute + SSE
+│   │   ├── schemas/                # Pydantic request/response models
+│   │   ├── services/               # Business logic services
+│   │   │   ├── mcp_server.py       # MCP tool layer (DB, DOM, Script, Queue)
+│   │   │   ├── phase3_worker.py    # RabbitMQ consumer + Playwright executor
+│   │   │   ├── recorder_service.py # Recording session management
+│   │   │   ├── jira_service.py     # Jira Cloud REST integration
+│   │   │   ├── credential_service.py # Encrypted credential management
+│   │   │   ├── auth_state_service.py # Playwright storageState manager
+│   │   │   └── ...                 # Cleanup, cache, queue, progress services
+│   │   └── utils/                  # LLM client, rate limiter, helpers
+│   ├── migrations/                 # Alembic migration files
+│   ├── recorder.py                 # Local recorder daemon (tester runs this)
+│   ├── recorder_template.py        # Template served to tester via API
+│   └── tests/
+│       └── generated/              # Runtime .spec.ts files (gitignored)
+│
+├── documents/                      # BRD, HLD/LLD, Architecture docs
+├── docker-compose.yml              # Full containerized stack
+└── README.md
+```
+
+---
+
+## Local Development Setup
+
+The recommended setup for local development:
+
+- **PostgreSQL** — installed and running locally
+- **RabbitMQ** — running via Docker (single container)
+- **Backend and Frontend** — running locally from source
+
+Use the full `docker-compose.yml` stack only when you need a completely containerized environment.
 
 ## Prerequisites
 
-- **Node.js** 18+
-- **Python** 3.11+
-- **PostgreSQL** 14+ running locally
-- **uv** (Python package manager) - install with `pip install uv` or see [uv docs](https://docs.astral.sh/uv/)
+| Tool | Version |
+| --- | --- |
+| Node.js | 20+ |
+| Python | 3.11+ |
+| PostgreSQL | 14+ (installed locally) |
+| Docker Desktop | for RabbitMQ |
+| `uv` | latest (Python dependency manager) |
 
-## Project Structure
+Install `uv`:
 
-```
-Software-QA-Testing-Framework/
-├── client/                          # Next.js frontend
-│   ├── app/                         # App Router pages
-│   │   ├── login/
-│   │   ├── signup/
-│   │   └── projects/
-│   │       └── [projectId]/         # Project detail page
-│   ├── components/                  # Shared UI components
-│   │   └── raise-ticket-modal.tsx   # Jira ticket creation modal
-│   ├── lib/
-│   │   ├── api.ts                   # Typed API client (all endpoints)
-│   │   └── projects.ts              # Project domain types & helpers
-│   ├── .env                         # Local env (gitignored)
-│   ├── .env.example                 # Template (tracked)
-│   └── proxy.ts                     # Auth guard (Next.js 16)
-│
-└── server/                          # FastAPI backend
-      ├── app/
-      │   ├── core/                    # Config (settings), JWT, bcrypt
-      │   ├── db/                      # SQLAlchemy engine & session
-      │   ├── models/                  # ORM models
-      │   │   └── project.py           # Project, ProjectJiraConfig, JiraTicket
-      │   ├── routers/                 # API route handlers
-      │   │   └── projects.py          # Includes Jira connect & ticket endpoints
-      │   ├── schemas/                 # Pydantic request/response models
-      │   ├── services/                # Business logic
-      │   │   └── jira_service.py      # Jira Cloud REST API integration
-      │   └── utils/                   # Rate limiter
-      ├── migrations/                  # Alembic migration files
-      │   └── versions/
-      │       ├── 0001_consolidated.py
-      │       ├── 0002_add_jira_tables.py
-      │       └── 0003_add_high_level_scenarios.py
-      ├── uploads/                     # User-uploaded files (gitignored)
-      ├── .env                         # Local env (gitignored)
-      ├── .env.example                 # Template (tracked)
-      ├── alembic.ini
-      ├── init_db.py                   # Dev utility: creates DB + all tables
-      └── pyproject.toml
+```powershell
+pip install uv
 ```
 
-## 1 - Database Setup
+---
 
-### Option A - pgAdmin (GUI)
-1. Open pgAdmin → right-click **Databases** → **Create** → **Database**
-2. Name it `sqat_db` → **Save**
+## 1. Local PostgreSQL
 
-### Option B - psql (terminal)
-```bash
-psql -U postgres -c "CREATE DATABASE sqat_db;"
+Create a database named `sqat_db`:
+
+```powershell
+psql -U postgres
 ```
 
-## 2 - Backend (FastAPI) Setup
-
-```bash
-cd server
-
-# Create and activate the virtual environment
-uv venv
-.venv\Scripts\activate      # Windows
-# source .venv/bin/activate # macOS/Linux
-
-# Install dependencies
-uv pip install -r requirements.txt
-# OR (reads from pyproject.toml)
-uv sync
-
-# Install Playwright browsers (required for E2E Auth features)
-playwright install
+```sql
+CREATE DATABASE sqat_db;
 ```
 
-### 2a - Configure `server/.env`
-
-```bash
-copy server\.env.example server\.env   # Windows
-# cp server/.env.example server/.env   # macOS/Linux
-```
-
-Edit `server/.env` and fill in required and commonly used optional values:
+Use this connection string in `server/.env`:
 
 ```env
-# Required
-DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/sqat_db
-JWT_SECRET_KEY=at_least_24_characters_long_random_string
-FRONTEND_ORIGINS=http://localhost:3000
-
-# Optional: Scenario generation (Groq)
-GROQ_API_KEY=gsk_key_one,gsk_key_two
-GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_MAX_TOKENS=1024
-
-# Optional: RAG and semantic search
-HF_TOKEN=your_huggingface_token
-HF_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
-HF_MODELS_DIR=models
-QDRANT_URL=your_qdrant_cloud_url
-QDRANT_API_KEY=your_qdrant_api_key
-
-# Optional: Jira integration
-JIRA_BASE_URL=https://yourcompany.atlassian.net
-JIRA_EMAIL=you@yourcompany.com
-JIRA_API_TOKEN=your_jira_api_token
-JIRA_LEAD_ACCOUNT_ID=your_jira_account_id
+DATABASE_URL=postgresql://postgres:<YOUR_PASSWORD>@localhost:5432/sqat_db
 ```
 
-> `GROQ_API_KEY` supports comma-separated keys for rotation and failover. All other values in `.env.example` are fine as defaults for local development.
+---
 
-### 2b - Run Database Migrations
+## 2. RabbitMQ via Docker
 
-**Fresh installation** (no tables yet):
-```bash
+```powershell
+docker compose up -d rabbitmq
+```
+
+RabbitMQ management UI: `http://localhost:15672` (default: `guest / guest`)
+
+Backend settings:
+
+```env
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+RABBITMQ_QUEUE=phase3_test_jobs
+```
+
+> **Worker mode:** For local dev, set `PHASE3_EMBEDDED_WORKERS=true` in `server/.env`.  
+> This runs the Phase 3 execution worker inside the uvicorn process — no extra terminal needed.  
+> Set `PHASE3_EMBEDDED_WORKERS=false` if you want to run the worker separately:
+> ```powershell
+> cd server
+> python -m app.services.phase3_worker
+> ```
+
+---
+
+## 3. Backend
+
+```powershell
 cd server
+uv venv
+.venv\Scripts\activate
+uv pip install -r requirements.txt
+playwright install chromium
+copy .env.example .env
+# Edit .env with your values (see Environment Variables section)
 alembic upgrade head
-```
-
-**Existing database** (tables already created by a previous `init_db.py` run):
-```bash
-cd server
-alembic stamp head
-```
-
-> After stamping, all future schema changes use `alembic upgrade head`.
-
-### 2c - Alternative: Initialise Database Without Alembic
-
-If you prefer not to use Alembic for a fresh local setup:
-
-```bash
-cd server
-python init_db.py
-```
-
-This creates `sqat_db` (if it doesn't exist) and all tables from the SQLAlchemy models.  
-No seed data is inserted - register your first user via the UI or `POST /api/v1/auth/signup`.
-
-### 2d - Start the Server
-
-```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-- API base: `http://localhost:8000`
-- Interactive docs: `http://localhost:8000/docs`
+Swagger docs available at: `http://localhost:8000/docs`
 
-## 3 - Frontend (Next.js) Setup
+### Minimum `.env` for Local Dev
 
-```bash
+```env
+DATABASE_URL=postgresql://postgres:<YOUR_PASSWORD>@localhost:5432/sqat_db
+JWT_SECRET_KEY=change_this_to_a_long_random_secret_at_least_32_chars
+CREDENTIAL_ENCRYPTION_KEY=<32-byte-base64-encoded-key>
+
+# LLM — Anthropic Claude is the primary provider for Phase 3
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+ANTHROPIC_MODEL=claude-sonnet-4-6
+
+# Groq — optional fallback
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
+
+# Qdrant vector store (cloud or local)
+QDRANT_URL=https://your-cluster-id.region.aws.cloud.qdrant.io:6333
+QDRANT_API_KEY=your_qdrant_api_key_here
+
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+PUBLIC_API_URL=http://localhost:8000
+
+# Worker mode (true = embedded in uvicorn, recommended for local dev)
+PHASE3_EMBEDDED_WORKERS=true
+```
+
+### Playwright Execution Tuning
+
+For visible local demo runs:
+
+```env
+PLAYWRIGHT_HEADED=true
+PLAYWRIGHT_SLOW_MO_MS=3000
+CHROMIUM_WORKERS=1
+```
+
+For CI / production-like headless runs:
+
+```env
+PLAYWRIGHT_HEADED=false
+PLAYWRIGHT_SLOW_MO_MS=0
+CHROMIUM_WORKERS=3
+```
+
+---
+
+## 4. Frontend
+
+```powershell
 cd client
 npm install
+copy .env.example .env
+npm run dev
 ```
 
-### 3a - Configure `client/.env`
-
-```bash
-copy client\.env.example client\.env   # Windows
-# cp client/.env.example client/.env   # macOS/Linux
-```
+Open: `http://localhost:3000`
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-### 3b - Start the Frontend
+---
 
-```bash
-npm run dev
+## Optional: Full Docker Stack
+
+```powershell
+docker compose up --build
 ```
 
-App is available at: `http://localhost:3000`
+This starts PostgreSQL, RabbitMQ, the FastAPI server, a Phase 3 worker container, and the Next.js client — all wired together.
 
-## 4 - Full Startup Checklist
+> For normal local development, prefer local PostgreSQL plus Docker RabbitMQ only.
 
+---
+
+## Phase Pipeline
+
+### Phase 1 — Project Setup and Document Ingestion
+
+**Goal:** Upload all project knowledge so agents can ground their outputs.
+
+1. Create a project in the UI and invite team members.
+2. Upload documents: BRD, FSD, WBS, assumptions, Swagger/OpenAPI specs.
+3. Upload a credentials CSV (roles + username/password pairs for each persona).
+4. Set the target application URL.
+
+The backend extracts text, chunks it, embeds it using `all-MiniLM-L6-v2`, and stores vectors in Qdrant for retrieval by later agents.
+
+**Key endpoints:** `POST /api/v1/projects/{id}/files/upload`, `POST /api/v1/projects/{id}/credentials`
+
+---
+
+### Phase 2 — High-Level Scenario Generation and Application Recording
+
+**Goal:** Generate High-Level Scenarios (HLS) and capture real application behavior for Phase 3 grounding.
+
+**2a — HLS Generation:**
+
+1. Click "Generate Scenarios" in the UI.
+2. Agents A1 (BRD context), A2 (Swagger), and A3 (deduplication) run via the LangGraph scenario graph.
+3. Review the generated scenarios, edit them inline, add manual scenarios, and mark each one as **Completed**.
+
+**2b — Application Recording (critical for Phase 3 quality):**
+
+1. Get the one-time recorder setup command from the UI (`GET /recording-setup`).
+2. Run the command locally — this downloads and starts the Python recorder daemon.
+3. Click **"Launch Recording"** next to a scenario in the UI.
+4. The daemon opens Chromium and captures every interaction: clicks, fills, navigation, selectors, DOM snapshots, screenshots.
+5. Click **"Stop Recording"** in the UI when done.
+6. The daemon uploads structured step + DOM data to the backend.
+
+The recorder captures: stable selectors, accessible names, element roles, URL transitions, DOM snapshots per page, and route variants — all stored in PostgreSQL and used by A4/A5 in Phase 3.
+
+> **Recording quality matters.** Fresh recordings with good coverage of the application's pages produce the best Playwright scripts. Re-record if the app changes significantly.
+
+**Key endpoints:** `GET /api/v1/projects/{id}/scenarios/recording-setup`, `POST /api/v1/recorder/{id}/sessions`, `POST /api/v1/recorder/{id}/sessions/{sid}/steps`
+
+---
+
+### Phase 3 — Test Case Planning, Script Generation, and Execution
+
+Phase 3 is a three-step workflow with a human gate between planning and execution.
+
+#### Step 1 — Plan (`POST /api/v1/projects/{id}/phase3/plan`)
+
+- Agent A3 reads each approved HLS and its recording evidence.
+- Decomposes each HLS into 1–4 concrete, executable QA test cases.
+- Each test case includes: title, steps, acceptance criteria, auth mode, target page, TC number (for Jira traceability).
+- A3 also enriches test cases with X-Ray metadata (labels, priority, pre-conditions) from BRD/FSD document context.
+- Generates a downloadable X-Ray CSV for Jira import.
+- Result: TC document appears in the UI as an approval accordion.
+
+#### Step 2 — Review and Approve (Human Gate)
+
+- Review each test case: steps, acceptance criteria, target page.
+- Inline edit any test case (resets to `NEEDS_EDIT` status).
+- Per-test case actions: **Approve**, **Exclude**, or leave as **Needs Edit**.
+- Bulk **Approve All** to approve everything at once.
+- Download the X-Ray CSV for Jira import.
+- All non-excluded test cases must be `APPROVED` before execution can start.
+
+#### Step 3 — Execute (`POST /api/v1/projects/{id}/phase3/execute`)
+
+The backend runs a preflight check (env vars, credentials) and then:
+
+1. **A4 — Context Builder:** Assembles full execution context per test case: DB test case data, DOM snapshot for target page, Phase-2 recorded steps, selectors, route transitions, variant elements, route map.
+
+2. **A5 — Script Generator:** Takes A4 context and generates a Playwright TypeScript `.spec.ts` file. Every script includes:
+   - `NetworkMonitor` — captures all 4xx/5xx API responses
+   - `smartFind()` — selector resolution with fallbacks
+   - `navigateWithFallback()` — retry navigation helper
+   - `env()` — safe env var resolver (fail-fast on missing vars)
+   - Screenshot capture at PASS outcome
+   - Network evidence attachment for A6 classification
+
+3. **RabbitMQ Worker** — Enqueues test jobs and runs them in parallel Chromium instances.
+
+4. **A6 — Result Classifier (rule-based, no LLM):**
+
+   | Classification | Condition | Action |
+   | --- | --- | --- |
+   | `PASS` | All assertions pass, no network errors | Saved to DB, screenshot attached |
+   | `APP_ERROR` | 4xx/5xx in network logs (unexpected) | → Review Queue as BUG |
+   | `SCRIPT_ERROR` | Playwright fail, locator/selector issue | → A7 for repair |
+   | `HUMAN_REVIEW` | Auth error, infra error, assertion mismatch | → Review Queue as TASK |
+
+5. **A7 — Retry Agent (LLM):** Repairs broken Playwright scripts using the error log + fresh DOM snapshot. Up to 3 repair attempts. On exhaustion, routes to HUMAN_REVIEW. Supports both single-test and grouped (describe.serial) scripts.
+
+**Live monitoring:** The Phase 3 panel shows live counters via `GET /phase3/execution-state` and SSE via `GET /phase3/review-queue/stream`.
+
+#### Review Queue
+
+Failed and human-review tests appear in the Review Queue panel:
+- **Raise Jira** — creates a Jira Bug or Task issue prefixed with `[TC-XXX]`
+- **Edit Script & Re-run** — opens the CodeMirror script editor, save and re-enqueue
+
+#### Final Report
+
+`GET /api/v1/projects/{id}/phase3/execution-report.csv` — a CSV with all test case results, statuses, Jira ticket refs, and retry counts.
+
+---
+
+### Phase 4 — Automated Report Generation
+
+After execution completes, all results are persisted in PostgreSQL:
+
+- `test_cases` — TC number, title, steps, target page, script path
+- `test_results` — status, retries, Jira ticket, trace path, screenshot path
+- `network_logs` — per-request failure log
+- `retry_history` — LLM fix applied per attempt
+- `test_runs` — total, passed, failed, skipped, duration
+- `review_queue` — review type, evidence, Jira ref, status
+
+Download artifacts:
+- `GET /phase3/tc-document` — X-Ray CSV
+- `GET /phase3/execution-report.csv` — Final execution report CSV
+- `GET /phase3/screenshot/{test_id}` — Pass screenshot
+- `GET /phase3/trace/{test_id}` — Playwright trace zip (for failures)
+
+---
+
+## Environment Variables Reference
+
+See [`server/.env.example`](server/.env.example) for the full annotated list. Key sections:
+
+| Section | Variables |
+| --- | --- |
+| Database | `DATABASE_URL` |
+| Auth | `JWT_SECRET_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, `ACCESS_TOKEN_EXPIRE_MINUTES` |
+| LLM | `LLM_PROVIDER`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY` |
+| Qdrant | `QDRANT_URL`, `QDRANT_API_KEY` |
+| RabbitMQ | `RABBITMQ_URL`, `RABBITMQ_QUEUE` |
+| Playwright | `PLAYWRIGHT_HEADED`, `PLAYWRIGHT_SLOW_MO_MS`, `CHROMIUM_WORKERS` |
+| Jira | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_LEAD_ACCOUNT_ID` |
+| Workers | `PHASE3_EMBEDDED_WORKERS`, `PHASE3_MAX_ATTEMPTS` |
+| Test Data | `PHASE3_TEST_DATA_NAME`, `PHASE3_TEST_DATA_EMAIL`, etc. |
+| Cleanup | `SCRIPT_RETENTION_HOURS`, `AUTH_STATE_RETENTION_HOURS` |
+
+---
+
+## Useful Commands
+
+### Backend
+
+```powershell
+cd server
+
+# Run tests
+uv run pytest
+
+# Database migrations
+alembic current           # show current migration
+alembic upgrade head      # apply all pending migrations
+alembic revision --autogenerate -m "describe change"  # create migration
+
+# External Phase 3 worker (if PHASE3_EMBEDDED_WORKERS=false)
+python -m app.services.phase3_worker
+
+# Generate encryption key for CREDENTIAL_ENCRYPTION_KEY
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# Generate JWT secret
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
-1. PostgreSQL is running
-2. sqat_db database exists
-3. server/.env is configured (DATABASE_URL, JWT_SECRET_KEY)
-4. cd server && alembic upgrade head
-5. cd server && uvicorn app.main:app --reload --port 8000
-6. cd client && npm run dev
-7. Open http://localhost:3000
+
+### Frontend
+
+```powershell
+cd client
+npm run lint
+npm run build
 ```
 
-## 5 - Jira Integration Setup
+---
 
-The Jira integration allows you to raise Jira tickets directly from the URL verification and credentials verification sections of any project.
+## Database Migrations
 
-### 5a - Get Your Credentials
+Run from `server/`:
 
-| Variable | Where to Find It |
-|---|---|
-| `JIRA_BASE_URL` | Your Atlassian workspace URL, e.g. `https://yourcompany.atlassian.net` |
-| `JIRA_EMAIL` | The email address you use to log in to Jira |
-| `JIRA_API_TOKEN` | [Manage API tokens](https://id.atlassian.com/manage-profile/security/api-tokens) → **Create API token** |
-| `JIRA_LEAD_ACCOUNT_ID` | Visit `https://yourcompany.atlassian.net/rest/api/3/myself` while logged in → copy the `accountId` field |
-
-### 5b - Add to `.env`
-
-```env
-JIRA_BASE_URL=https://yourcompany.atlassian.net
-JIRA_EMAIL=you@yourcompany.com
-JIRA_API_TOKEN=your_api_token_here
-JIRA_LEAD_ACCOUNT_ID=712020:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-> Restart the backend server after editing `.env` to reload the cached settings.
-
-### 5c - Connect a Project to Jira
-
-1. Open any project → **Project Configuration** tab
-2. Click **"Connect to Jira"** in the top-right of the card
-3. SQAT auto-generates a Jira project key from the project name (e.g. `My Shopping App → MSA`) and creates the Jira project
-4. The button changes to a green badge: `● Connected · Key: MSA`
-5. This is a **one-time action per project** - clicking again returns the existing key without creating duplicates
-
-### 5d - Raise a Ticket
-
-**From the URL section:**
-- Launch a URL → click **"Raise Ticket"**
-- The modal opens pre-filled with URL verification context
-
-**From the Credentials section:**
-- Each credential card has its own **"Raise Ticket"** button
-- The modal opens pre-filled with that credential's username, role, auth type, and endpoint
-
-Both modals let you edit: **Title**, **Description**, **Issue Type** (Bug / Task / Story), **Priority** (High / Medium / Low).
-
-On submit: the ticket is created in Jira AND saved locally to the `jira_tickets` database table.
-
-> The "Raise Ticket" buttons are **disabled** until the project is connected to Jira.
-
-## Alembic - DB Migration Cheatsheet
-
-Run all commands from the `server/` directory with the venv activated.
-
-| Task | Command |
-|---|---|
-| Apply all pending migrations | `alembic upgrade head` |
-| Roll back one migration | `alembic downgrade -1` |
-| Roll back to the very beginning | `alembic downgrade base` |
-| Create a new migration (auto-detect changes) | `alembic revision --autogenerate -m "your description"` |
-| Create a blank migration | `alembic revision -m "your description"` |
-| Show migration history | `alembic history` |
-| Show current DB revision | `alembic current` |
-| Mark existing DB as up-to-date (no SQL run) | `alembic stamp head` |
-
-### Adding a New Column
-
-```bash
-# 1. Edit the SQLAlchemy model in server/app/models/
-# 2. Auto-generate the migration
-alembic revision --autogenerate -m "add column to table"
-# 3. Review the generated file in server/migrations/versions/
-# 4. Apply it
+```powershell
 alembic upgrade head
 ```
 
-### Team Collaboration with DB Changes
+For schema changes (after modifying SQLAlchemy models):
 
-1. **Teammate modifies a model** → runs `alembic revision --autogenerate` → commits both the model change and the migration file
-2. **You pull their code** → your local DB doesn't have the new table yet
-3. **You sync** → run `alembic upgrade head` - done
-
-> Roll back safely at any time with `alembic downgrade -1`.
-
-## Document Upload Rules
-
-| Category | Format | Max Files | Required |
-|---|---|---|---|
-| BRD | PDF | Multiple | ✅ |
-| FSD | PDF | Multiple | - |
-| WBS | PDF | Multiple | - |
-| Assumptions | PDF | 1 | - |
-| Credentials | PDF or TXT | 1 | ✅ |
-| Swagger Docs | YAML or JSON | 1 | ✅ |
-
-> **Max file size:** 20 MB per file
-
-### File Storage Convention
-
-Files are stored under `server/uploads/` using the layout:
-
-```
-server/uploads/
-└── {ProjectID}/
-      └── {ProjectID}_{FileID}_{FileType}_{Number}
+```powershell
+alembic revision --autogenerate -m "describe your change"
+alembic upgrade head
 ```
 
-`{Number}` is the sequential count of files of the same category within the project (1-based). The original filename is preserved in `project_files.original_filename`.
+Always commit model changes and the generated migration file together.
 
-Example - 2 BRDs + 1 Swagger file:
-```
-server/uploads/
-└── 018e1a2b-.../
-      ├── 018e1a2b-..._019f3c4d-..._brd_1
-      ├── 018e1a2b-..._019f3c4e-..._brd_2
-      └── 018e1a2b-..._019f3c4f-..._swagger_docs_1
-```
+---
 
-### Upload Prerequisites
+## Generated Artifacts (gitignored)
 
-File uploads are only enabled after:
-1. Entering a Project URL and clicking **Launch**
-2. Clicking **Proceed** to confirm
+These directories are created at runtime and intentionally excluded from git:
 
-## 6 - GROQ API Setup
+- `server/uploads/` — uploaded document files
+- `server/tests/generated/` — Playwright `.spec.ts` files
+- `server/tests/.auth/` — Playwright auth state JSON files
+- `server/test-results/` — Playwright trace zips, videos, screenshots
+- `server/recordings/` — Phase 2 DOM snapshots and HTML captures
+- `server/state.json` — real-time execution state store
 
-Use Groq API keys for scenario generation agents used by the backend.
+Do not use `git add -f` for these unless adding a tiny sanitized fixture.
 
-### 6a - Create a Groq API Key
+---
 
-1. Open https://console.groq.com/
-2. Sign in or create an account
-3. Go to API Keys
-4. Click Create API Key
-5. Copy the key and store it safely
+## Security Notes
 
-### 6b - Add GROQ values to `server/.env`
+- Never commit `.env` files or API keys.
+- Never commit `server/tests/.auth/` (contains real session cookies).
+- Rotate any API key that was ever committed, pasted into logs, or shared externally.
+- `CREDENTIAL_ENCRYPTION_KEY` must be a valid 32-byte Fernet key — losing it means losing access to all stored test credentials.
+- Docker Compose uses default credentials suitable only for local development. Override all secrets for real deployments.
 
-```env
-GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_MAX_TOKENS=1024
+Before every push:
+
+```powershell
+git status --short        # confirm no .env files staged
+git diff --stat           # confirm no secrets or runtime artifacts staged
 ```
 
-You can also configure multiple keys for failover and rotation.
+---
 
-```env
-GROQ_API_KEY=gsk_key_one,gsk_key_two,gsk_key_three
+## Git Workflow
+
+This project creates many runtime artifacts during local QA runs. Avoid `git add .` until you have reviewed the dirty worktree:
+
+```powershell
+git status --short
+git diff --stat
+git add README.md client/README.md server/README.md
+git add server/app server/migrations server/alembic.ini
+git add client/app client/components client/lib
+git commit -m "chore: your message here"
 ```
-
-### 6c - Restart backend after env change
-
-After updating `server/.env`, restart the backend server so new settings are loaded.
-
-### 6d - Verify configuration
-
-- Start backend normally.
-- Trigger scenario generation from the UI.
-- If key is missing, backend raises: `GROQ_API_KEY is not configured`.
-
-### 6e - Common notes
-
-- `GROQ_API_KEY` is required for scenario generation.
-- `GROQ_MODEL` is optional. Default is `llama-3.3-70b-versatile`.
-- `GROQ_MAX_TOKENS` is optional. Default is `1024`.
-
-## 8 - API Reference
-
-Base URL: `http://localhost:8000/api/v1`  
-Full interactive docs: `http://localhost:8000/docs`
-
-### Auth
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/auth/signup` | Register a new user |
-| POST | `/auth/login` | Login and receive auth cookies |
-| POST | `/auth/logout` | Clear auth cookies |
-| GET | `/auth/me` | Get current authenticated user |
-
-### Projects
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/projects` | List projects (paginated) |
-| POST | `/projects` | Create a project |
-| GET | `/projects/{id}` | Get project by ID |
-| PUT | `/projects/{id}` | Update project |
-| DELETE | `/projects/{id}` | Delete project |
-| GET | `/projects/{id}/members` | List project members |
-| POST | `/projects/{id}/members` | Add a member by email |
-| DELETE | `/projects/{id}/members/{memberId}` | Remove a member |
-| POST | `/projects/{id}/members/{memberId}/transfer` | Transfer ownership |
-| GET | `/projects/{id}/documents` | List uploaded documents |
-| POST | `/projects/{id}/documents` | Upload document(s) |
-| DELETE | `/projects/{id}/documents/{docId}` | Delete a document |
-| POST | `/projects/{id}/ingest` | Start ingestion pipeline |
-| GET | `/projects/{id}/status` | Poll extraction status |
-
-### Jira Integration
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/projects/{id}/jira/connect` | Connect project to Jira (creates Jira project, idempotent) |
-| GET | `/projects/{id}/jira/config` | Get current Jira connection status & project key |
-| POST | `/projects/{id}/tickets` | Raise a Jira ticket and save locally |
-
-## 9 - Additional and New Endpoints
-
-Base URL: `http://localhost:8000/api/v1`
-
-### 9a - Project Runtime and Verification Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/projects/{id}/launch` | Launch project URL context and reset verification state |
-| POST | `/projects/{id}/verify` | Mark launched project as verified |
-| POST | `/projects/{id}/ingest` | Start ingestion workflow |
-| GET | `/projects/{id}/credentials` | Read credential rows from uploaded Credentials file |
-| POST | `/projects/{id}/mark-verified` | Toggle credential verified flag |
-| POST | `/projects/{id}/run-playwright` | Open Playwright browser helper for credential testing |
-| POST | `/projects/{id}/extract-pdfs` | Start extraction processing job |
-| GET | `/projects/{id}/extract-status` | Poll extraction progress and logs |
-
-### 9b - Jira Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/projects/{id}/jira/connect` | Create and connect Jira project for SQAT project |
-| GET | `/projects/{id}/jira/config` | Get Jira connection state and Jira key |
-| POST | `/projects/{id}/tickets` | Create Jira issue and store local ticket record |
-
-### 9c - Scenario Endpoints (High Level Scenarios)
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/projects/{id}/scenarios/generate` | Generate preview scenarios using agent graph |
-| POST | `/projects/{id}/scenarios/approve` | Save selected generated scenarios to DB |
-| GET | `/projects/{id}/scenarios` | List saved scenarios |
-| POST | `/projects/{id}/scenarios` | Create manual scenario |
-| PATCH | `/projects/{id}/scenarios/{scenarioId}` | Update title/description/status/completed_by |
-| DELETE | `/projects/{id}/scenarios/{scenarioId}` | Delete scenario |
-
-### 9d - Auth Endpoint to Note
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/auth/refresh` | Refresh access token using refresh cookie |
-
-### 9e - Project Response Fields Added
-
-Project response includes:
-
-- `owner_id`
-- `tester_ids`
-- `tester_emails`
-
-These fields are used by frontend permission and display logic, including owner-only delete controls and tester email tags in project row expansion.
-
-## 10 - High Level Scenarios Generation and Agent Pipeline
-
-This feature generates tester-facing High Level Scenarios from ingested project documents and API documentation.
-
-### 10a - Prerequisites for Scenario Generation
-
-1. Configure Groq in `server/.env`:
-       - `GROQ_API_KEY`
-       - Optional: `GROQ_MODEL`, `GROQ_MAX_TOKENS`
-2. Configure Qdrant in `server/.env`:
-       - `QDRANT_URL`
-       - `QDRANT_API_KEY`
-3. Upload project documents and run ingestion/extraction so chunks are available.
-
-### 10b - Generation Flow
-
-1. Call `POST /projects/{id}/scenarios/generate` to produce preview scenarios.
-2. Review output in UI.
-3. Call `POST /projects/{id}/scenarios/approve` to save selected scenarios.
-4. Use `GET /projects/{id}/scenarios` for listing.
-5. Use `PATCH` and `DELETE` endpoints for maintenance.
-
-### 10c - Agent Graph Architecture
-
-The scenario graph runs three agents in sequence:
-
-1. `agent_1` (business docs)
-2. `agent_2` (Swagger/OpenAPI docs + endpoint fallback)
-3. `agent_3` (deduplication and canonicalization)
-
-Execution order:
-
-`agent_1 -> agent_2 -> agent_3 -> final scenarios`
-
-### 10d - Agent Responsibilities
-
-- `agent1_brd.py`
-      - Reads business-side chunks such as BRD/FSD/WBS/Assumptions
-      - Produces user-journey oriented HLS candidates
-
-- `agent2_swagger.py`
-      - Reads API documentation chunks (Swagger/OpenAPI)
-      - If chunks are unavailable, falls back to `api_endpoints` table
-      - Produces workflow-level HLS candidates grounded in API capabilities
-
-- `agent3_dedup.py`
-      - Combines outputs from agent 1 and agent 2
-      - Removes semantic duplicates
-      - Filters against existing scenarios
-      - Applies max scenario limit
-
-### 10e - Generate Request Example
-
-```json
-{
-      "max_scenarios": 20,
-      "scenario_types": ["ALL"],
-      "access_mode": "UI_ONLY_WEB",
-      "scenario_level": "HLS",
-      "existing_scenarios": []
-}
-```
-
-### 10f - Scenario State and Sources
-
-- `source` values: `agent_1`, `agent_2`, `manual`
-- `status` values: `pending`, `completed`
-- When marking completed via `PATCH`, `current_user_id` is required.
-
-### 10g - Database Objects
-
-- Table: `high_level_scenarios`
-- Migration: `0003_add_high_level_scenarios.py`
-- Includes indexes on `project_id`, `status`, `completed_by`
-

@@ -1,6 +1,7 @@
 from app.models.project import (
     APIEndpoint,
     Chunk,
+    CredentialProfile,
     ExtractedText,
     FileType,
     HighLevelScenario,
@@ -15,10 +16,23 @@ from app.models.project import (
 )
 from app.models.user import User
 from app.models.scenario import RecordingSession, DiscoveredRoute, RouteVariant, ScenarioStep
+from app.models.phase3 import (
+    AuthState,
+    Phase3ExecutionState,
+    TestCase,
+    TestRun,
+    TestResult,
+    NetworkLog,
+    RetryHistory,
+    ReviewQueueItem,
+)
 
 __all__ = [
     "APIEndpoint",
+    "AuthState",
+    "Phase3ExecutionState",
     "Chunk",
+    "CredentialProfile",
     "ExtractedText",
     "FileType",
     "HighLevelScenario",
@@ -35,4 +49,10 @@ __all__ = [
     "DiscoveredRoute",
     "RouteVariant",
     "ScenarioStep",
+    "TestCase",
+    "TestRun",
+    "TestResult",
+    "NetworkLog",
+    "RetryHistory",
+    "ReviewQueueItem",
 ]

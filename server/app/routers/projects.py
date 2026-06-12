@@ -1,6 +1,7 @@
 import uuid
 import csv
 import asyncio
+from typing import Any
 from app.models.project import (
     ProjectFile,
     FileType,
@@ -11,15 +12,7 @@ from app.models.project import (
     ProjectJiraConfig,
     JiraTicket,
 )
-from playwright.sync_api import sync_playwright
 import threading
-
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.http import models
-except ImportError:
-    QdrantClient = None
-    models = None
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
@@ -30,17 +23,23 @@ from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.schemas.project import ProjectCreateRequest, ProjectListResponse, ProjectResponse, ProjectUpdateRequest
 from app.services.project_service import create_project, delete_project, get_project_or_404, list_projects, update_project
+from app.services.credential_service import get_profile_password, list_project_profiles
 from app.utils.rate_limiter import limiter
-from app.services.pdf_extractor_service import start_pdf_extraction, PDF_PROGRESS
-import fitz
-from pathlib import Path
-from sqlalchemy import func
 
 
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 settings = get_settings()
+
+
+def _qdrant_imports() -> tuple[Any | None, Any | None]:
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models
+    except ImportError:
+        return None, None
+    return QdrantClient, models
 
 
 def _to_project_response(project) -> ProjectResponse:
@@ -214,6 +213,7 @@ def ingest_project(
     db.query(APIEndpoint).filter(APIEndpoint.project_id == project.id).delete()
     db.commit()
 
+    QdrantClient, _ = _qdrant_imports()
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
@@ -232,6 +232,8 @@ def ingest_project(
             print(f"Failed to clear Qdrant data: {e}")
 
     project_id_str = str(project.id)
+    from app.services.pdf_extractor_service import PDF_PROGRESS
+
     if project_id_str in PDF_PROGRESS:
         PDF_PROGRESS[project_id_str] = {
             "status": "idle",
@@ -523,7 +525,22 @@ def get_project_credentials(
 ):
     project = get_project_or_404(db, current_user.id, project_id)
 
-    # 2. Find credentials file
+    profiles = list_project_profiles(db, project.id)
+    if profiles:
+        return [
+            {
+                "id": str(profile.id),
+                "username": profile.username,
+                "role": profile.role,
+                "auth_type": profile.auth_type,
+                "auth_strategy": profile.auth_strategy,
+                "auth_script": profile.auth_script,
+                "endpoint": profile.endpoint,
+                "verified": profile.is_verified,
+            }
+            for profile in profiles
+        ]
+
     file = (
         db.query(ProjectFile)
         .filter(
@@ -532,12 +549,10 @@ def get_project_credentials(
         )
         .first()
     )
-
     if not file:
         return []
 
     credentials = []
-
     verifications = db.query(ProjectCredentialVerification).filter_by(project_id=project.id).all()
     verified_map = {v.username: v.is_verified for v in verifications}
 
@@ -553,6 +568,8 @@ def get_project_credentials(
                     "username": username,
                     "role": row.get("role"),
                     "auth_type": row.get("authtype"),
+                    "auth_strategy": row.get("auth_strategy") or row.get("auth strategy") or "inline_login",
+                    "auth_script": row.get("auth_script") or row.get("auth script"),
                     "endpoint": row.get("api endpoint"),
                     "verified": verified_map.get(username, False),
                 })
@@ -571,6 +588,16 @@ def mark_verified(
     current_user: User = Depends(get_current_user),
 ):
     username = payload.get("username")
+    profile_id = payload.get("credential_id") or payload.get("id")
+    if profile_id:
+        from app.models.project import CredentialProfile
+
+        profile = db.get(CredentialProfile, uuid.UUID(str(profile_id)))
+        if profile and profile.project_id == project_id:
+            profile.is_verified = not profile.is_verified
+            db.commit()
+            return {"status": "verified", "verified": profile.is_verified}
+
     verification = db.query(ProjectCredentialVerification).filter_by(project_id=project_id, username=username).first()
     if verification:
         verification.is_verified = not verification.is_verified
@@ -594,9 +621,23 @@ def run_playwright(
     auth_type = payload.get("auth_type")
 
     project = get_project_or_404(db, current_user.id, project_id)
-    file = db.query(ProjectFile).filter(ProjectFile.project_id == project.id, ProjectFile.file_type == FileType.CREDENTIALS).first()
     password = ""
-    if file:
+    profiles = list_project_profiles(db, project.id)
+    profile = next(
+        (
+            p for p in profiles
+            if p.username == username and (not role or p.role == role)
+        ),
+        None,
+    )
+    if profile:
+        password = get_profile_password(profile)
+        url = url or profile.endpoint
+        auth_type = auth_type or profile.auth_type
+        role = role or profile.role
+
+    file = db.query(ProjectFile).filter(ProjectFile.project_id == project.id, ProjectFile.file_type == FileType.CREDENTIALS).first()
+    if file and not password:
         with open(file.absolute_path, newline="", encoding="utf-8") as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
@@ -605,6 +646,8 @@ def run_playwright(
                     break
 
     def run():
+        from playwright.sync_api import sync_playwright
+
         if hasattr(asyncio, "WindowsProactorEventLoopPolicy") and not isinstance(
             asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy
         ):
@@ -727,12 +770,16 @@ def extract_pdfs(
 ):
     project = get_project_or_404(db, current_user.id, project_id)
 
+    from app.services.pdf_extractor_service import start_pdf_extraction
+
     return start_pdf_extraction(db, project)
 
 @router.get("/{project_id}/extract-status")
 def get_extract_status(
     project_id: uuid.UUID,
 ):
+    from app.services.pdf_extractor_service import PDF_PROGRESS
+
     return PDF_PROGRESS.get(str(project_id), {
         "status": "idle",
         "progress": 0,

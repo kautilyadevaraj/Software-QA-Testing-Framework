@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  output: "standalone",   // required for the multi-stage Docker runner stage
 };
 
 export default nextConfig;

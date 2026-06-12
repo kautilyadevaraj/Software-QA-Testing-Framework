@@ -4,13 +4,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.http import models
-except ImportError:
-    QdrantClient = None
-    models = None
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, func, select
@@ -20,6 +14,15 @@ from app.core.config import get_settings
 from app.models.project import Project, ProjectMember, ProjectRole, ProjectStatus
 from app.models.user import User
 from app.schemas.project import ProjectCreateRequest, ProjectUpdateRequest
+
+
+def _qdrant_imports() -> tuple[Any | None, Any | None]:
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models
+    except ImportError:
+        return None, None
+    return QdrantClient, models
 
 
 def _base_project_query(user_id: uuid.UUID) -> Select[tuple[Project]]:
@@ -113,6 +116,7 @@ def delete_project(db: Session, project: Project) -> None:
     db.delete(project)
     db.commit()
 
+    QdrantClient, _ = _qdrant_imports()
     if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
