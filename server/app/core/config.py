@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-sonnet-4-6"
-    anthropic_max_tokens: int = 4096
+    anthropic_max_tokens: int = 4096  # Phase 3 script gen needs headroom; Phase 2 uses scenario_agent_max_output_tokens
 
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     scenario_agent_max_scenarios_per_batch: int = 5
     scenario_agent_batch_delay_seconds: float = 1.0
     scenario_dedup_max_chars: int = 8000
+    # Max output tokens for Phase 2 scenario-generation LLM calls (Claude).
+    # 2048 is enough for ~12 scenario objects per batch. Can be raised for
+    # larger batches, but keep well below the model's context limit.
+    scenario_agent_max_output_tokens: int = 2048
 
     hf_token: str | None = None
     hf_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -145,13 +149,15 @@ class Settings(BaseSettings):
     # so existing dev runs without complete snapshots keep working.
     a4_strict_snapshot: bool = False
 
-    # Seconds to sleep between grouped A5 LLM calls (rate-limit for free-tier models)
-    # 8s = safe default for qwen3-coder:free (8 RPM) and groq (6 RPM)
+    # Seconds to sleep between grouped A5 LLM calls (rate-limit guard for
+    # free-tier or low-RPM models). Default 8s; set to 0 for paid-tier accounts.
     llm_rate_limit_sleep: float = 8.0
 
     # LLM resilience — max in-flight calls, fallback chain, and retry policy
     llm_max_concurrent: int = 4
-    llm_fallback_chain: str = "anthropic,groq"   # primary first, others as fallback
+    # Primary provider is "anthropic". Add "groq" here only if you want it as
+    # an explicit fallback (requires GROQ_API_KEY to be set).
+    llm_fallback_chain: str = "anthropic"   # primary first, others as fallback
     llm_retry_attempts: int = 3
     llm_retry_backoff_base_s: float = 2.0
 

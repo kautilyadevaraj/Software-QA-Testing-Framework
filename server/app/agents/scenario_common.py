@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from difflib import SequenceMatcher
 from typing import Any, Literal, TypedDict
 
 from app.core.config import get_settings
+from app.utils.llm import call_llm
 
 try:
     from qdrant_client import QdrantClient
@@ -318,25 +318,14 @@ def build_chunk_text_batches(chunks: list[dict[str, Any]]) -> list[str]:
     return build_text_batches(fragments)
 
 
-def _raw_llm_content(response: Any) -> str:
-    content = getattr(response, "content", response)
-    if isinstance(content, list):
-        return "\n".join(str(item) for item in content)
-    return str(content)
+def _scenario_output_tokens() -> int:
+    """Return the configured max output tokens for Phase 2 scenario-generation calls.
 
-
-def _load_llm(api_key: str):
-    settings = get_settings()
-    os.environ["GROQ_API_KEY"] = api_key
-    from langchain_groq import ChatGroq
-
-    return ChatGroq(
-        model=settings.groq_model,
-        temperature=0,
-        api_key=api_key,
-        max_tokens=settings.groq_max_tokens,
-        max_retries=0,
-    )
+    Reads SCENARIO_AGENT_MAX_OUTPUT_TOKENS from settings (default 2048).
+    2048 is enough for ~12 scenario objects per batch (~150-200 tokens each).
+    Configurable via .env without code changes for larger deployments.
+    """
+    return get_settings().scenario_agent_max_output_tokens
 
 
 def parse_json_array(raw: str) -> list[dict[str, Any]]:
@@ -458,43 +447,42 @@ def limit_scenarios(scenarios: list[PreviewScenario], max_scenarios: int | None)
 
 
 def invoke_json_scenarios(prompt: str, agent_name: str, source: ScenarioSource | None = None) -> list[PreviewScenario]:
-    settings = get_settings()
-    api_keys = settings.groq_api_keys
-    if not api_keys:
-        raise RuntimeError("GROQ_API_KEY is not configured")
+    """Call the configured LLM (Claude primary via call_llm) and parse the JSON array response.
 
+    Uses _SCENARIO_OUTPUT_TOKENS (2048) as the max_tokens cap — enough for up to
+    ~12 scenario objects per batch. On invalid JSON, retries once with a stricter
+    JSON instruction appended to the prompt before raising.
+    """
     last_error: Exception | None = None
-    for key_index, api_key in enumerate(api_keys, start=1):
-        llm = _load_llm(api_key)
-        try:
-            response = llm.invoke(prompt)
-            return normalize_scenarios(parse_json_array(_raw_llm_content(response)), source=source)
-        except (json.JSONDecodeError, ValueError) as first_error:
-            logger.warning(
-                "%s returned invalid JSON on key %s/%s; retrying with stricter JSON instruction: %s",
-                agent_name,
-                key_index,
-                len(api_keys),
-                first_error,
-            )
-            last_error = first_error
-        except Exception as first_error:
-            logger.warning("%s failed on Groq key %s/%s: %s", agent_name, key_index, len(api_keys), first_error)
-            last_error = first_error
-            continue
 
-        try:
-            response = llm.invoke(prompt + STRICT_JSON_RETRY_SUFFIX)
-            return normalize_scenarios(parse_json_array(_raw_llm_content(response)), source=source)
-        except (json.JSONDecodeError, ValueError) as retry_error:
-            logger.warning("%s returned invalid JSON after retry on key %s/%s: %s", agent_name, key_index, len(api_keys), retry_error)
-            last_error = retry_error
-        except Exception as retry_error:
-            logger.warning("%s failed after JSON retry on Groq key %s/%s: %s", agent_name, key_index, len(api_keys), retry_error)
-            last_error = retry_error
+    # First attempt
+    try:
+        raw = call_llm(prompt, max_tokens=_scenario_output_tokens())
+        return normalize_scenarios(parse_json_array(raw), source=source)
+    except (json.JSONDecodeError, ValueError) as first_error:
+        logger.warning(
+            "%s returned invalid JSON on first attempt; retrying with stricter JSON instruction: %s",
+            agent_name,
+            first_error,
+        )
+        last_error = first_error
+    except Exception as first_error:
+        logger.warning("%s LLM call failed on first attempt: %s", agent_name, first_error)
+        last_error = first_error
+
+    # Retry with stricter JSON suffix
+    try:
+        raw = call_llm(prompt + STRICT_JSON_RETRY_SUFFIX, max_tokens=_scenario_output_tokens())
+        return normalize_scenarios(parse_json_array(raw), source=source)
+    except (json.JSONDecodeError, ValueError) as retry_error:
+        logger.warning("%s returned invalid JSON after retry: %s", agent_name, retry_error)
+        last_error = retry_error
+    except Exception as retry_error:
+        logger.warning("%s LLM call failed after JSON retry: %s", agent_name, retry_error)
+        last_error = retry_error
 
     assert last_error is not None
-    logger.error("%s failed with all configured Groq API keys: %s", agent_name, last_error)
+    logger.error("%s failed after both LLM attempts: %s", agent_name, last_error)
     raise last_error
 
 
