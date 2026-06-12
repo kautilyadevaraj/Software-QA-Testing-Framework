@@ -1,11 +1,15 @@
-"""Shared LLM client for Phase 3 agents.
+"""Shared LLM client for all SQAT agents.
 
-SQAT keeps this intentionally small:
-- Anthropic Claude Sonnet 4.6 for serious Playwright generation and repair.
-- Groq as an optional fallback/test provider.
+Provides two entry points:
+- call_llm()        — Phase 3 agents (A3/A5/A7). Enforces a shared concurrency
+                      semaphore (LLM_MAX_CONCURRENT) so parallel Playwright workers
+                      don't saturate the Anthropic API.
+- call_llm_direct() — Phase 2 scenario generation. Runs in a sync FastAPI
+                      thread-pool thread; skips the semaphore to avoid starvation
+                      when Phase 3 workers hold all semaphore slots.
 
-If all configured providers fail, the caller gets a clear RuntimeError. We do
-not silently route through unused providers such as Gemini, OpenRouter, or NIM.
+Both functions use the same provider chain (LLM_PROVIDER / LLM_FALLBACK_CHAIN)
+and the same retry/backoff logic.
 """
 from __future__ import annotations
 
@@ -71,7 +75,12 @@ def _register_providers() -> None:
 
 
 def call_llm(prompt: str, max_tokens: int | None = None) -> str:
-    """Call configured LLM providers with concurrency cap, retry, and fallback."""
+    """Phase 3 entry point: call LLM with concurrency cap, retry, and fallback.
+
+    Acquires a slot from the shared semaphore (LLM_MAX_CONCURRENT) before
+    calling the provider. Use call_llm_direct() for Phase 2 / sync routes
+    that must not block on the Phase 3 semaphore.
+    """
     _register_providers()
     providers = _provider_chain()
     max_retries = max(1, int(settings.llm_retry_attempts or 3))
@@ -106,6 +115,54 @@ def call_llm(prompt: str, max_tokens: int | None = None) -> str:
         raise RuntimeError(
             f"All LLM providers exhausted ({','.join(providers)}): {last_exc}"
         )
+
+
+def call_llm_direct(prompt: str, max_tokens: int | None = None) -> str:
+    """Phase 2 entry point: call LLM WITHOUT the concurrency semaphore.
+
+    Phase 2 scenario generation runs inside a sync FastAPI thread-pool thread.
+    Using the shared Phase 3 semaphore from that thread would block it when
+    Phase 3 workers hold all semaphore slots, causing the HTTP request to hang
+    indefinitely from the client's perspective.
+
+    This function uses the same provider chain and retry logic but skips the
+    semaphore acquisition. The caller (invoke_json_scenarios) is responsible
+    for its own retry on JSON-parse failures.
+    """
+    _register_providers()
+    providers = _provider_chain()
+    max_retries = max(1, int(settings.llm_retry_attempts or 3))
+    backoff_base = max(0.1, float(settings.llm_retry_backoff_base_s or 2.0))
+
+    last_exc: Exception | None = None
+    for provider in providers:
+        fn = _PROVIDER_FUNCS.get(provider)
+        if fn is None:
+            logger.warning("LLM: unknown provider %r; skipping", provider)
+            continue
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.debug("LLM (direct) provider=%s attempt=%d/%d", provider, attempt, max_retries)
+                return fn(prompt, max_tokens)
+            except Exception as exc:
+                last_exc = exc
+                if not _is_retryable(exc) or attempt == max_retries:
+                    logger.warning(
+                        "LLM (direct) provider=%s attempt=%d/%d failed: %s",
+                        provider, attempt, max_retries, exc,
+                    )
+                    break
+                sleep_s = backoff_base * (2 ** (attempt - 1))
+                logger.warning(
+                    "LLM (direct) provider=%s attempt=%d/%d failed, backing off %.1fs: %s",
+                    provider, attempt, max_retries, sleep_s, exc,
+                )
+                time.sleep(sleep_s)
+
+    raise RuntimeError(
+        f"All LLM providers exhausted (direct) ({','.join(providers)}): {last_exc}"
+    )
 
 
 class _Acquired:

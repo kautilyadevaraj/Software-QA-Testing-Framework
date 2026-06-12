@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from typing import Any, Literal, TypedDict
 
 from app.core.config import get_settings
-from app.utils.llm import call_llm
+from app.utils.llm import call_llm_direct
 
 try:
     from qdrant_client import QdrantClient
@@ -447,18 +447,23 @@ def limit_scenarios(scenarios: list[PreviewScenario], max_scenarios: int | None)
 
 
 def invoke_json_scenarios(prompt: str, agent_name: str, source: ScenarioSource | None = None) -> list[PreviewScenario]:
-    """Call the configured LLM (Claude primary via call_llm) and parse the JSON array response.
+    """Call the configured LLM (Claude primary via call_llm_direct) and parse the JSON array response.
 
-    Uses _SCENARIO_OUTPUT_TOKENS (2048) as the max_tokens cap — enough for up to
-    ~12 scenario objects per batch. On invalid JSON, retries once with a stricter
-    JSON instruction appended to the prompt before raising.
+    Uses _scenario_output_tokens() (default 2048) as the max_tokens cap.
+    Uses call_llm_direct() to bypass the Phase 3 concurrency semaphore so this
+    sync FastAPI route thread never blocks waiting for Phase 3 worker slots.
+    On invalid JSON, retries once with a stricter JSON instruction before raising.
     """
     last_error: Exception | None = None
+    tokens = _scenario_output_tokens()
 
     # First attempt
+    logger.info("%s: calling LLM (max_tokens=%d)", agent_name, tokens)
     try:
-        raw = call_llm(prompt, max_tokens=_scenario_output_tokens())
-        return normalize_scenarios(parse_json_array(raw), source=source)
+        raw = call_llm_direct(prompt, max_tokens=tokens)
+        result = normalize_scenarios(parse_json_array(raw), source=source)
+        logger.info("%s: got %d scenarios from LLM", agent_name, len(result))
+        return result
     except (json.JSONDecodeError, ValueError) as first_error:
         logger.warning(
             "%s returned invalid JSON on first attempt; retrying with stricter JSON instruction: %s",
@@ -471,9 +476,12 @@ def invoke_json_scenarios(prompt: str, agent_name: str, source: ScenarioSource |
         last_error = first_error
 
     # Retry with stricter JSON suffix
+    logger.info("%s: retrying LLM call with strict JSON instruction", agent_name)
     try:
-        raw = call_llm(prompt + STRICT_JSON_RETRY_SUFFIX, max_tokens=_scenario_output_tokens())
-        return normalize_scenarios(parse_json_array(raw), source=source)
+        raw = call_llm_direct(prompt + STRICT_JSON_RETRY_SUFFIX, max_tokens=tokens)
+        result = normalize_scenarios(parse_json_array(raw), source=source)
+        logger.info("%s: got %d scenarios from LLM on retry", agent_name, len(result))
+        return result
     except (json.JSONDecodeError, ValueError) as retry_error:
         logger.warning("%s returned invalid JSON after retry: %s", agent_name, retry_error)
         last_error = retry_error
@@ -522,6 +530,13 @@ def generate_scenarios_from_batches(
             )
             scenarios.extend(batch_scenarios)
             scenarios = limit_scenarios(deduplicate_scenarios(scenarios), candidate_limit)
+            
+            if max_scenarios is not None:
+                new_unique = filter_new_scenarios(scenarios, existing_scenarios or [])
+                if len(new_unique) >= max_scenarios:
+                    logger.info("%s reached target scenario count (%d) at batch %d/%d; stopping early.", agent_name, max_scenarios, batch_index, len(text_batches))
+                    break
+
             if batch_index < len(text_batches) and settings.scenario_agent_batch_delay_seconds > 0:
                 time.sleep(settings.scenario_agent_batch_delay_seconds)
         except Exception as error:
