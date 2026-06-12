@@ -34,6 +34,7 @@ next-env.d.ts
 # Environment and secrets
 .env*
 !**/.env.example
+!**/.env.vm.example
 *.pem
 **/auth.json
 server/tests/.auth/

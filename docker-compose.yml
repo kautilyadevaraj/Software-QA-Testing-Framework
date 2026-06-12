@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"  # internal only — never expose PostgreSQL publicly
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sqat -d sqat"]
       interval: 10s
@@ -28,8 +28,8 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"    # internal only — AMQP must not be publicly accessible
+      - "127.0.0.1:15672:15672"  # management UI — internal only (ask team lead to open if needed)
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 15s
