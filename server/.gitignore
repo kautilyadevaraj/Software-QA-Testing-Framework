@@ -42,3 +42,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# recording
+recordings/
