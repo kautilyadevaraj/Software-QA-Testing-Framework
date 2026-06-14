@@ -1,13 +1,7 @@
 import uuid
 from pathlib import Path
+from typing import Any
 from sqlalchemy import func, select
-
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.http import models
-except ImportError:
-    QdrantClient = None
-    models = None
 
 from fastapi import HTTPException, UploadFile, status
 
@@ -28,6 +22,15 @@ _FILE_TYPE_LABELS: dict[FileType, str] = {
 }
 
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+def _qdrant_imports() -> tuple[Any | None, Any | None]:
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models
+    except ImportError:
+        return None, None
+    return QdrantClient, models
 
 
 def get_project_files(db: Session, project: Project) -> list[ProjectFile]:
@@ -124,6 +127,12 @@ def validate_and_save_upload(db: Session, project: Project, file: UploadFile, fi
     db.add(new_file)
     db.commit()
     db.refresh(new_file)
+
+    if file_type == FileType.CREDENTIALS:
+        from app.services.credential_service import sync_profiles_from_credentials_file
+
+        sync_profiles_from_credentials_file(db, project, new_file)
+        db.refresh(new_file)
     
     return new_file
 
@@ -135,12 +144,18 @@ def delete_project_file(db: Session, project: Project, file_id: uuid.UUID) -> No
     file_path = Path(file.absolute_path)
     if file_path.exists() and file_path.is_file():
         file_path.unlink()
-        
+
+    if file.file_type == FileType.CREDENTIALS:
+        from app.services.credential_service import delete_profiles_for_credentials_file
+
+        delete_profiles_for_credentials_file(db, project.id, file.id)
+
     db.delete(file)
     db.commit()
 
     settings = get_settings()
-    if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+    QdrantClient, models = _qdrant_imports()
+    if QdrantClient and models and settings.qdrant_url and settings.qdrant_api_key:
         try:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
             collection_name = str(project.id)

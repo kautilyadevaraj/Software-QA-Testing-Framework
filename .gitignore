@@ -1,6 +1,4 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# ── Node / Next.js ─────────────────────────────────────────────────────────
+# Node / Next.js
 **/node_modules/
 /.pnp
 .pnp.*
@@ -9,58 +7,66 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
-# Next.js build output
 **/.next/
 **/out/
-
-# Production build
 **/build/
 **/dist/
 **/.cache/
-
-# TypeScript
 *.tsbuildinfo
 next-env.d.ts
 
-# ── Python / FastAPI ────────────────────────────────────────────────────────
+# Python / FastAPI
 **/.venv/
 **/venv/
+**/env/
 **/__pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-
-# uv lock — uncomment to ignore if you don't want to pin deps in CI
-# uv.lock
-
-# Pytest / coverage
 .pytest_cache/
 **/.pytest_cache/
 .coverage
+**/.tracecov/
 **/htmlcov/
-
-# Mypy
 .mypy_cache/
 **/.mypy_cache/
 
-# ── Environment & Secrets ───────────────────────────────────────────────────
-# All .env files are ignored EXCEPT .env.example files
+# Environment and secrets
 .env*
 !**/.env.example
+!**/.env.vm.example
+*.pem
+**/auth.json
+server/tests/.auth/
+server/tests/.auth/**
+**/storageState*.json
 
-# ── Uploaded user files ─────────────────────────────────────────────────────
-# Never commit credentials CSVs, PDFs, swagger docs uploaded by users
+# Uploaded user files
 uploads/
 **/uploads/
+server/recordings/
 
-# ── Local ML model cache ─────────────────────────────────────────────────────
+# Generated Playwright scripts and test output
+server/tests/generated/
+server/tests/.auth/
+server/tests/tests/
+server/test-results/
+server/test_docs/
+server/state.json
+*.spec.ts.tmp
+**/traces/
+**/.last-run.json
+**/error-context.md
+server/report.json
+server/report_utf8.json
+server/test_output.txt
+
+# Local runtime/dependency caches
+server/node_modules/
+server/package-lock.json
 server/models/
 
-# ── Testing ─────────────────────────────────────────────────────────────────
-**/coverage/
-
-# ── Logs ────────────────────────────────────────────────────────────────────
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -68,23 +74,20 @@ yarn-error.log*
 *.log
 logs/
 
-# ── OS / Editor junk ────────────────────────────────────────────────────────
+# OS / editor junk
 .DS_Store
 Thumbs.db
-*.pem
 .vscode/
 .idea/
 *.swp
 *.swo
 *.tmp
-c.py
 
-# ── Prisma (legacy — not used but kept for safety) ──────────────────────────
+# Local DB / legacy generated output
 /app/generated/prisma
 prisma/migrations
 *.db
 *.db-journal
 
-# ── Deployment ──────────────────────────────────────────────────────────────
+# Deployment
 .vercel
-docs

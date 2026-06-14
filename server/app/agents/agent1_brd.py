@@ -44,6 +44,7 @@ def run_agent1_brd(state: dict[str, Any]) -> dict[str, list[PreviewScenario]]:
         scenario_types = options.get("scenario_types") if isinstance(options, dict) else None
         access_mode = options.get("access_mode") if isinstance(options, dict) else None
         scenario_level = options.get("scenario_level") if isinstance(options, dict) else None
+        progress_callback = options.get("progress_callback") if isinstance(options, dict) else None
         existing_scenarios = state.get("existing_scenarios", [])
         chunks = scroll_chunks(project_id, BUSINESS_CATEGORIES)
         if not chunks:
@@ -64,6 +65,7 @@ def run_agent1_brd(state: dict[str, Any]) -> dict[str, list[PreviewScenario]]:
             access_mode=access_mode,
             scenario_level=scenario_level,
             existing_scenarios=existing_scenarios,
+            progress_callback=progress_callback,
         )
         return {"agent_1_scenarios": scenarios}
     except Exception as error:

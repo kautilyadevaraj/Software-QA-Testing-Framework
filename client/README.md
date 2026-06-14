@@ -1,143 +1,160 @@
-# Software QA Testing Framework (UI)
+# SQAT Client — Next.js Frontend
 
-This is a **Next.js + Prisma** project.
+The Next.js 16 frontend for the SQAT (Software QA Testing Framework) platform. It provides the full QA engineer workflow: project setup, document management, scenario generation, application recording, test case review, Phase 3 execution monitoring, and Jira defect raising.
 
-# Project Setup
+## Prerequisites
 
-## 1. Install dependencies
+| Tool | Version |
+| --- | --- |
+| Node.js | 20+ |
+| Backend | Running at `http://localhost:8000` (see `server/README.md`) |
 
-```bash
-npm ci
+## Setup
+
+```powershell
+npm install
+copy .env.example .env
 ```
 
-## 2. Setup PostgreSQL locally
-
-Install PostgreSQL on your machine (version 17 or later is recommended)
-
-### Using CMD (Windows)
-
-1. Open PostgreSQL
-```bash
-psql -U postgres
-```
-
-2. Create a Database
-```sql
-CREATE DATABASE sqat_db;
-```
-
-3. No extra user/role authorization setup is required for local development.
-
-### Using pgAdmin
-
-1. Create a Server Group in pgAdmin called SQAT
-2. Register a Server called SQAT-Server inside SQAT server group
-   - In connection tab set
-   - Hostname/address : localhost
-   - Port : 5432
-   - Username : postgres
-   - Password : <YOUR_PASSWORD>
-   - Check the save password and Save
-3. Open the SQAT -> SQAT-Server and right click Databases
-4. Create a new DB named as sqat_db and set the owner as postgres
-
-Connection key
-```bash
-postgresql://{username}:{password}@host:port/{database_name}
-```
-
-
-
-
-## 2. Setup PostgreSQL locally (Using pgAdmin)
-
-Install PostgreSQL (version 17 or later recommended) and open pgAdmin.
-
-### 1. Register Server (if not already)
-
-1. Open pgAdmin
-2. Right-click **Servers** → Click **Register → Server**
-3. In **General** tab:
-   * Name: `SQAT-Server`
-4. In **Connection** tab:
-   * Host: `localhost`
-   * Port: `5432`
-   * Username: `postgres`
-   * Password: (your postgres password)
-5. Click **Save**
-
-### 2. Create Database
-
-1. Expand **Servers → PostgreSQL → Databases**
-2. Right-click **Databases** → Click **Create → Database**
-3. Enter:
-   * Database name: `sqat_db`
-   * Owner: `postgres`
-4. Click **Save**
-
-### 3. Connection String
-
-```
-postgresql://postgres:{password}@localhost:5432/sqat_db
-```
-
-> <span style="color: #E9D502">Notes</span>
-
-* Use strong passwords in production
-* Store credentials in `.env` files
-* Avoid using `postgres` user in applications
-
-
-## 4. Setup Environment Variables
-
-Rename the example file:
-
-```bash
-cp .env.example .env
-```
-
-Now update `.env` with your database credentials.
-
-## 5. Update `.env`
-
-Example:
+Configure `client/.env`:
 
 ```env
-DATABASE_URL="postgresql://authuser:password@localhost:5432/authdb"
-JWT_SECRET="your_secret_here"
-BCRYPT_SALT_ROUNDS="10"
-BCRYPT_PEPPER="your_long_random_secret"
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-- `JWT_SECRET`: signing key for JWT tokens (required)
-- `BCRYPT_SALT_ROUNDS`: bcrypt cost factor (default `5`)
-- `BCRYPT_PEPPER`: extra secret appended before hashing (recommended)
-- JWT session: `3 days` (`expiresIn: "3d"` and cookie max-age set to 3 days)
+## Run Locally
 
-# Prisma Setup
-
-Run the following commands:
-
-```bash
-npx prisma generate
-npx prisma studio
-```
-
-- `generate`: creates Prisma client
-- `studio`: opens DB UI
-
-If you change the Prisma schema later, run:
-
-```bash
-npx prisma migrate dev
-```
-
-# Run the Project
-
-```bash
+```powershell
 npm run dev
 ```
 
-Open:
+Open: `http://localhost:3000`
 
-http://localhost:3000
+## Checks
+
+```powershell
+npm run lint
+npm run build
+```
+
+---
+
+## Application Structure
+
+```text
+client/
+├── app/                        # Next.js App Router
+│   ├── layout.tsx              # Root layout (auth context, Sonner toasts)
+│   ├── page.tsx                # Landing / redirect
+│   ├── login/                  # Login page
+│   ├── signup/                 # Sign-up page
+│   └── projects/
+│       ├── page.tsx            # Project list + create project
+│       ├── layout.tsx          # Project shell with side nav
+│       └── [projectId]/
+│           └── page.tsx        # Main project page (all phases in one view)
+│
+├── components/
+│   ├── scenario-qa-panel.tsx   # Phase 2: HLS generation, recording, scenario management
+│   ├── phase3-panel.tsx        # Phase 3: plan / approve / execute / results
+│   ├── phase3-review-queue.tsx # SSE-driven live review queue panel
+│   ├── phase3-script-editor-modal.tsx # CodeMirror inline script editor
+│   ├── phase3-tab-bar.tsx      # Phase 3 section tabs
+│   ├── raise-ticket-modal.tsx  # Jira issue creation form
+│   ├── app-navbar.tsx          # Top navigation bar
+│   ├── projects-side-nav.tsx   # Per-project side navigation
+│   └── ui/                     # Shared base UI primitives (Button, etc.)
+│
+└── lib/                        # API client, hooks, utilities
+```
+
+---
+
+## Key UI Flows
+
+### Phase 1 — Project Setup
+
+1. Create a project from the Projects page.
+2. Upload BRD, FSD, WBS, Swagger/OpenAPI files, and assumptions documents.
+3. Add credential profiles (roles + username/password pairs) via the Credentials tab.
+4. Set the target application URL.
+
+### Phase 2 — Scenario Generation and Recording
+
+**Scenario QA Panel (`scenario-qa-panel.tsx`)**
+
+- **Generate Scenarios:** Calls `POST /api/v1/projects/{id}/scenarios/generate`. The LangGraph graph (A1 + A2 + A3 dedup) produces High-Level Scenarios from uploaded documents.
+- **Manual Scenarios:** Add custom scenarios that won't be generated by AI.
+- **Edit Scenarios:** Inline title and description editing per scenario.
+- **Recording Workflow:**
+  1. Click **"Recording Setup"** to get the one-time recorder command.
+  2. Run the command locally (downloads and starts the Python daemon).
+  3. Click **"Launch Recording"** for a scenario — the daemon opens Chromium.
+  4. Navigate the target app as a tester.
+  5. Click **"Stop Recording"** — the daemon finalises and uploads captured data.
+  6. The scenario shows step count and Phase 3 readiness status.
+- **Approve Scenarios:** Mark each scenario as `Completed` when it has a good recording.
+
+### Phase 3 — Test Case Review and Execution
+
+**Phase 3 Panel (`phase3-panel.tsx`)**
+
+**Planning Tab:**
+- Click **"Generate Test Cases"** → calls `POST /phase3/plan`.
+- Polls `GET /phase3/tc-document/json` until planning completes.
+- Test cases appear in an accordion grouped by parent HLS.
+- Each test case shows: TC number, title, steps, acceptance criteria, target page, auth mode.
+- Inline edit any test case (auto-resets to `NEEDS_EDIT`).
+- Per-TC approval: **Approve**, **Exclude**, or **Needs Edit**.
+- Bulk **Approve All** button.
+- Download X-Ray CSV for Jira import.
+
+**Execution Tab:**
+- Click **"Run Tests"** → calls `POST /phase3/execute` (requires all TCs approved).
+- Live execution state: per-test status counters (PASS / FAIL / RUNNING / QUEUED).
+- SSE stream keeps counters and review queue updated in real time.
+
+**Results / Review Queue (`phase3-review-queue.tsx`)**
+- Shows items in `HUMAN_REVIEW` or `APP_ERROR` state.
+- Each item shows: TC number, title, failure category, error log excerpt.
+- **Raise Jira:** Opens `raise-ticket-modal.tsx` → `POST /phase3/raise-jira`.
+- **Edit Script:** Opens `phase3-script-editor-modal.tsx` (CodeMirror TypeScript editor) → save and re-enqueue via `POST /phase3/review-queue/{id}/rerun`.
+- Download Playwright trace for failures: `GET /phase3/trace/{test_id}`.
+
+**Report Tab:**
+- Download final execution report CSV: `GET /phase3/execution-report.csv`.
+
+---
+
+## Dependencies
+
+| Package | Purpose |
+| --- | --- |
+| `next` 16 | App Router, SSR/SSG |
+| `react` 19 | UI framework |
+| `tailwindcss` 4 | Utility CSS |
+| `@uiw/react-codemirror` | Inline script editor |
+| `@codemirror/lang-javascript` | TypeScript syntax highlighting |
+| `lucide-react` | Icons |
+| `sonner` | Toast notifications |
+| `class-variance-authority` | Component variant styling |
+
+---
+
+## API Communication
+
+All API calls go to `NEXT_PUBLIC_API_BASE_URL` (set in `.env`). The backend uses JWT cookie authentication — no manual token management needed after login.
+
+The SSE review queue stream connects to:
+```
+GET {API_BASE}/api/v1/projects/{id}/phase3/review-queue/stream
+```
+
+---
+
+## Notes
+
+- Do not commit `client/.env`.
+- Do not commit generated build folders (`.next/`, `out/`, `dist/`).
+- Database and migration management belong to the backend (`server/`).
+- The `proxy.ts` file provides a Next.js API proxy if needed for development.

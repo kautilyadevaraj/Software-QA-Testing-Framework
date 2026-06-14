@@ -1,26 +1,13 @@
 import threading
-import fitz
 from pathlib import Path
 import os
+from typing import Any
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
-import prance
 import re
 import time
 import json
 import uuid
-
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.http import models
-except ImportError:
-    QdrantClient = None
-    models = None
-
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
 
 from app.models.project import ProjectFile, FileType, Project, ExtractedText, APIEndpoint, Chunk
 from app.core.config import get_settings
@@ -29,6 +16,34 @@ from app.db.session import SessionLocal
 PDF_PROGRESS = {}
 _EMBEDDER = None
 _EMBEDDER_LOCK = threading.Lock()
+_SENTENCE_TRANSFORMER = None
+_SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED = False
+
+
+def _qdrant_imports() -> tuple[Any | None, Any | None]:
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models
+    except ImportError:
+        return None, None
+    return QdrantClient, models
+
+
+def _get_sentence_transformer_class():
+    global _SENTENCE_TRANSFORMER, _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED
+
+    if _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED:
+        return _SENTENCE_TRANSFORMER
+
+    _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED = True
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        _SENTENCE_TRANSFORMER = None
+    else:
+        _SENTENCE_TRANSFORMER = SentenceTransformer
+
+    return _SENTENCE_TRANSFORMER
 
 
 def _get_models_root() -> Path:
@@ -42,6 +57,7 @@ def _get_models_root() -> Path:
 
 
 def _load_sentence_transformer(model_ref: str, cache_dir: Path, token: str | None, local_only: bool = False):
+    SentenceTransformer = _get_sentence_transformer_class()
     if SentenceTransformer is None:
         return None
 
@@ -159,7 +175,8 @@ def _run_extraction(project_id_str: str):
         collection_name = str(project.id)
 
         qdrant_client = None
-        if QdrantClient and settings.qdrant_url and settings.qdrant_api_key:
+        QdrantClient, models = _qdrant_imports()
+        if QdrantClient and models and settings.qdrant_url and settings.qdrant_api_key:
             qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key, timeout=60.0)
             if not qdrant_client.collection_exists(collection_name):
                 qdrant_client.create_collection(
@@ -211,6 +228,7 @@ def _run_extraction(project_id_str: str):
                 }
                 time.sleep(1.0)
 
+                import fitz
 
                 doc = fitz.open(file.absolute_path)
 
@@ -326,7 +344,8 @@ def _run_extraction(project_id_str: str):
                     "logs": logs
                 }
 
-                
+                import prance
+
                 parser = prance.ResolvingParser(file.absolute_path)
                 spec = parser.specification
                 paths = spec.get("paths", {})

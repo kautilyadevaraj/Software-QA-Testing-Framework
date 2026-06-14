@@ -1,16 +1,17 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Square, Trash2, WandSparkles, X } from "lucide-react";
+import { BrushCleaning, Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Square, Trash2, WandSparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   ApiError,
   approveHighLevelScenarios,
+  clearScenarioRecording,
   createHighLevelScenario,
   deleteHighLevelScenario,
-  generateHighLevelScenarios,
+  generateHighLevelScenariosStream,
   getRecordingSetup,
   getScenarioRecordingStatus,
   listHighLevelScenarios,
@@ -37,11 +38,7 @@ type DraftScenario = {
   description: string;
 };
 
-const GENERATION_STEPS = [
-  "Agent 1: reading BRD / WBS / FSD / assumptions",
-  "Agent 2: reading Swagger / OpenAPI docs",
-  "Deduplication: merging and trimming tester scenarios",
-];
+
 
 const SCENARIO_LIMIT_OPTIONS = [
   { label: "1 - 20", value: "20" },
@@ -155,6 +152,54 @@ function scenarioTags(source: ScenarioSource) {
   return [sourceBadge(source).label];
 }
 
+function recordingFailureText(reasons: string[]) {
+  if (!reasons.length) return "Quality gate failed";
+  return reasons.map((reason) => reason.replace(/_/g, " ")).join(", ");
+}
+
+function recordingBadge(scenario: HighLevelScenario) {
+  if (!scenario.recording_status) {
+    return {
+      label: "Not recorded",
+      title: "No recording session has been saved yet.",
+      className: "border-zinc-200 bg-zinc-50 text-zinc-600",
+    };
+  }
+  if (scenario.recording_status === "in_progress") {
+    return {
+      label: "Recording",
+      title: "Recording is currently in progress.",
+      className: "border-red-200 bg-red-50 text-red-700",
+    };
+  }
+  if (scenario.recording_status === "failed") {
+    return {
+      label: "Recording failed",
+      title: "The latest recording session failed.",
+      className: "border-red-200 bg-red-50 text-red-700",
+    };
+  }
+  if (scenario.recording_status === "completed" && scenario.recording_phase3_ready === false) {
+    return {
+      label: "Needs re-recording",
+      title: recordingFailureText(scenario.recording_quality_failure_reasons),
+      className: "border-amber-200 bg-amber-50 text-amber-800",
+    };
+  }
+  if (scenario.recording_status === "completed" && scenario.recording_phase3_ready === true) {
+    return {
+      label: "Phase 3 ready",
+      title: `${scenario.recording_step_count} steps recorded.`,
+      className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    };
+  }
+  return {
+    label: "Recording pending",
+    title: "Recording session has been created but not started.",
+    className: "border-zinc-200 bg-zinc-100 text-zinc-700",
+  };
+}
+
 function tableInputClass() {
   return "min-h-10 w-full rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]";
 }
@@ -164,10 +209,9 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   const [previewScenarios, setPreviewScenarios] = useState<PreviewScenario[]>([]);
   const [isLoadingApproved, setIsLoadingApproved] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isApproving, setIsApproving] = useState(false);
-  const [activeStep, setActiveStep] = useState(0);
-  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
+  const [generationLogs, setGenerationLogs] = useState<string[]>([]);
   const [previewEditIndex, setPreviewEditIndex] = useState<number | null>(null);
+  const [isApproving, setIsApproving] = useState(false);
   const [previewDraft, setPreviewDraft] = useState<DraftScenario>({ title: "", description: "" });
   const [approvedEditId, setApprovedEditId] = useState<string | null>(null);
   const [approvedDraft, setApprovedDraft] = useState<DraftScenario>({ title: "", description: "" });
@@ -183,6 +227,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   // Trigger / Launch state
   const [launchingScenarioId, setLaunchingScenarioId] = useState<string | null>(null);
   const [recordingScenarioId, setRecordingScenarioId] = useState<string | null>(null);
+  const [clearingRecordingScenarioId, setClearingRecordingScenarioId] = useState<string | null>(null);
   // Setup Recorder popover
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupInfo, setSetupInfo] = useState<RecordingSetupResponse | null>(null);
@@ -254,12 +299,16 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     let hasStarted = false;
     const interval = setInterval(async () => {
       try {
-        const { session_status } = await getScenarioRecordingStatus(projectId, recordingScenarioId);
+        const { session_status, phase3_ready, quality_failure_reasons } = await getScenarioRecordingStatus(projectId, recordingScenarioId);
         if (session_status === "in_progress") {
           hasStarted = true;
         } else if (hasStarted && (session_status === "completed" || session_status === "failed")) {
           setRecordingScenarioId(null);
           await loadApprovedScenarios();
+          if (session_status === "completed" && !phase3_ready) {
+            toast.warning(`Recording saved, but quality needs review: ${recordingFailureText(quality_failure_reasons)}`);
+            return;
+          }
           if (session_status === "completed") {
             toast.success("Recording finished — session saved.");
           } else {
@@ -297,8 +346,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
 
   const handleGenerate = async () => {
     setIsGenerating(true);
-    setActiveStep(1);
-    setCompletedSteps([]);
+    setGenerationLogs([]);
     const maxScenarios =
       scenarioLimit === "max"
         ? null
@@ -315,23 +363,21 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
       ...previewScenarios,
     ];
 
-    const request = generateHighLevelScenarios(projectId, {
-      max_scenarios: maxScenarios,
-      scenario_types: scenarioTypes,
-      access_mode: accessMode,
-      scenario_level: scenarioLevel,
-      existing_scenarios: existingScenarios,
-    });
     try {
-      setActiveStep(1);
-      await sleep(1200);
-      setCompletedSteps([1]);
-      setActiveStep(2);
-      await sleep(1200);
-      setCompletedSteps([1, 2]);
-      setActiveStep(3);
-      const response = await request;
-      setCompletedSteps([1, 2, 3]);
+      const response = await generateHighLevelScenariosStream(
+        projectId,
+        {
+          max_scenarios: maxScenarios,
+          scenario_types: scenarioTypes,
+          access_mode: accessMode,
+          scenario_level: scenarioLevel,
+          existing_scenarios: existingScenarios,
+        },
+        (msg) => {
+          setGenerationLogs((current) => [...current, msg]);
+        }
+      );
+      
       setPreviewScenarios((current) => [...current, ...response.scenarios]);
       if (response.scenarios.length === 0) {
         toast.info(existingScenarios.length > 0 ? "No additional scenarios were found." : "No scenarios were generated from the ingested chunks.");
@@ -339,10 +385,9 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
         toast.success(`Generated ${response.scenarios.length} additional high level scenarios.`);
       }
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "Scenario generation failed.");
+      toast.error(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Scenario generation failed.");
     } finally {
       setIsGenerating(false);
-      setActiveStep(0);
     }
   };
 
@@ -446,6 +491,32 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
       toast.success("Scenario deleted.");
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Unable to delete scenario.");
+    }
+  };
+
+  const clearApprovedRecording = async (scenario: HighLevelScenario) => {
+    if (
+      !window.confirm(
+        `Clear all web recording data for "${scenario.title}"? This removes recorded steps, screenshots, route snapshots, and recording files.`,
+      )
+    ) {
+      return;
+    }
+
+    setClearingRecordingScenarioId(scenario.id);
+    try {
+      const result = await clearScenarioRecording(projectId, scenario.id);
+      if (recordingScenarioId === scenario.id) {
+        setRecordingScenarioId(null);
+      }
+      await loadApprovedScenarios();
+      toast.success(
+        `Recording cleared. Removed ${result.steps_deleted} steps, ${result.route_variants_deleted} route snapshots, and ${result.files_deleted} files.`,
+      );
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Unable to clear recording.");
+    } finally {
+      setClearingRecordingScenarioId(null);
     }
   };
 
@@ -624,26 +695,20 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
         ) : null}
       </div>
 
-      {isGenerating ? (
-        <div className="mt-4 grid gap-2">
-          {GENERATION_STEPS.map((label, index) => {
-            const step = index + 1;
-            const isDone = completedSteps.includes(step);
-            const isActive = activeStep === step && !isDone;
-            return (
-              <div key={label} className="flex items-center gap-3 rounded-md border border-black/10 px-3 py-2 text-sm">
-                <span className="font-semibold text-black/60">Step {step}</span>
-                <span className="flex-1 text-black">{label}</span>
-                {isDone ? (
-                  <Check className="h-4 w-4 text-emerald-600" />
-                ) : isActive ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-[#2a63f5]" />
-                ) : (
-                  <span className="h-4 w-4 rounded-full border border-black/20" />
-                )}
-              </div>
-            );
-          })}
+      {isGenerating || generationLogs.length > 0 ? (
+        <div className="mt-4 rounded-md border border-black/10 bg-black/[0.02] p-3 text-xs text-black/70 font-mono">
+          <div className="flex items-center gap-2 mb-2 pb-2 border-b border-black/5 font-sans font-medium text-black">
+            {isGenerating ? <Loader2 className="h-4 w-4 animate-spin text-[#2a63f5]" /> : <Check className="h-4 w-4 text-emerald-600" />}
+            {isGenerating ? "Generation in progress..." : "Generation complete"}
+          </div>
+          <div className="max-h-48 overflow-y-auto space-y-1">
+            {generationLogs.map((log, i) => (
+              <div key={i}>{log}</div>
+            ))}
+            {isGenerating && generationLogs.length === 0 && (
+              <div className="italic text-black/40">Waiting for agent cluster to spin up...</div>
+            )}
+          </div>
         </div>
       ) : null}
     </div>
@@ -778,7 +843,13 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                 <Info className="h-4 w-4" />
                 Setup Recorder
               </Button>
-              <Button variant="outline" onClick={() => setIsAddingApproved(true)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewApprovedDraft({ title: "", description: "" });
+                  setIsAddingApproved(true);
+                }}
+              >
                 <Plus className="h-4 w-4" />
                 Add Scenario
               </Button>
@@ -792,7 +863,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                   <th className="px-4 py-3">Title</th>
                   <th className="w-32 px-4 py-3">Tags</th>
                   <th className="w-32 px-4 py-3">Status</th>
-                  <th className="w-[112px] px-4 py-3 text-right">Actions</th>
+                  <th className="w-[160px] px-4 py-3 text-right">Actions</th>
                   <th className="w-[240px] px-4 py-3 text-right">Launch</th>
                 </tr>
               </thead>
@@ -800,6 +871,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                 {approvedScenarios.map((scenario) => {
                   const isEditing = approvedEditId === scenario.id;
                   const isDescriptionOpen = expandedDescriptionIds.includes(scenario.id);
+                  const recorderBadge = recordingBadge(scenario);
                   return (
                     <Fragment key={scenario.id}>
                       <tr className={cn("border-t border-black/10", isDescriptionOpen ? "bg-[#2a63f5]/[0.03]" : undefined)}>
@@ -831,18 +903,27 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <button
-                            type="button"
-                            onClick={() => void toggleStatus(scenario)}
-                            className={cn(
-                              "rounded-full border px-2 py-1 text-xs font-semibold",
-                              scenario.status === "completed"
-                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                : "border-zinc-200 bg-zinc-100 text-zinc-700",
-                            )}
-                          >
-                            {scenario.status === "completed" ? "Completed" : "Pending"}
-                          </button>
+                          <div className="grid gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void toggleStatus(scenario)}
+                              className={cn(
+                                "w-fit rounded-full border px-2 py-1 text-xs font-semibold",
+                                scenario.status === "completed"
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                  : "border-zinc-200 bg-zinc-100 text-zinc-700",
+                              )}
+                              title="Manual HLS completion status"
+                            >
+                              {scenario.status === "completed" ? "HLS completed" : "HLS pending"}
+                            </button>
+                            <span
+                              className={cn("w-fit rounded-full border px-2 py-1 text-xs font-semibold", recorderBadge.className)}
+                              title={recorderBadge.title}
+                            >
+                              {recorderBadge.label}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex justify-end gap-2">
@@ -859,6 +940,21 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                               <>
                                 <Button size="icon" variant="outline" onClick={() => startApprovedEdit(scenario)} aria-label={`Edit ${scenario.title}`} title="Edit">
                                   <Pencil className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="outline"
+                                  className="border-sky-200 text-sky-700 hover:bg-sky-50"
+                                  onClick={() => void clearApprovedRecording(scenario)}
+                                  disabled={clearingRecordingScenarioId === scenario.id}
+                                  aria-label={`Clear recording for ${scenario.title}`}
+                                  title="Clear web recording"
+                                >
+                                  {clearingRecordingScenarioId === scenario.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <BrushCleaning className="h-4 w-4" />
+                                  )}
                                 </Button>
                                 <Button
                                   size="icon"
@@ -950,35 +1046,6 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                   );
                 })}
 
-                {isAddingApproved ? (
-                  <tr>
-                    <td className="px-4 py-3 text-black/40">New</td>
-                    <td className="px-4 py-3">
-                      <Input value={newApprovedDraft.title} onChange={(e) => setNewApprovedDraft((current) => ({ ...current, title: e.target.value }))} placeholder="Scenario title" />
-                    </td>
-                    <td className="px-4 py-3" colSpan={4}>
-                      <textarea
-                        rows={2}
-                        value={newApprovedDraft.description}
-                        onChange={(e) => setNewApprovedDraft((current) => ({ ...current, description: e.target.value }))}
-                        className={tableInputClass()}
-                        placeholder="Scenario description"
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-right" colSpan={2}>
-                      <div className="flex justify-end gap-2">
-                        <Button size="sm" onClick={() => void createApproved()}>
-                          <Check className="h-4 w-4" />
-                          Save
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => setIsAddingApproved(false)}>
-                          <X className="h-4 w-4" />
-                          Cancel
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
               </tbody>
             </table>
           </div>
@@ -987,6 +1054,85 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     </div>
 
       {/* ── Setup Recorder Modal ──────────────────────────────────────────── */}
+      {isAddingApproved ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsAddingApproved(false);
+              setNewApprovedDraft({ title: "", description: "" });
+            }
+          }}
+        >
+          <div className="w-full max-w-xl rounded-lg border border-black/10 bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-black">Add Scenario</h2>
+                <p className="mt-1 text-sm text-black/60">Create a manual high level scenario for this QA project.</p>
+              </div>
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={() => {
+                  setIsAddingApproved(false);
+                  setNewApprovedDraft({ title: "", description: "" });
+                }}
+                aria-label="Close add scenario dialog"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-title" className="text-sm font-medium text-black">
+                  Scenario Title
+                </label>
+                <Input
+                  id="new-scenario-title"
+                  value={newApprovedDraft.title}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, title: event.target.value }))}
+                  placeholder="Enter scenario title"
+                  autoFocus
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-description" className="text-sm font-medium text-black">
+                  Scenario Description
+                </label>
+                <textarea
+                  id="new-scenario-description"
+                  rows={5}
+                  value={newApprovedDraft.description}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, description: event.target.value }))}
+                  className="flex w-full resize-none rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black placeholder:text-black/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                  placeholder="Describe the tester scenario"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setIsAddingApproved(false);
+                  setNewApprovedDraft({ title: "", description: "" });
+                }}
+              >
+                <X className="h-4 w-4" />
+                Cancel
+              </Button>
+              <Button onClick={() => void createApproved()}>
+                <Check className="h-4 w-4" />
+                Save Scenario
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showSetupModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"

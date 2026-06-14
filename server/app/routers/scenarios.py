@@ -1,20 +1,26 @@
 """Scenario management endpoints — called by the Next.js frontend."""
 
 
+import json
 import logging
+import queue
+import shutil
+import threading
 import uuid
+from collections.abc import AsyncGenerator
+from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from uuid6 import uuid7
 
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
-from app.graph.scenario_graph import run_scenario_graph
 from app.models.project import HighLevelScenario, Project
-from app.models.scenario import RecordingSession
+from app.models.scenario import DiscoveredRoute, RecordingFlow, RecordingSession, RouteVariant, ScenarioStep
 from app.models.user import User
 from app.schemas.scenario import (
     ApproveScenariosRequest,
@@ -38,7 +44,50 @@ settings = get_settings()
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _scenario_response(row: HighLevelScenario, completed_by_name: str | None = None) -> HighLevelScenarioResponse:
+def _latest_recording_info(db: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> dict:
+    session = db.execute(
+        select(RecordingSession)
+        .where(
+            RecordingSession.project_id == project_id,
+            RecordingSession.scenario_id == scenario_id,
+        )
+        .order_by(RecordingSession.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if session is None:
+        return {
+            "recording_status": None,
+            "recording_step_count": 0,
+            "recording_phase3_ready": None,
+            "recording_quality_failure_reasons": [],
+        }
+
+    step_count = db.execute(
+        select(func.count(ScenarioStep.id)).where(ScenarioStep.recording_session_id == session.id)
+    ).scalar_one()
+    flow = db.execute(
+        select(RecordingFlow)
+        .where(RecordingFlow.recording_id == session.id)
+        .order_by(RecordingFlow.flow_index.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    metadata = flow.metadata_json if flow and isinstance(flow.metadata_json, dict) else {}
+    reasons = metadata.get("quality_failure_reasons") if isinstance(metadata, dict) else []
+
+    return {
+        "recording_status": session.status,
+        "recording_step_count": int(step_count or 0),
+        "recording_phase3_ready": bool(flow.phase3_ready) if flow else None,
+        "recording_quality_failure_reasons": [str(reason) for reason in (reasons or [])],
+    }
+
+
+def _scenario_response(
+    row: HighLevelScenario,
+    completed_by_name: str | None = None,
+    recording_info: dict | None = None,
+) -> HighLevelScenarioResponse:
+    recording_info = recording_info or {}
     return HighLevelScenarioResponse(
         id=row.id,
         project_id=row.project_id,
@@ -48,6 +97,10 @@ def _scenario_response(row: HighLevelScenario, completed_by_name: str | None = N
         status=row.status,  # type: ignore[arg-type]
         completed_by=row.completed_by,
         completed_by_name=completed_by_name,
+        recording_status=recording_info.get("recording_status"),
+        recording_step_count=recording_info.get("recording_step_count") or 0,
+        recording_phase3_ready=recording_info.get("recording_phase3_ready"),
+        recording_quality_failure_reasons=recording_info.get("recording_quality_failure_reasons") or [],
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -69,12 +122,40 @@ def _get_scenario_with_completed_by_name(
     if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
     scenario, completed_by_name = result
-    return _scenario_response(scenario, completed_by_name)
+    return _scenario_response(scenario, completed_by_name, _latest_recording_info(db, project_id, scenario.id))
+
+
+def _recordings_base() -> Path:
+    return Path(getattr(settings, "RECORDINGS_BASE_PATH", "recordings")).resolve()
+
+
+def _remove_recording_path(path: str | None, recordings_base: Path) -> bool:
+    if not path:
+        return False
+
+    target = Path(path)
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return False
+
+    if recordings_base not in resolved.parents and resolved != recordings_base:
+        return False
+
+    if resolved.is_dir():
+        shutil.rmtree(resolved, ignore_errors=True)
+        return True
+    if resolved.exists():
+        resolved.unlink()
+        return True
+    return False
 
 
 # ── Generate ───────────────────────────────────────────────────────────────
 
-@router.post("/{project_id}/scenarios/generate", response_model=GenerateScenariosResponse)
+@router.post("/{project_id}/scenarios/generate")
 @limiter.limit(settings.rate_limit_api)
 def generate_scenarios(
     request: Request,
@@ -82,30 +163,56 @@ def generate_scenarios(
     payload: GenerateScenariosRequest = Body(default=GenerateScenariosRequest()),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> GenerateScenariosResponse:
+) -> StreamingResponse:
     get_project_or_404(db, current_user.id, project_id)
-    try:
-        scenarios = run_scenario_graph(
-            str(project_id),
-            {
-                "max_scenarios": payload.max_scenarios,
-                "scenario_types": payload.scenario_types,
-                "access_mode": payload.access_mode,
-                "scenario_level": payload.scenario_level,
-            },
-            [
+
+    q = queue.Queue()
+
+    def progress_callback(msg: str):
+        q.put({"type": "progress", "message": msg})
+
+    def run_generation():
+        try:
+            from app.graph.scenario_graph import run_scenario_graph
+            scenarios = run_scenario_graph(
+                str(project_id),
                 {
-                    "title": scenario.title,
-                    "description": scenario.description,
-                    "source": scenario.source,
-                }
-                for scenario in payload.existing_scenarios
-            ],
-        )
-    except Exception as error:
-        logger.exception("Scenario generation failed for project_id=%s: %s", project_id, error)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Scenario generation failed") from error
-    return GenerateScenariosResponse(scenarios=scenarios)
+                    "max_scenarios": payload.max_scenarios,
+                    "scenario_types": payload.scenario_types,
+                    "access_mode": payload.access_mode,
+                    "scenario_level": payload.scenario_level,
+                    "progress_callback": progress_callback,
+                },
+                [
+                    {
+                        "title": scenario.title,
+                        "description": scenario.description,
+                        "source": scenario.source,
+                    }
+                    for scenario in payload.existing_scenarios
+                ],
+            )
+            q.put({"type": "complete", "scenarios": scenarios})
+        except Exception as error:
+            logger.exception("Scenario generation failed for project_id=%s: %s", project_id, error)
+            q.put({"type": "error", "message": str(error)})
+
+    threading.Thread(target=run_generation, daemon=True).start()
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        while True:
+            try:
+                # Use a small timeout so we don't block the async generator indefinitely
+                item = q.get(timeout=0.1)
+                yield json.dumps(item) + "\n"
+                if item["type"] in ("complete", "error"):
+                    break
+            except queue.Empty:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 
 # ── Approve ────────────────────────────────────────────────────────────────
@@ -154,7 +261,12 @@ def list_scenarios(
         .where(HighLevelScenario.project_id == project_id)
         .order_by(HighLevelScenario.id.asc())
     ).all()
-    return ScenarioListResponse(scenarios=[_scenario_response(row, name) for row, name in rows])
+    return ScenarioListResponse(
+        scenarios=[
+            _scenario_response(row, name, _latest_recording_info(db, project_id, row.id))
+            for row, name in rows
+        ]
+    )
 
 
 # ── Create (manual) ────────────────────────────────────────────────────────
@@ -248,9 +360,121 @@ def delete_scenario(
     ).scalar_one_or_none()
     if not scenario:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
+    clear_scenario_recording(request, project_id, scenario_id, db, current_user)
+    scenario = db.execute(
+        select(HighLevelScenario).where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.id == scenario_id,
+        )
+    ).scalar_one_or_none()
+    if not scenario:
+        return {"deleted": True}
     db.delete(scenario)
     db.commit()
     return {"deleted": True}
+
+
+@router.delete("/{project_id}/scenarios/{scenario_id}/recording")
+@limiter.limit(settings.rate_limit_api)
+def clear_scenario_recording(
+    request: Request,
+    project_id: uuid.UUID,
+    scenario_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, int | bool]:
+    get_project_or_404(db, current_user.id, project_id)
+    scenario = db.execute(
+        select(HighLevelScenario).where(
+            HighLevelScenario.project_id == project_id,
+            HighLevelScenario.id == scenario_id,
+        )
+    ).scalar_one_or_none()
+    if not scenario:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scenario not found")
+
+    sessions = db.execute(
+        select(RecordingSession).where(
+            RecordingSession.project_id == project_id,
+            RecordingSession.scenario_id == scenario_id,
+        )
+    ).scalars().all()
+    session_ids = [session.id for session in sessions]
+
+    steps: list[ScenarioStep] = []
+    variants: list[RouteVariant] = []
+    if session_ids:
+        steps = db.execute(
+            select(ScenarioStep).where(ScenarioStep.recording_session_id.in_(session_ids))
+        ).scalars().all()
+        variants = db.execute(
+            select(RouteVariant).where(RouteVariant.recording_session_id.in_(session_ids))
+        ).scalars().all()
+
+    route_ids = {variant.route_id for variant in variants}
+    recordings_base = _recordings_base()
+    files_deleted = 0
+
+    for step in steps:
+        if _remove_recording_path(step.screenshot_path, recordings_base):
+            files_deleted += 1
+
+    for variant in variants:
+        if _remove_recording_path(variant.html_path, recordings_base):
+            files_deleted += 1
+        if _remove_recording_path(variant.screenshot_path, recordings_base):
+            files_deleted += 1
+
+    for session_id in session_ids:
+        session_dir = recordings_base / str(project_id) / str(session_id)
+        if _remove_recording_path(str(session_dir), recordings_base):
+            files_deleted += 1
+
+    for step in steps:
+        db.delete(step)
+    for variant in variants:
+        db.delete(variant)
+    for session in sessions:
+        db.delete(session)
+
+    project = db.get(Project, project_id)
+    if project and project.active_launch_scenario_id == scenario_id:
+        project.active_launch_scenario_id = None
+
+    scenario.status = "pending"
+    scenario.completed_by = None
+
+    db.flush()
+
+    routes_deleted = 0
+    for route_id in route_ids:
+        remaining_variants = db.execute(
+            select(func.count(RouteVariant.id)).where(RouteVariant.route_id == route_id)
+        ).scalar_one()
+        route = db.get(DiscoveredRoute, route_id)
+        if not route:
+            continue
+        if remaining_variants == 0:
+            if _remove_recording_path(route.html_path, recordings_base):
+                files_deleted += 1
+            if _remove_recording_path(route.screenshot_path, recordings_base):
+                files_deleted += 1
+            db.delete(route)
+            routes_deleted += 1
+        else:
+            route.html_path = None
+            route.screenshot_path = None
+
+    db.commit()
+
+    return {
+        "cleared": True,
+        "sessions_deleted": len(sessions),
+        "steps_deleted": len(steps),
+        "route_variants_deleted": len(variants),
+        "routes_deleted": routes_deleted,
+        "files_deleted": files_deleted,
+    }
 
 
 # ── Recording Setup (Web UI fetches daemon command) ────────────────────────
@@ -273,7 +497,7 @@ def get_recording_setup(
     script_url = f"{api_base}/api/v1/recorder/{project_id}/script"
     # Two-step command: download the script then run it
     cmd = (
-        f'curl -s -o recorder.py -H "X-Recorder-Token: {token}" {script_url} && python recorder.py'
+        f'curl.exe -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}"; python recorder.py'
     )
     return RecordingSetupResponse(setup_command=cmd, recorder_token=token)
 
@@ -340,7 +564,13 @@ def get_scenario_recording_status(
         .order_by(RecordingSession.created_at.desc())
     ).scalars().first()
     session_status = latest_session.status if latest_session else "none"
-    return {"session_status": session_status}
+    info = _latest_recording_info(db, project_id, scenario_id)
+    return {
+        "session_status": session_status,
+        "phase3_ready": info["recording_phase3_ready"],
+        "step_count": info["recording_step_count"],
+        "quality_failure_reasons": info["recording_quality_failure_reasons"],
+    }
 
 
 @router.post("/{project_id}/scenarios/{scenario_id}/stop-recording")
@@ -371,13 +601,6 @@ def stop_scenario_recording(
         from sqlalchemy.sql import func
         session.status = "completed"
         session.completed_at = func.now()
-        
-        scenario = db.get(HighLevelScenario, scenario_id)
-        if scenario:
-            scenario.status = "completed"
-            scenario.completed_by = current_user.id
-            
         db.commit()
         
     return {"status": "stopped"}
-
