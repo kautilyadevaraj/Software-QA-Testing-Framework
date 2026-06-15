@@ -646,7 +646,9 @@ def run_playwright(
                     break
 
     # ── VM / headless mode ───────────────────────────────────────────────────
-    if not settings.playwright_headed:
+    import os
+    is_headless_env = os.name == "posix" and not os.environ.get("DISPLAY")
+    if not settings.playwright_headed or is_headless_env:
         return {
             "status": "credentials_ready",
             "mode": "client_side",
