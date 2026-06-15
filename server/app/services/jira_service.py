@@ -148,7 +148,7 @@ def create_jira_project(
         "assigneeType": "UNASSIGNED",
     }
 
-    response = requests.post(url, json=payload, headers=_headers(), auth=_auth(), timeout=15)
+    response = requests.post(url, json=payload, headers=_headers(), auth=_auth(), timeout=60)
     _raise_for_jira(response)
 
     data: dict = response.json()
@@ -210,7 +210,7 @@ def create_jira_issue(
         }
     }
 
-    response = requests.post(url, json=payload, headers=_headers(), auth=_auth(), timeout=15)
+    response = requests.post(url, json=payload, headers=_headers(), auth=_auth(), timeout=60)
     _raise_for_jira(response)
 
     data: dict = response.json()
