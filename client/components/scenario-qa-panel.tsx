@@ -864,13 +864,13 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] table-fixed text-left text-sm">
+            <table className="w-full min-w-[1000px] table-fixed text-left text-sm">
               <thead className="bg-black/[0.03] text-xs uppercase text-black/60">
                 <tr>
                   <th className="w-24 px-4 py-3">ID</th>
                   <th className="px-4 py-3">Title</th>
                   <th className="w-32 px-4 py-3">Tags</th>
-                  <th className="w-32 px-4 py-3">Status</th>
+                  <th className="w-[160px] px-4 py-3">Status</th>
                   <th className="w-[160px] px-4 py-3 text-right">Actions</th>
                   <th className="w-[240px] px-4 py-3 text-right">Launch</th>
                 </tr>
@@ -916,7 +916,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                               type="button"
                               onClick={() => void toggleStatus(scenario)}
                               className={cn(
-                                "w-fit rounded-full border px-2 py-1 text-xs font-semibold",
+                                "w-fit rounded-full border px-2 py-1 text-xs font-semibold whitespace-nowrap",
                                 scenario.status === "completed"
                                   ? "border-emerald-200 bg-emerald-50 text-emerald-700"
                                   : "border-zinc-200 bg-zinc-100 text-zinc-700",
@@ -926,7 +926,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                               {scenario.status === "completed" ? "HLS completed" : "HLS pending"}
                             </button>
                             <span
-                              className={cn("w-fit rounded-full border px-2 py-1 text-xs font-semibold", recorderBadge.className)}
+                              className={cn("w-fit rounded-full border px-2 py-1 text-xs font-semibold whitespace-nowrap", recorderBadge.className)}
                               title={recorderBadge.title}
                             >
                               {recorderBadge.label}
