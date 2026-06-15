@@ -495,11 +495,19 @@ def get_recording_setup(
     api_base = settings.PUBLIC_API_URL
     token = str(project.recorder_token)
     script_url = f"{api_base}/api/v1/recorder/{project_id}/script"
-    # Two-step command: download the script then run it
-    cmd = (
+    mac_cmd = (
+        f'pip3 install playwright httpx && playwright install chromium && '
+        f'curl -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}" && python3 recorder.py'
+    )
+    win_cmd = (
+        f'pip install playwright httpx && playwright install chromium && '
         f'curl.exe -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}"; python recorder.py'
     )
-    return RecordingSetupResponse(setup_command=cmd, recorder_token=token)
+    return RecordingSetupResponse(
+        mac_setup_command=mac_cmd,
+        windows_setup_command=win_cmd,
+        recorder_token=token
+    )
 
 
 # ── Trigger (Web UI → Daemon) ───────────────────────────────────────────────

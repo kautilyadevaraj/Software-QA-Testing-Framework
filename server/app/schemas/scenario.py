@@ -158,7 +158,8 @@ class Phase2StatusResponse(BaseModel):
 
 class RecordingSetupResponse(BaseModel):
     """The one-time setup command shown to the tester."""
-    setup_command: str
+    mac_setup_command: str
+    windows_setup_command: str
     recorder_token: str           # shown so tester can verify it matches the script
 
 

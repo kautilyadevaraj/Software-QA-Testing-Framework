@@ -227,9 +227,11 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   // Trigger / Launch state
   const [launchingScenarioId, setLaunchingScenarioId] = useState<string | null>(null);
   const [recordingScenarioId, setRecordingScenarioId] = useState<string | null>(null);
+  const [recordingSessionStatus, setRecordingSessionStatus] = useState<string>("none");
   const [clearingRecordingScenarioId, setClearingRecordingScenarioId] = useState<string | null>(null);
   // Setup Recorder popover
   const [showSetupModal, setShowSetupModal] = useState(false);
+  const [setupTab, setSetupTab] = useState<"mac" | "windows">("mac");
   const [setupInfo, setSetupInfo] = useState<RecordingSetupResponse | null>(null);
   const [isLoadingSetup, setIsLoadingSetup] = useState(false);
   const [copiedSetup, setCopiedSetup] = useState(false);
@@ -248,12 +250,15 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
 
   const handleLaunch = async (scenario: HighLevelScenario) => {
     setLaunchingScenarioId(scenario.id);
+    setRecordingSessionStatus("none");
     try {
       await triggerScenarioLaunch(projectId, scenario.id);
       setRecordingScenarioId(scenario.id);
-      toast.success(`Launch triggered — daemon is now recording "${scenario.title}"`);
+      toast.success(`Launch triggered — waiting for daemon to pick it up...`);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Failed to trigger launch.");
+      setRecordingSessionStatus("none");
+      setRecordingScenarioId(null);
     } finally {
       setLaunchingScenarioId(null);
     }
@@ -284,7 +289,8 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
 
   const handleCopySetup = () => {
     if (!setupInfo) return;
-    void navigator.clipboard.writeText(setupInfo.setup_command);
+    const cmd = setupTab === "mac" ? setupInfo.mac_setup_command : setupInfo.windows_setup_command;
+    void navigator.clipboard.writeText(cmd);
     setCopiedSetup(true);
     setTimeout(() => setCopiedSetup(false), 2000);
   };
@@ -300,10 +306,12 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     const interval = setInterval(async () => {
       try {
         const { session_status, phase3_ready, quality_failure_reasons } = await getScenarioRecordingStatus(projectId, recordingScenarioId);
+        setRecordingSessionStatus(session_status);
         if (session_status === "in_progress") {
           hasStarted = true;
         } else if (hasStarted && (session_status === "completed" || session_status === "failed")) {
           setRecordingScenarioId(null);
+          setRecordingSessionStatus("none");
           await loadApprovedScenarios();
           if (session_status === "completed" && !phase3_ready) {
             toast.warning(`Recording saved, but quality needs review: ${recordingFailureText(quality_failure_reasons)}`);
@@ -973,23 +981,42 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-2">
                             {recordingScenarioId === scenario.id ? (
-                              <>
-                                <span className="flex items-center gap-1.5 rounded-md bg-red-50 border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700">
-                                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                                  Recording…
-                                </span>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="border-red-200 text-red-600 hover:bg-red-50 gap-1.5"
-                                  onClick={() => handleStopRecording(scenario)}
-                                  title="Stop tracking this recording"
-                                  aria-label="Stop recording"
-                                >
-                                  <Square className="h-3.5 w-3.5" />
-                                  Stop
-                                </Button>
-                              </>
+                              recordingSessionStatus === "none" || recordingSessionStatus === "pending" ? (
+                                <>
+                                  <span className="flex items-center gap-1.5 rounded-md bg-zinc-50 border border-zinc-200 px-3 py-1.5 text-xs font-semibold text-zinc-700">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    Waiting for recorder...
+                                  </span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setRecordingScenarioId(null);
+                                      setRecordingSessionStatus("none");
+                                    }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="flex items-center gap-1.5 rounded-md bg-red-50 border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700">
+                                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
+                                    Recording…
+                                  </span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="border-red-200 text-red-600 hover:bg-red-50 gap-1.5"
+                                    onClick={() => handleStopRecording(scenario)}
+                                    title="Stop tracking this recording"
+                                    aria-label="Stop recording"
+                                  >
+                                    <Square className="h-3.5 w-3.5" />
+                                    Stop
+                                  </Button>
+                                </>
+                              )
                             ) : (
                               <Button
                                 size="sm"
@@ -1161,8 +1188,28 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
               </div>
             ) : setupInfo ? (
               <>
-                <div className="mt-4 rounded-lg border border-black/10 bg-black/[0.03] p-4">
-                  <p className="break-all font-mono text-sm text-black">{setupInfo.setup_command}</p>
+                <div className="mt-4 overflow-hidden rounded-lg border border-black/10 bg-black/[0.03]">
+                  <div className="flex border-b border-black/10 bg-black/5">
+                    <button
+                      type="button"
+                      onClick={() => setSetupTab("mac")}
+                      className={cn("px-4 py-2 text-sm font-medium", setupTab === "mac" ? "bg-white text-black border-b-2 border-[#2a63f5]" : "text-black/60 hover:text-black")}
+                    >
+                      Mac / Linux
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSetupTab("windows")}
+                      className={cn("px-4 py-2 text-sm font-medium", setupTab === "windows" ? "bg-white text-black border-b-2 border-[#2a63f5]" : "text-black/60 hover:text-black")}
+                    >
+                      Windows
+                    </button>
+                  </div>
+                  <div className="p-4">
+                    <p className="break-all font-mono text-sm text-black">
+                      {setupTab === "mac" ? setupInfo.mac_setup_command : setupInfo.windows_setup_command}
+                    </p>
+                  </div>
                 </div>
                 <div className="mt-3 flex items-center gap-3">
                   <Button onClick={handleCopySetup} className="gap-2">

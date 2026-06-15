@@ -579,7 +579,9 @@ export type LockScenariosResponse = {
 
 export type RecordingSetupResponse = {
 
-  setup_command: string;
+  mac_setup_command: string;
+
+  windows_setup_command: string;
 
   recorder_token: string;
 
