@@ -984,15 +984,18 @@ export async function markProjectVerified(
 
 
 export async function runProjectPlaywright(projectId: string, cred: ProjectCredential) {
-
-  return request<{ status: string }>(`/projects/${projectId}/run-playwright`, {
-
+  return request<{ 
+    status: string;
+    mode?: "server_side" | "client_side";
+    url?: string;
+    username?: string;
+    password?: string;
+    role?: string;
+    auth_type?: string;
+  }>(`/projects/${projectId}/run-playwright`, {
     method: "POST",
-
     body: cred,
-
   });
-
 }
 
 

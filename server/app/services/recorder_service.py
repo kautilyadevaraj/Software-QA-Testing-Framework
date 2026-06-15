@@ -380,8 +380,10 @@ def _is_security_blocked_url(url: str) -> bool:
 
 # ── Selector quality reason ────────────────────────────────────────────────
 
-def _selector_quality_reason(selector: str | None) -> str | None:
+def _selector_quality_reason(selector: str | None, playwright_locator: str | None = None) -> str | None:
     """Derive a machine-readable quality reason from the primary selector string."""
+    if playwright_locator and ("getByRole" in playwright_locator or "getByLabel" in playwright_locator):
+        return "role_name"
     if not selector:
         return None
     s = selector.strip()
@@ -538,7 +540,8 @@ def _normalize_step_payload(
 
     # Selector quality reason
     primary_selector = str(update.get("selector") or payload.selector or "")
-    update["selector_quality_reason"] = _selector_quality_reason(primary_selector or None)
+    pw_locator = str(update.get("playwright_locator") or payload.playwright_locator or "")
+    update["selector_quality_reason"] = _selector_quality_reason(primary_selector or None, pw_locator or None)
 
     # Semantic field identity (stored back into semantic_context)
     # Use a merged copy of payload for field_identity so it sees the updated url_after etc.

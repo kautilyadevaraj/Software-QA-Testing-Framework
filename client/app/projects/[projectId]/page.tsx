@@ -493,8 +493,75 @@ export default function ProjectDetailsPage() {
 
   const handleVerify = async (cred: ProjectCredential) => {
     try {
-      await runProjectPlaywright(projectId, cred);
-      toast.success("Playwright launched");
+      const res = await runProjectPlaywright(projectId, cred);
+      if (res.mode === "client_side") {
+        // VM mode: The backend cannot launch a browser UI.
+        // We open the URL in a new tab and show the credentials to the user via toast.
+        window.open(res.url, "_blank");
+        
+        // Show persistent toast with credentials so they can copy-paste them
+        toast.info(
+            <div className="flex flex-col gap-2 p-1 w-full max-w-sm">
+              <div className="flex items-center justify-between border-b pb-2 mb-1">
+                <span className="font-semibold text-gray-900">Helper</span>
+                <span className="text-xs px-2 py-1 bg-gray-100 text-gray-600 rounded">
+                  {res.role || "No Role"} | {res.auth_type || "No Auth"}
+                </span>
+              </div>
+              
+              <div className="flex justify-between items-center bg-gray-50 p-2 rounded border border-gray-100">
+                <span className="text-xs text-gray-500 font-medium">User</span>
+                <div className="flex items-center gap-2">
+                  <code className="text-xs bg-white px-2 py-1 rounded border font-mono">
+                    {res.username}
+                  </code>
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(res.username);
+                      toast.success("Username copied", { id: "copy-toast" });
+                    }}
+                    className="text-xs bg-white border px-2 py-1 rounded hover:bg-gray-50 shadow-sm transition-colors"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              
+              <div className="flex justify-between items-center bg-gray-50 p-2 rounded border border-gray-100">
+                <span className="text-xs text-gray-500 font-medium">Pass</span>
+                <div className="flex items-center gap-2">
+                  <code className="text-xs bg-white px-2 py-1 rounded border font-mono tracking-widest text-gray-400">
+                    ••••••••
+                  </code>
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(res.password);
+                      toast.success("Password copied", { id: "copy-toast" });
+                    }}
+                    className="text-xs bg-white border px-2 py-1 rounded hover:bg-gray-50 shadow-sm transition-colors"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              
+              <div className="mt-2 flex justify-end">
+                <button 
+                  onClick={() => toast.dismiss()}
+                  className="text-xs bg-blue-600 text-white px-4 py-1.5 rounded shadow-sm hover:bg-blue-700 transition-colors"
+                >
+                  Done
+                </button>
+              </div>
+            </div>,
+          {
+            duration: Number.POSITIVE_INFINITY, // Keep open until dismissed
+            position: "top-right",
+          }
+        );
+      } else {
+        toast.success("Playwright launched locally");
+      }
     } catch {
       toast.error("Failed to launch Playwright");
     }
@@ -520,6 +587,7 @@ export default function ProjectDetailsPage() {
   const handleReverify = async (cred: ProjectCredential) => {
     try {
       await handleMarkVerified(cred); // toggle from backend
+      await handleVerify(cred); // Use handleVerify so we trigger the same client_side logic
       toast.success("Reverify started");
     } catch {
       toast.error("Failed to reverify");

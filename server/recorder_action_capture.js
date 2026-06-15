@@ -278,7 +278,7 @@
     return {
       selector: s?.selector || null,
       selector_candidates: selectorCandidates(el),
-      selector_stability: s?.stability || 'low',
+      selector_stability: (loc && (loc.includes('getByRole') || loc.includes('getByLabel'))) ? 'high' : (s?.stability || 'low'),
       playwright_locator: loc,
       accessible_name: n || null,
       visible_text: text(el.innerText || el.textContent, 160),

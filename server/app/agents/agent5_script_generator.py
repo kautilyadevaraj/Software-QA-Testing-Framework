@@ -373,6 +373,7 @@ def _format_recorded_steps(recorded: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for s in recorded:
         sel = s.get("selector") or ""
+        pw_loc = s.get("playwright_locator") or ""
         selector_hint = s.get("selector_hint") or ""
         intent_hint = s.get("intent_hint") or ""
         action = s.get("action") or ""
@@ -381,7 +382,9 @@ def _format_recorded_steps(recorded: list[dict[str, Any]]) -> str:
         from_url = s.get("from_url") or s.get("url") or ""
         to_url = s.get("to_url") or ""
         parts = [f"#{s.get('step_index', '?')}", action.upper()]
-        if sel:
+        if pw_loc:
+            parts.append(f"playwright_locator={pw_loc!r}")
+        if sel and not pw_loc:
             parts.append(f"selector={sel!r}")
         if selector_hint:
             parts.append(f"selector_hint={selector_hint!r}")

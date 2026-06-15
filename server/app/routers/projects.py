@@ -645,6 +645,18 @@ def run_playwright(
                     password = row.get("password", "")
                     break
 
+    # ── VM / headless mode ───────────────────────────────────────────────────
+    if not settings.playwright_headed:
+        return {
+            "status": "credentials_ready",
+            "mode": "client_side",
+            "url": url or project.url or "",
+            "username": username or "",
+            "password": password,
+            "role": role or "",
+            "auth_type": auth_type or "",
+        }
+
     def run():
         from playwright.sync_api import sync_playwright
 
