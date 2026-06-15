@@ -6,7 +6,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 export default async function Home() {
   const cookieStore = await cookies();
-  const hasAuthToken = Boolean(cookieStore.get("access_token")?.value || cookieStore.get("token")?.value);
+  const hasAuthToken = Boolean(
+    cookieStore.get("access_token")?.value || 
+    cookieStore.get("refresh_token")?.value || 
+    cookieStore.get("token")?.value
+  );
 
   return (
     <div className="mx-auto h-[calc(100vh-4rem)] w-full max-w-6xl overflow-hidden px-4 py-8 sm:px-6">

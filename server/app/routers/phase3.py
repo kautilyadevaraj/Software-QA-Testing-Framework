@@ -1298,6 +1298,8 @@ def patch_review_queue_item(
 
 @router.get("/review-queue/stream")
 async def stream_review_queue(
+    request: Request,
+    response: Response,
     project_id: uuid.UUID,
     run_id: uuid.UUID | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -1346,7 +1348,9 @@ async def stream_review_queue(
                 yield {"event": "heartbeat", "data": "ping"}
                 heartbeat_counter = 0
 
-    return EventSourceResponse(event_generator())
+    es_response = EventSourceResponse(event_generator())
+    es_response.raw_headers.extend(response.raw_headers)
+    return es_response
 
 
 # ── GET /script/{test_id} ────────────────────────────────────────────────────

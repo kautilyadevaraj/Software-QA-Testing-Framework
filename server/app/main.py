@@ -74,8 +74,11 @@ def validation_exception_handler(request: Request, exc: RequestValidationError) 
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
+logger = logging.getLogger(__name__)
+
 @app.exception_handler(Exception)
 def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled exception:")
     return JSONResponse(status_code=500, content={"detail": "Something went wrong"})
 
 

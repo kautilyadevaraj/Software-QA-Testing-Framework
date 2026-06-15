@@ -10,17 +10,19 @@ import { NextResponse } from "next/server";
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const token = request.cookies.get("access_token")?.value;
+  const refreshToken = request.cookies.get("refresh_token")?.value;
+  const hasAuthToken = Boolean(token || refreshToken);
 
   const isAuthPage = pathname === "/login" || pathname === "/signup";
   const isProtectedPage = pathname.startsWith("/projects");
 
   // Unauthenticated user tries to access protected page → redirect to login
-  if (!token && isProtectedPage) {
+  if (!hasAuthToken && isProtectedPage) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
   // Already-authenticated user tries to access login/signup → redirect to projects
-  if (token && isAuthPage) {
+  if (hasAuthToken && isAuthPage) {
     return NextResponse.redirect(new URL("/projects", request.url));
   }
 

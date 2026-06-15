@@ -22,7 +22,11 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const cookieStore = await cookies();
-  const hasAuthToken = Boolean(cookieStore.get("access_token")?.value || cookieStore.get("token")?.value);
+  const hasAuthToken = Boolean(
+    cookieStore.get("access_token")?.value || 
+    cookieStore.get("refresh_token")?.value || 
+    cookieStore.get("token")?.value
+  );
 
   return (
     <html lang="en" className={`${poppins.variable} h-full`}>
