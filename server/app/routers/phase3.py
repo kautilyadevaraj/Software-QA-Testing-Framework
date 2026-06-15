@@ -1472,6 +1472,9 @@ def rerun_review_item(
     db.commit()
     db.refresh(item)
 
+    from app.services.state_store import increment_retries
+    increment_retries(item.test_id)
+
     from app.services.phase3_jobs import build_single_test_job
 
     queued = mcp_server.enqueue(

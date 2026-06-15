@@ -214,7 +214,7 @@ def save_test_result(
     test_id: str,
     status: str,
     run_id: str | None = None,
-    retries: int = 0,
+    retries: int | None = None,
     jira_ticket: str | None = None,
     trace_path: str | None = None,
     screenshot_path: str | None = None,
@@ -234,7 +234,8 @@ def save_test_result(
             existing.status = status
             if rid:
                 existing.run_id = rid
-            existing.retries = retries
+            if retries is not None:
+                existing.retries = retries
             existing.jira_ticket = jira_ticket
             existing.trace_path = trace_path
             existing.screenshot_path = screenshot_path
@@ -245,7 +246,7 @@ def save_test_result(
                 test_id=tid,
                 run_id=rid,
                 status=status,
-                retries=retries,
+                retries=retries or 0,
                 jira_ticket=jira_ticket,
                 trace_path=trace_path,
                 screenshot_path=screenshot_path,

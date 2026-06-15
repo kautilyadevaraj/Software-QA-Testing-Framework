@@ -344,7 +344,14 @@ def _walk_specs(report: dict[str, Any]):
                         name = attachment.get("name", "")
                         if name == "network_logs":
                             try:
-                                network_logs = json.loads(attachment.get("body", "[]"))
+                                raw_body = attachment.get("body", "")
+                                if raw_body:
+                                    import base64
+                                    try:
+                                        decoded = base64.b64decode(raw_body).decode("utf-8")
+                                        network_logs = json.loads(decoded)
+                                    except Exception:
+                                        network_logs = json.loads(raw_body)
                             except Exception:
                                 pass
                         if name == "trace" and attachment.get("path"):
