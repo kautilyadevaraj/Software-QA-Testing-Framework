@@ -497,7 +497,22 @@ export default function ProjectDetailsPage() {
       if (res.mode === "client_side") {
         // VM mode: The backend cannot launch a browser UI.
         // We open the URL in a new tab and show the credentials to the user via toast.
-        window.open(res.url, "_blank");
+        if (!res.url || res.url.trim() === "") {
+          toast.error("Application URL is not configured. Please update it in Project Configuration and click Save.");
+          return;
+        }
+        let targetUrl = res.url.trim();
+        console.log("[DEBUG] Original res.url from API:", res.url);
+        console.log("[DEBUG] Current window location:", window.location.href);
+        if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+          targetUrl = "https://" + targetUrl;
+        }
+        console.log("[DEBUG] Final targetUrl for window.open:", targetUrl);
+        
+        // Let's also show it in a toast so the user can easily see it without opening DevTools
+        toast.info(`Opening URL: ${targetUrl}`, { duration: 5000 });
+        
+        window.open(targetUrl, "_blank");
         
         // Show persistent toast with credentials so they can copy-paste them
         toast.info(
@@ -517,7 +532,7 @@ export default function ProjectDetailsPage() {
                   </code>
                   <button 
                     onClick={() => {
-                      navigator.clipboard.writeText(res.username);
+                      navigator.clipboard.writeText(res.username || "");
                       toast.success("Username copied", { id: "copy-toast" });
                     }}
                     className="text-xs bg-white border px-2 py-1 rounded hover:bg-gray-50 shadow-sm transition-colors"
@@ -535,7 +550,7 @@ export default function ProjectDetailsPage() {
                   </code>
                   <button 
                     onClick={() => {
-                      navigator.clipboard.writeText(res.password);
+                      navigator.clipboard.writeText(res.password || "");
                       toast.success("Password copied", { id: "copy-toast" });
                     }}
                     className="text-xs bg-white border px-2 py-1 rounded hover:bg-gray-50 shadow-sm transition-colors"
