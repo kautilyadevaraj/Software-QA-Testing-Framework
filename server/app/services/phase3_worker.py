@@ -528,6 +528,8 @@ def _update_artifact_manifest(
     classification: str,
 ) -> None:
     try:
+        from app.db.session import SessionLocal
+        from app.models.phase3 import TestCase
         with SessionLocal() as db:
             tc = db.get(TestCase, uuid.UUID(test_id))
             upsert_manifest_entry(project_id, run_id, {
