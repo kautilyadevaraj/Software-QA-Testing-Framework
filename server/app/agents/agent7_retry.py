@@ -14,6 +14,7 @@ Entry point: repair(test_id, run_id, error_log)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -748,7 +749,7 @@ async def _repair_grouped(
     last_grounding_errors: list[str] = []
     for llm_attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw = _extract_repaired_test_block(_strip_fences(call_llm(prompt, max_tokens=2000)))
+            raw = _extract_repaired_test_block(_strip_fences(await asyncio.to_thread(call_llm, prompt, max_tokens=2000)))
             raw = _post_process_block(
                 raw, title, is_grouped=True,
                 auth_mode=(tc.auth_mode if tc else None),
@@ -954,7 +955,7 @@ async def repair(test_id: str, run_id: str, error_log: str) -> None:
     last_grounding_errors: list[str] = []
     for llm_attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw = _extract_repaired_test_block(_strip_fences(call_llm(prompt, max_tokens=4096)))
+            raw = _extract_repaired_test_block(_strip_fences(await asyncio.to_thread(call_llm, prompt, max_tokens=4096)))
             raw = _post_process_block(
                 raw,
                 tc.title if tc else "",

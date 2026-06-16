@@ -697,7 +697,7 @@ export function Phase3Panel({ projectId }: Props) {
       pollRef.current = setInterval(fetchRunStatus, POLL_MS);
       execPollRef.current = setInterval(fetchExecState, EXEC_POLL_MS);
       fetchRunStatus();
-      setExecState(await getPhase3ExecutionState(projectId, res.run_id));
+      getPhase3ExecutionState(projectId, res.run_id).then(setExecState).catch(() => {});
     } catch (err) {
       setPhase("review");
       toast.error(err instanceof ApiError ? err.message : "Execution failed to start");

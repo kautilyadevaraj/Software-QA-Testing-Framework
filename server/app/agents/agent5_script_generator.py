@@ -3471,7 +3471,7 @@ async def generate_script(context: dict[str, Any]) -> str | None:
     last_errors: list[str] = []
     for attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw = _strip_fences(call_llm(prompt + _retry_feedback(last_errors), max_tokens=1500))
+            raw = _strip_fences(await asyncio.to_thread(call_llm, prompt + _retry_feedback(last_errors), max_tokens=1500))
             # Deterministic patches run BEFORE validation so any fixes
             # (e.g. injected storageState reset) count toward acceptance.
             raw = _post_process_block(
@@ -3656,7 +3656,7 @@ async def generate_grouped_script(
         last_errors: list[str] = []
         for attempt in range(_MAX_LLM_RETRIES):
             try:
-                raw = _strip_fences(call_llm(prompt + _retry_feedback(last_errors), max_tokens=1200))
+                raw = _strip_fences(await asyncio.to_thread(call_llm, prompt + _retry_feedback(last_errors), max_tokens=1200))
                 # Patch before validation so injected fixes participate in acceptance.
                 # is_grouped=True skips the storageState-clear injection because
                 # the describe-shell's beforeAll governs auth state for the group.
