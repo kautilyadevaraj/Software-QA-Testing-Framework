@@ -1323,9 +1323,11 @@ async def stream_review_queue(
 
             try:
                 with _SL() as fresh_db:
+                    from sqlalchemy.orm import contains_eager
                     query = (
                         select(ReviewQueueItem)
                         .join(TestCase, ReviewQueueItem.test_id == TestCase.test_id)
+                        .options(contains_eager(ReviewQueueItem.test_case))
                         .where(TestCase.project_id == project_id)
                         .order_by(ReviewQueueItem.created_at.asc())
                     )
@@ -1336,13 +1338,18 @@ async def stream_review_queue(
                     for item in new_items:
                         key = str(item.id)
                         if key not in seen_ids:
+                            # Parse data before adding to seen_ids so validation errors don't swallow items
+                            data = ReviewQueueItemSchema.model_validate(item).model_dump_json()
                             seen_ids.add(key)
                             yield {
                                 "event": "review_item",
-                                "data": ReviewQueueItemSchema.model_validate(item).model_dump_json(),
+                                "data": data,
                             }
-            except Exception:
-                pass  # transient DB errors — retry on next iteration
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("stream_review_queue error: %s", exc, exc_info=True)
+                pass  # transient errors — retry on next iteration
 
             if heartbeat_counter >= 30:
                 yield {"event": "heartbeat", "data": "ping"}
