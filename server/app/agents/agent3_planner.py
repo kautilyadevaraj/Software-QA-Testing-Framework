@@ -13,6 +13,7 @@ Entry point:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -2657,7 +2658,7 @@ async def plan(
     items: list[dict[str, Any]] = []
     for attempt in range(_MAX_LLM_RETRIES):
         try:
-            raw   = call_llm(prompt, max_tokens=3200)
+            raw   = await asyncio.to_thread(call_llm, prompt, max_tokens=3200)
             items = _parse_plan(raw)
             break
         except Exception as exc:
@@ -2678,7 +2679,7 @@ async def plan(
             htc_title,
         )
         try:
-            raw = call_llm(prompt + _GRANULARITY_RETRY_PROMPT, max_tokens=3200)
+            raw = await asyncio.to_thread(call_llm, prompt + _GRANULARITY_RETRY_PROMPT, max_tokens=3200)
             items = _parse_plan(raw)
             filtered_items, _ = _valid_planned_items(
                 items, pages, htc_title, htc_description, recorded_steps, document_context_section, project_id

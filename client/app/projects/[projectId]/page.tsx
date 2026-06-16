@@ -357,6 +357,7 @@ export default function ProjectDetailsPage() {
 
         if (data.status === "completed") {
           clearInterval(interval);
+          setIsIngestionStarted(false);
           setIsRedirectingToQa(true);
           redirectTimeoutRef.current = setTimeout(() => {
             setActiveTab("qa");
@@ -368,10 +369,12 @@ export default function ProjectDetailsPage() {
 
         if (data.status === "error" || data.status === "no_files") {
           clearInterval(interval);
+          setIsIngestionStarted(false);
         }
       } catch (error) {
         console.error("Failed to fetch extraction status:", error);
         clearInterval(interval);
+        setIsIngestionStarted(false);
       }
     }, 5000);
 

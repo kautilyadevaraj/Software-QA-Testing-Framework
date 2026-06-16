@@ -726,12 +726,14 @@ async def run_phase3_planning(
         row for row in tc_rows
         if str(row.get("approval_status") or "PENDING").upper() != "EXCLUDED"
     ]
-    xray_metadata, xray_diag = plan_xray_metadata_for_cases(
+    xray_metadata, xray_diag = await asyncio.to_thread(
+        plan_xray_metadata_for_cases,
         project_id=project_id,
         hls_items=[(title, description) for _, title, description in htc_list],
         tc_rows=xray_export_rows,
     )
-    xray_rows = fallback_xray_rows_from_a3(
+    xray_rows = await asyncio.to_thread(
+        fallback_xray_rows_from_a3,
         xray_export_rows,
         project_key=csv_project_key,
         requirement="TBD",
