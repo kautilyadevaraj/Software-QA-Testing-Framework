@@ -497,6 +497,11 @@ export function Phase3Panel({ projectId }: Props) {
 
       if (s.run_type === "plan" && s.status === "planned") {
         // Planning is done but execute hasn't started — show review phase.
+        // Stop the run-status poll: we no longer need it until the user kicks off execution.
+        // NOT stopping it was causing it to fire every 5s and forcibly override the user's
+        // active tab to "testcases" on every tick.
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+        if (tcPollRef.current) { clearInterval(tcPollRef.current); tcPollRef.current = null; }
         // Also hydrate planRunId from the run-status response so that a page
         // refresh can restore the accordion without needing a re-generate.
         const restoredRunId = s.run_id;
@@ -508,7 +513,6 @@ export function Phase3Panel({ projectId }: Props) {
           }
           return resolved;
         });
-        if (tcPollRef.current) { clearInterval(tcPollRef.current); tcPollRef.current = null; }
         setActiveTab(prev => (prev === "execution" ? prev : "testcases"));
         setPhase(prev => (prev === "review" ? prev : "review"));
       }
@@ -557,9 +561,11 @@ export function Phase3Panel({ projectId }: Props) {
       if (rows.length > 0) {
         setTestCases(rows);
         testCasesRef.current = rows;
-        setActiveTab(prev => (prev === "execution" ? prev : "testcases"));
+        // Do NOT call setActiveTab here — that was causing the tab to jump back
+        // to "testcases" every 3s while the user was on any other tab. Tab navigation
+        // is handled once by the runStatus effect when planning transitions to "planned".
       }
-    } catch { /* not ready yet */ }
+    } catch { /* not ready yet — 404 during generation is expected */ }
   }, [projectId]);
 
   // Poll exec state
@@ -604,9 +610,10 @@ export function Phase3Panel({ projectId }: Props) {
       if (!pollRef.current) {
         pollRef.current = setInterval(fetchRunStatus, POLL_MS);
       }
-      // Poll TC doc every 3s so test cases appear incrementally
+      // Poll TC doc every 3s so test cases appear incrementally.
+      // Delay the first call by 5s to avoid guaranteed 404s at the very start.
       tcPollRef.current = setInterval(() => fetchTcDoc(res.run_id), TC_POLL_MS);
-      fetchTcDoc(res.run_id);
+      setTimeout(() => fetchTcDoc(res.run_id), 5000);
     } catch (err) {
       setPhase("idle");
       toast.error(err instanceof ApiError ? err.message : "Failed to generate test cases");

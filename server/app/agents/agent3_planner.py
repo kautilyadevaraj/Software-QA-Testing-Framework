@@ -2750,7 +2750,8 @@ async def plan(
         )
         assertion_evidence: list[dict[str, Any]] = []
         try:
-            assertion_evidence = extract_assertion_evidence(
+            assertion_evidence = await asyncio.to_thread(
+                extract_assertion_evidence,
                 item=item,
                 hls_title=htc_title,
                 hls_description=htc_description,
