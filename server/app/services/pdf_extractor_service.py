@@ -346,6 +346,7 @@ def _run_extraction(project_id_str: str):
                 logs.append(f"Successfully parsed {file.original_filename}")
 
             except Exception as e:
+                db.rollback()
                 logs.append(f"Failed {file.original_filename}: {str(e)}")
 
         swagger_files = db.execute(
@@ -386,6 +387,7 @@ def _run_extraction(project_id_str: str):
                 db.commit()
                 logs.append(f"Successfully parsed Swagger {file.original_filename} ({count} endpoints)")
             except Exception as e:
+                db.rollback()
                 logs.append(f"Failed parsing Swagger {file.original_filename}: {str(e)}")
 
         set_pdf_progress(project_id_str, {

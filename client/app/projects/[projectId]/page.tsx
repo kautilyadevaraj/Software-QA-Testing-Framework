@@ -369,7 +369,7 @@ export default function ProjectDetailsPage() {
 
         if (data.status === "error" || data.status === "no_files") {
           clearInterval(interval);
-          setIsIngestionStarted(false);
+          // Do not set isIngestionStarted to false here so the UI can show the error
         }
       } catch (error) {
         console.error("Failed to fetch extraction status:", error);
@@ -904,6 +904,8 @@ export default function ProjectDetailsPage() {
                         <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
                           {status === "completed" ? (
                             <><CheckCircle2 className="text-emerald-500 h-6 w-6" /> Extraction Complete!</>
+                          ) : status === "error" ? (
+                            <><svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg> Extraction Failed</>
                           ) : (
                             <><Loader2 className="h-5 w-5 text-[#2a63f5] animate-spin" style={{ animationDuration: '1s' }} /> Processing Documents</>
                           )}
@@ -955,6 +957,25 @@ export default function ProjectDetailsPage() {
                         </div>
                       ))}
                     </div>
+
+                    {/* Error Log Display */}
+                    {status === "error" && logs && logs.length > 0 && (
+                      <div className="mt-6 w-full p-4 bg-red-50 border border-red-100 rounded-lg">
+                        <p className="text-sm font-semibold text-red-800 mb-2">Error Details:</p>
+                        <div className="text-xs text-red-600 font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">
+                          {logs.map((log, i) => <div key={i}>{log}</div>)}
+                        </div>
+                        <Button 
+                          onClick={() => {
+                            setStatus("idle");
+                            setIsIngestionStarted(false);
+                          }}
+                          className="mt-4 bg-red-600 hover:bg-red-700 text-white text-xs py-1 h-8"
+                        >
+                          Dismiss and Try Again
+                        </Button>
+                      </div>
+                    )}
 
                     {/* Final Redirection Indicator */}
                     {status === "completed" && (
