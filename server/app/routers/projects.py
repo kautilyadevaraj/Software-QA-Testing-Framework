@@ -232,14 +232,13 @@ def ingest_project(
             print(f"Failed to clear Qdrant data: {e}")
 
     project_id_str = str(project.id)
-    from app.services.pdf_extractor_service import PDF_PROGRESS
+    from app.services.pdf_extractor_service import set_pdf_progress
 
-    if project_id_str in PDF_PROGRESS:
-        PDF_PROGRESS[project_id_str] = {
-            "status": "idle",
-            "progress": 0,
-            "logs": []
-        }
+    set_pdf_progress(project_id_str, {
+        "status": "idle",
+        "progress": 0,
+        "logs": []
+    })
 
     from datetime import datetime, timezone
     return {
