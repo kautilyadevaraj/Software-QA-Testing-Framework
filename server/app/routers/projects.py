@@ -792,10 +792,6 @@ def extract_pdfs(
 def get_extract_status(
     project_id: uuid.UUID,
 ):
-    from app.services.pdf_extractor_service import PDF_PROGRESS
+    from app.services.pdf_extractor_service import get_pdf_progress
 
-    return PDF_PROGRESS.get(str(project_id), {
-        "status": "idle",
-        "progress": 0,
-        "logs": []
-    })
+    return get_pdf_progress(str(project_id))

@@ -13,7 +13,27 @@ from app.models.project import ProjectFile, FileType, Project, ExtractedText, AP
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 
-PDF_PROGRESS = {}
+def set_pdf_progress(project_id_str: str, data: dict):
+    settings = get_settings()
+    project_dir = Path(settings.upload_dir) / project_id_str
+    project_dir.mkdir(parents=True, exist_ok=True)
+    with open(project_dir / "extraction_progress.json", "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+def get_pdf_progress(project_id_str: str):
+    settings = get_settings()
+    path = Path(settings.upload_dir) / project_id_str / "extraction_progress.json"
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "status": "idle",
+        "progress": 0,
+        "logs": []
+    }
 _EMBEDDER = None
 _EMBEDDER_LOCK = threading.Lock()
 _SENTENCE_TRANSFORMER = None
@@ -165,11 +185,11 @@ def _run_extraction(project_id_str: str):
         
         project = db.query(Project).get(project_id_str)
         if not project:
-            PDF_PROGRESS[project_id_str] = {
+            set_pdf_progress(project_id_str, {
                 "status": "error",
                 "progress": 0,
                 "logs": ["Project not found"]
-            }
+            })
             return
 
         collection_name = str(project.id)
@@ -205,11 +225,11 @@ def _run_extraction(project_id_str: str):
         ).scalars().all()
 
         if not files:
-            PDF_PROGRESS[project_id_str] = {
+            set_pdf_progress(project_id_str, {
                 "status": "no_files",
                 "progress": 0,
                 "logs": []
-            }
+            })
             return
 
         total = len(files)
@@ -221,11 +241,11 @@ def _run_extraction(project_id_str: str):
         for i, file in enumerate(files):
             try:
                 logs.append(f"Parsing {file.original_filename}...")
-                PDF_PROGRESS[project_id_str] = {
+                set_pdf_progress(project_id_str, {
                     "status": "processing",
                     "progress": int((i / total) * 100),
                     "logs": logs
-                }
+                })
                 time.sleep(1.0)
 
                 import fitz
@@ -266,11 +286,11 @@ def _run_extraction(project_id_str: str):
                 db.refresh(extracted)
 
                 logs.append(f"Generating chunks and embeddings for {file.original_filename}...")
-                PDF_PROGRESS[project_id_str] = {
+                set_pdf_progress(project_id_str, {
                     "status": "processing",
                     "progress": int((i / total) * 100) + 5,
                     "logs": logs
-                }
+                })
                 time.sleep(1.5)
 
                 
@@ -338,11 +358,11 @@ def _run_extraction(project_id_str: str):
         for file in swagger_files:
             try:
                 logs.append(f"Parsing Swagger {file.original_filename}...")
-                PDF_PROGRESS[project_id_str] = {
+                set_pdf_progress(project_id_str, {
                     "status": "processing",
                     "progress": 90,
                     "logs": logs
-                }
+                })
 
                 import prance
 
@@ -368,17 +388,17 @@ def _run_extraction(project_id_str: str):
             except Exception as e:
                 logs.append(f"Failed parsing Swagger {file.original_filename}: {str(e)}")
 
-        PDF_PROGRESS[project_id_str] = {
+        set_pdf_progress(project_id_str, {
             "status": "completed",
             "progress": 100,
             "logs": logs
-        }
+        })
     except Exception as e:
-        PDF_PROGRESS[project_id_str] = {
+        set_pdf_progress(project_id_str, {
             "status": "error",
             "progress": 0,
             "logs": [f"Error: {str(e)}"]
-        }
+        })
     finally:
         db.close()
 
@@ -386,11 +406,11 @@ def _run_extraction(project_id_str: str):
 def start_pdf_extraction(db: Session, project: Project):
     project_id = str(project.id)
 
-    PDF_PROGRESS[project_id] = {
+    set_pdf_progress(project_id, {
         "status": "starting",
         "progress": 0,
         "logs": []
-    }
+    })
 
     thread = threading.Thread(target=_run_extraction, args=(project_id,))
     thread.start()

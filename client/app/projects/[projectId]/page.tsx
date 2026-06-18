@@ -586,7 +586,16 @@ export default function ProjectDetailsPage() {
   };
 
   const startExtraction = async () => {
-    await startProjectPdfExtraction(projectId);
+    try {
+      setStatus("extracting");
+      setIsIngestionStarted(true);
+      await startProjectPdfExtraction(projectId);
+      toast.success("Document extraction started");
+    } catch (error) {
+      toast.error("Failed to start extraction");
+      setStatus("idle");
+      setIsIngestionStarted(false);
+    }
   };
 
   const handleMarkVerified = async (cred: ProjectCredential) => {
