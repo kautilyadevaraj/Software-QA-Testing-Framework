@@ -357,7 +357,6 @@ export default function ProjectDetailsPage() {
 
         if (data.status === "completed") {
           clearInterval(interval);
-          setIsIngestionStarted(false);
           setIsRedirectingToQa(true);
           redirectTimeoutRef.current = setTimeout(() => {
             setActiveTab("qa");
@@ -374,7 +373,8 @@ export default function ProjectDetailsPage() {
       } catch (error) {
         console.error("Failed to fetch extraction status:", error);
         clearInterval(interval);
-        setIsIngestionStarted(false);
+        setStatus("error");
+        setLogs(["Network error fetching status. Please check server logs."]);
       }
     }, 5000);
 
