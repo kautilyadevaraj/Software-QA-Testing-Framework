@@ -496,11 +496,11 @@ def get_recording_setup(
     token = str(project.recorder_token)
     script_url = f"{api_base}/api/v1/recorder/{project_id}/script"
     mac_cmd = (
-        f'pip3 install playwright httpx && playwright install chromium && '
+        f'pip3 install playwright httpx && python3 -m playwright install chromium && '
         f'curl -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}" && python3 recorder.py'
     )
     win_cmd = (
-        f'pip install playwright httpx && playwright install chromium && '
+        f'pip install playwright httpx && python -m playwright install chromium && '
         f'curl.exe -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}"; python recorder.py'
     )
     return RecordingSetupResponse(
