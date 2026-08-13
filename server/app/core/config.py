@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     groq_max_tokens: int = 1024
 
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "nvidia/nemotron-3-nano-30b-a3b:free"
+    openrouter_max_tokens: int = 4096
+
     scenario_agent_batch_chars: int = 4500
     scenario_agent_batch_size: int = 4
     scenario_agent_max_scenarios_per_batch: int = 5

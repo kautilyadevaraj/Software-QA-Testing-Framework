@@ -226,11 +226,10 @@ def _run_extraction(project_id_str: str):
 
         if not files:
             set_pdf_progress(project_id_str, {
-                "status": "no_files",
+                "status": "processing",
                 "progress": 0,
-                "logs": []
+                "logs": ["No PDF documents found; continuing with Swagger."]
             })
-            return
 
         total = len(files)
         logs = []

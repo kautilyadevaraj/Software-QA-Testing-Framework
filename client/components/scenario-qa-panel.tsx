@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { BrushCleaning, Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Square, Trash2, WandSparkles, X } from "lucide-react";
+import { BrushCleaning, Check, ChevronDown, ChevronUp, Info, Loader2, Pencil, Play, Plus, Save, Trash2, WandSparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import {
   clearScenarioRecording,
   createHighLevelScenario,
   deleteHighLevelScenario,
+  fetchTestDocumentRows,
   generateHighLevelScenariosStream,
   getRecordingSetup,
   getScenarioRecordingStatus,
@@ -24,7 +25,8 @@ import {
   type PreviewScenario,
   type RecordingSetupResponse,
   type ScenarioSource,
-  stopScenarioRecording,
+  type TestDocumentRow,
+  type TestDocumentSheet,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -36,7 +38,37 @@ type ScenarioQaPanelProps = {
 type DraftScenario = {
   title: string;
   description: string;
+  test_id?: string;
+  pre_conditions?: string;
+  test_steps?: string;
+  expected_result?: string;
+  sheet_name?: string | null;
 };
+
+function mapTestDocumentRow(row: TestDocumentRow, sheetName?: string): PreviewScenario {
+  const parts: string[] = [];
+  if (row.pre_conditions) parts.push(`Pre-Conditions:\n${row.pre_conditions}`);
+  if (row.test_steps) parts.push(`Test Steps:\n${row.test_steps}`);
+  if (row.expected_result) parts.push(`Expected Result:\n${row.expected_result}`);
+  return {
+    title: row.test_scenario || row.test_id || "Untitled scenario",
+    description: parts.join("\n\n"),
+    source: "manual",
+    test_id: row.test_id,
+    pre_conditions: row.pre_conditions,
+    test_steps: row.test_steps,
+    expected_result: row.expected_result,
+    sheet_name: sheetName ?? null,
+  };
+}
+
+function buildDescriptionFromDraft(draft: DraftScenario) {
+  const parts: string[] = [];
+  if (draft.pre_conditions?.trim()) parts.push(`Pre-Conditions:\n${draft.pre_conditions.trim()}`);
+  if (draft.test_steps?.trim()) parts.push(`Test Steps:\n${draft.test_steps.trim()}`);
+  if (draft.expected_result?.trim()) parts.push(`Expected Result:\n${draft.expected_result.trim()}`);
+  return parts.join("\n\n");
+}
 
 
 
@@ -215,8 +247,27 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   const [previewDraft, setPreviewDraft] = useState<DraftScenario>({ title: "", description: "" });
   const [approvedEditId, setApprovedEditId] = useState<string | null>(null);
   const [approvedDraft, setApprovedDraft] = useState<DraftScenario>({ title: "", description: "" });
+  const [approvedSheetFilter, setApprovedSheetFilter] = useState<string>("all");
   const [isAddingApproved, setIsAddingApproved] = useState(false);
   const [newApprovedDraft, setNewApprovedDraft] = useState<DraftScenario>({ title: "", description: "" });
+  const [isLoadingXlsx, setIsLoadingXlsx] = useState(false);
+  const [testDocumentName, setTestDocumentName] = useState<string | null>(null);
+  const [testDocumentSheets, setTestDocumentSheets] = useState<TestDocumentSheet[]>([]);
+  const [selectedSheetName, setSelectedSheetName] = useState<string>("");
+  // The uploaded test document file currently being previewed, and the one whose
+  // rows were last fully approved. The preview shows whenever the current file
+  // differs from the approved one — so a freshly uploaded document (even with
+  // identical rows) reappears, while the already-approved document stays hidden
+  // after approval or a tab switch.
+  const [currentDocumentFileId, setCurrentDocumentFileId] = useState<string | null>(null);
+  const [approvedDocumentFileId, setApprovedDocumentFileId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return window.localStorage.getItem(`sqat:qa:${projectId}:approved-file-id`);
+    } catch {
+      return null;
+    }
+  });
   const [scenarioLimit, setScenarioLimit] = useState<(typeof SCENARIO_LIMIT_OPTIONS)[number]["value"]>("20");
   const [customScenarioCount, setCustomScenarioCount] = useState("35");
   const [scenarioTypes, setScenarioTypes] = useState<ScenarioGenerationType[]>(["ALL"]);
@@ -248,6 +299,63 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     }
   }, [projectId]);
 
+  const approvedSheetOptions = Array.from(
+    new Set(approvedScenarios.map((scenario) => scenario.sheet_name ?? "Unassigned")),
+  ).sort((a, b) => a.localeCompare(b));
+
+  const visibleApprovedScenarios =
+    approvedSheetFilter === "all"
+      ? approvedScenarios
+      : approvedScenarios.filter((scenario) => (scenario.sheet_name ?? "Unassigned") === approvedSheetFilter);
+
+  // Scenario Preview should only surface rows from a test document that has not
+  // yet been approved. Approval is keyed to the uploaded file itself — not the
+  // row content — so a newly uploaded document always shows its preview again,
+  // even when its rows duplicate ones already approved from a previous upload.
+  const showScenarioPreview =
+    isLoadingXlsx || (currentDocumentFileId !== null && currentDocumentFileId !== approvedDocumentFileId);
+
+  useEffect(() => {
+    if (approvedSheetFilter !== "all" && !approvedSheetOptions.includes(approvedSheetFilter)) {
+      setApprovedSheetFilter("all");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [approvedSheetOptions.length]);
+
+  const loadTestDocumentRows = useCallback(async () => {
+    setIsLoadingXlsx(true);
+    try {
+      const response = await fetchTestDocumentRows(projectId);
+      setCurrentDocumentFileId(response.file?.id ?? null);
+      if (response.sheets.length > 0) {
+        setTestDocumentSheets(response.sheets);
+        setSelectedSheetName(response.sheets[0].name);
+        setPreviewScenarios(response.sheets[0].items.map((row) => mapTestDocumentRow(row, response.sheets[0].name)));
+        setTestDocumentName(response.file?.original_filename ?? null);
+      } else {
+        setTestDocumentSheets([]);
+        setSelectedSheetName("");
+        setPreviewScenarios([]);
+        setTestDocumentName(null);
+      }
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Unable to read the test document.");
+      setTestDocumentSheets([]);
+      setSelectedSheetName("");
+      setPreviewScenarios([]);
+      setTestDocumentName(null);
+    } finally {
+      setIsLoadingXlsx(false);
+    }
+  }, [projectId]);
+
+  const handleSheetChange = (sheetName: string) => {
+    setSelectedSheetName(sheetName);
+    const sheet = testDocumentSheets.find((candidate) => candidate.name === sheetName);
+    setPreviewScenarios(sheet ? sheet.items.map((row) => mapTestDocumentRow(row, sheetName)) : []);
+    setPreviewEditIndex(null);
+  };
+
   const handleLaunch = async (scenario: HighLevelScenario) => {
     setLaunchingScenarioId(scenario.id);
     setRecordingSessionStatus("none");
@@ -261,15 +369,6 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
       setRecordingScenarioId(null);
     } finally {
       setLaunchingScenarioId(null);
-    }
-  };
-
-  const handleStopRecording = async (scenario: HighLevelScenario) => {
-    try {
-      await stopScenarioRecording(projectId, scenario.id);
-      toast.info(`Stopping recording for "${scenario.title}"...`);
-    } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "Failed to stop recording.");
     }
   };
 
@@ -297,7 +396,8 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
 
   useEffect(() => {
     void loadApprovedScenarios();
-  }, [loadApprovedScenarios]);
+    void loadTestDocumentRows();
+  }, [loadApprovedScenarios, loadTestDocumentRows]);
 
   // Poll recording status while a scenario is being recorded
   useEffect(() => {
@@ -333,7 +433,14 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   const startPreviewEdit = (index: number) => {
     const scenario = previewScenarios[index];
     setPreviewEditIndex(index);
-    setPreviewDraft({ title: scenario.title, description: scenario.description });
+    setPreviewDraft({
+      title: scenario.title,
+      description: scenario.description,
+      test_id: scenario.test_id ?? "",
+      pre_conditions: scenario.pre_conditions ?? "",
+      test_steps: scenario.test_steps ?? "",
+      expected_result: scenario.expected_result ?? "",
+    });
   };
 
   const savePreviewEdit = () => {
@@ -342,10 +449,19 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
       toast.error("Scenario title is required.");
       return;
     }
+    const description = buildDescriptionFromDraft(previewDraft);
     setPreviewScenarios((current) =>
       current.map((scenario, index) =>
         index === previewEditIndex
-          ? { ...scenario, title: previewDraft.title.trim(), description: previewDraft.description.trim() }
+          ? {
+              ...scenario,
+              title: previewDraft.title.trim(),
+              description,
+              test_id: previewDraft.test_id?.trim() || scenario.test_id,
+              pre_conditions: previewDraft.pre_conditions ?? "",
+              test_steps: previewDraft.test_steps ?? "",
+              expected_result: previewDraft.expected_result ?? "",
+            }
           : scenario,
       ),
     );
@@ -419,13 +535,22 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   };
 
   const handleAddPreviewScenario = () => {
-    setPreviewScenarios((current) => [...current, { title: "", description: "", source: "manual" }]);
+    setPreviewScenarios((current) => [...current, { title: "", description: "", source: "manual", pre_conditions: "", test_steps: "", expected_result: "", sheet_name: selectedSheetName || null }]);
     setPreviewEditIndex(previewScenarios.length);
-    setPreviewDraft({ title: "", description: "" });
+    setPreviewDraft({ title: "", description: "", pre_conditions: "", test_steps: "", expected_result: "" });
   };
 
   const handleApprove = async () => {
-    const clean = previewScenarios
+    const allScenarios: PreviewScenario[] = [];
+    testDocumentSheets.forEach((sheet) => {
+      if (sheet.name === selectedSheetName) {
+        allScenarios.push(...previewScenarios);
+      } else {
+        allScenarios.push(...sheet.items.map((row) => mapTestDocumentRow(row, sheet.name)));
+      }
+    });
+
+    const clean = allScenarios
       .map((scenario) => ({
         ...scenario,
         title: scenario.title.trim(),
@@ -441,9 +566,18 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     setIsApproving(true);
     try {
       const response = await approveHighLevelScenarios(projectId, clean);
+      if (currentDocumentFileId) {
+        setApprovedDocumentFileId(currentDocumentFileId);
+        try {
+          window.localStorage.setItem(`sqat:qa:${projectId}:approved-file-id`, currentDocumentFileId);
+        } catch {
+          // ignore storage failures
+        }
+      }
       setPreviewScenarios([]);
+      setTestDocumentSheets((current) => current.map((sheet) => ({ ...sheet, items: [] })));
       await loadApprovedScenarios();
-      toast.success(`Saved ${response.saved} scenarios.`);
+      toast.success(`Saved ${response.saved} scenarios across ${testDocumentSheets.length} sheet(s).`);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Unable to save scenarios.");
     } finally {
@@ -453,7 +587,15 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
 
   const startApprovedEdit = (scenario: HighLevelScenario) => {
     setApprovedEditId(scenario.id);
-    setApprovedDraft({ title: scenario.title, description: scenario.description });
+    setApprovedDraft({
+      title: scenario.title,
+      description: scenario.description,
+      test_id: scenario.test_id ?? "",
+      sheet_name: scenario.sheet_name ?? "",
+      pre_conditions: scenario.pre_conditions ?? "",
+      test_steps: scenario.test_steps ?? "",
+      expected_result: scenario.expected_result ?? "",
+    });
   };
 
   const saveApprovedEdit = async (scenario: HighLevelScenario) => {
@@ -464,7 +606,12 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     try {
       const updated = await updateHighLevelScenario(projectId, scenario.id, {
         title: approvedDraft.title.trim(),
-        description: approvedDraft.description.trim(),
+        description: buildDescriptionFromDraft(approvedDraft),
+        test_id: approvedDraft.test_id?.trim() || null,
+        sheet_name: approvedDraft.sheet_name?.trim() || null,
+        pre_conditions: approvedDraft.pre_conditions?.trim() || null,
+        test_steps: approvedDraft.test_steps?.trim() || null,
+        expected_result: approvedDraft.expected_result?.trim() || null,
       });
       setApprovedScenarios((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       setApprovedEditId(null);
@@ -536,10 +683,15 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
     try {
       const saved = await createHighLevelScenario(projectId, {
         title: newApprovedDraft.title.trim(),
-        description: newApprovedDraft.description.trim(),
+        description: buildDescriptionFromDraft(newApprovedDraft),
+        test_id: newApprovedDraft.test_id?.trim() || null,
+        sheet_name: newApprovedDraft.sheet_name?.trim() || null,
+        pre_conditions: newApprovedDraft.pre_conditions?.trim() || null,
+        test_steps: newApprovedDraft.test_steps?.trim() || null,
+        expected_result: newApprovedDraft.expected_result?.trim() || null,
       });
       setApprovedScenarios((current) => [...current, saved]);
-      setNewApprovedDraft({ title: "", description: "" });
+      setNewApprovedDraft({ title: "", description: "", test_id: "", sheet_name: null, pre_conditions: "", test_steps: "", expected_result: "" });
       setIsAddingApproved(false);
       toast.success("Scenario added.");
     } catch (error) {
@@ -733,16 +885,40 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   return (
     <>
       <div className="space-y-6">
-      {generationSettingsCard}
+      {/* High Level Scenarios Configuration + Generate — temporarily commented out.
+          The QA tab now reads scenarios from the uploaded xlsx test document instead.
+          Re-enable generation later by uncommenting the line below.
+          {generationSettingsCard} */}
 
-      {previewScenarios.length > 0 ? (
+      {showScenarioPreview ? (
         <div className="overflow-hidden rounded-lg border border-black/10 bg-white">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 px-4 py-3">
             <div>
               <h2 className="text-base font-semibold text-black">Scenario Preview</h2>
-              <p className="text-sm text-black/60">Edits here stay in memory until approval.</p>
+              <p className="text-sm text-black/60">
+                {isLoadingXlsx ? "Reading test document..." : testDocumentName ? `Loaded from "${testDocumentName}". Edits stay in memory until approval.` : "Edits here stay in memory until approval."}
+              </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              {testDocumentSheets.length > 1 ? (
+                <div className="flex items-center gap-2">
+                  <label htmlFor="test-sheet-select" className="text-xs font-medium uppercase text-black/60">
+                    Sheet
+                  </label>
+                  <select
+                    id="test-sheet-select"
+                    value={selectedSheetName}
+                    onChange={(event) => handleSheetChange(event.target.value)}
+                    className="h-9 max-w-72 rounded-md border border-black/15 bg-white px-3 text-sm font-medium text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                  >
+                    {testDocumentSheets.map((sheet) => (
+                      <option key={sheet.name} value={sheet.name}>
+                        {sheet.name} ({sheet.items.length})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
               <Button variant="outline" onClick={handleAddPreviewScenario}>
                 <Plus className="h-4 w-4" />
                 Add Scenario Manually
@@ -754,14 +930,17 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
+            <table className="w-full min-w-[1600px] table-fixed text-left text-sm">
               <thead className="bg-black/[0.03] text-xs uppercase text-black/60">
                 <tr>
-                  <th className="w-12 px-4 py-3">#</th>
-                  <th className="w-[260px] px-4 py-3">Title</th>
-                  <th className="px-4 py-3">Description</th>
-                  <th className="w-[190px] px-4 py-3">Tags</th>
-                  <th className="w-[120px] px-4 py-3 text-right">Actions</th>
+                  <th className="w-10 px-3 py-3">#</th>
+                  <th className="w-[110px] px-3 py-3">Test ID</th>
+                  <th className="w-[260px] px-3 py-3">Test Scenario</th>
+                  <th className="w-[240px] px-3 py-3">Pre-Conditions</th>
+                  <th className="w-[260px] px-3 py-3">Test Steps</th>
+                  <th className="w-[300px] px-3 py-3">Expected Result</th>
+                  <th className="w-[150px] px-3 py-3">Tags</th>
+                  <th className="w-[130px] px-3 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -769,27 +948,56 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                   const isEditing = previewEditIndex === index;
                   return (
                     <tr key={`${scenario.source}-${index}`}>
-                      <td className="px-4 py-3 text-black/60">{index + 1}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-3 text-black/60">{index + 1}</td>
+                      <td className="px-3 py-3">
+                        <span className="block truncate font-mono text-xs text-black/70" title={scenario.test_id}>
+                          {scenario.test_id || "-"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">
                         {isEditing ? (
                           <Input value={previewDraft.title} onChange={(e) => setPreviewDraft((current) => ({ ...current, title: e.target.value }))} />
                         ) : (
                           <span className="block font-medium leading-6 text-black">{scenario.title}</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-3">
                         {isEditing ? (
                           <textarea
-                            rows={2}
-                            value={previewDraft.description}
-                            onChange={(e) => setPreviewDraft((current) => ({ ...current, description: e.target.value }))}
+                            rows={3}
+                            value={previewDraft.pre_conditions ?? ""}
+                            onChange={(e) => setPreviewDraft((current) => ({ ...current, pre_conditions: e.target.value }))}
                             className={tableInputClass()}
                           />
                         ) : (
-                          <span className="block leading-6 text-black/70">{scenario.description}</span>
+                          <span className="block whitespace-pre-line leading-6 text-black/70">{scenario.pre_conditions || "—"}</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-3">
+                        {isEditing ? (
+                          <textarea
+                            rows={3}
+                            value={previewDraft.test_steps ?? ""}
+                            onChange={(e) => setPreviewDraft((current) => ({ ...current, test_steps: e.target.value }))}
+                            className={tableInputClass()}
+                          />
+                        ) : (
+                          <span className="block whitespace-pre-line leading-6 text-black/70">{scenario.test_steps || "—"}</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        {isEditing ? (
+                          <textarea
+                            rows={3}
+                            value={previewDraft.expected_result ?? ""}
+                            onChange={(e) => setPreviewDraft((current) => ({ ...current, expected_result: e.target.value }))}
+                            className={tableInputClass()}
+                          />
+                        ) : (
+                          <span className="block whitespace-pre-line leading-6 text-black/70">{scenario.expected_result || "—"}</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
                         <div className="flex flex-wrap gap-1.5">
                           {scenarioTags(scenario.source).map((tag) => (
                             <span key={tag} className="inline-flex rounded-full border border-[#2a63f5]/20 bg-[#2a63f5]/5 px-2 py-1 text-xs font-semibold text-[#2a63f5]">
@@ -798,7 +1006,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                           ))}
                         </div>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-3">
                         <div className="flex justify-end gap-2">
                           {isEditing ? (
                             <>
@@ -844,9 +1052,33 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 px-4 py-3">
             <div>
               <h2 className="text-base font-semibold text-black">Approved Scenarios</h2>
-              <p className="text-sm text-black/60">{approvedScenarios.length} scenarios ready for tester review.</p>
+              <p className="text-sm text-black/60">
+                {approvedSheetFilter === "all"
+                  ? `${approvedScenarios.length} scenarios ready for tester review.`
+                  : `${visibleApprovedScenarios.length} of ${approvedScenarios.length} scenarios in "${approvedSheetFilter}".`}
+              </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              {approvedSheetOptions.length > 0 ? (
+                <div className="flex items-center gap-2">
+                  <label htmlFor="approved-sheet-select" className="text-xs font-medium uppercase text-black/60">
+                    Sheet
+                  </label>
+                  <select
+                    id="approved-sheet-select"
+                    value={approvedSheetFilter}
+                    onChange={(event) => setApprovedSheetFilter(event.target.value)}
+                    className="h-9 max-w-72 rounded-md border border-black/15 bg-white px-3 text-sm font-medium text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                  >
+                    <option value="all">All sheets</option>
+                    {approvedSheetOptions.map((sheet) => (
+                      <option key={sheet} value={sheet}>
+                        {sheet}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
               <Button variant="outline" onClick={() => void handleOpenSetup()}>
                 <Info className="h-4 w-4" />
                 Setup Recorder
@@ -854,7 +1086,14 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
               <Button
                 variant="outline"
                 onClick={() => {
-                  setNewApprovedDraft({ title: "", description: "" });
+                  setNewApprovedDraft({
+                    title: "",
+                    description: "",
+                    sheet_name: approvedSheetFilter !== "all" ? approvedSheetFilter : null,
+                    pre_conditions: "",
+                    test_steps: "",
+                    expected_result: "",
+                  });
                   setIsAddingApproved(true);
                 }}
               >
@@ -864,44 +1103,115 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1000px] table-fixed text-left text-sm">
+            <table className="w-full min-w-[1900px] table-fixed text-left text-sm">
               <thead className="bg-black/[0.03] text-xs uppercase text-black/60">
                 <tr>
-                  <th className="w-24 px-4 py-3">ID</th>
-                  <th className="px-4 py-3">Title</th>
-                  <th className="w-32 px-4 py-3">Tags</th>
-                  <th className="w-[160px] px-4 py-3">Status</th>
-                  <th className="w-[160px] px-4 py-3 text-right">Actions</th>
-                  <th className="w-[240px] px-4 py-3 text-right">Launch</th>
+                  <th className="w-[110px] px-3 py-3">Test ID</th>
+                  <th className="w-[150px] px-3 py-3">Sheet</th>
+                  <th className="w-[300px] px-3 py-3">Test Scenario</th>
+                  <th className="w-[220px] px-3 py-3">Pre-Conditions</th>
+                  <th className="w-[240px] px-3 py-3">Test Steps</th>
+                  <th className="w-[260px] px-3 py-3">Expected Result</th>
+                  <th className="w-[120px] px-3 py-3">Tags</th>
+                  <th className="w-[130px] px-3 py-3">Status</th>
+                  <th className="w-[130px] px-3 py-3 text-right">Actions</th>
+                  <th className="w-[230px] px-3 py-3 text-right">Launch</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-black/10">
-                {approvedScenarios.map((scenario) => {
+                {visibleApprovedScenarios.map((scenario) => {
                   const isEditing = approvedEditId === scenario.id;
                   const isDescriptionOpen = expandedDescriptionIds.includes(scenario.id);
                   const recorderBadge = recordingBadge(scenario);
+                  const sheetName = scenario.sheet_name ?? "Unassigned";
                   return (
                     <Fragment key={scenario.id}>
                       <tr className={cn("border-t border-black/10", isDescriptionOpen ? "bg-[#2a63f5]/[0.03]" : undefined)}>
-                        <td className="px-4 py-3 font-mono text-xs text-black/60" title={scenario.id}>
-                          {scenario.id.slice(0, 8)}
-                        </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           {isEditing ? (
-                            <div className="grid gap-2">
-                              <Input value={approvedDraft.title} onChange={(e) => setApprovedDraft((current) => ({ ...current, title: e.target.value }))} />
-                              <textarea
-                                rows={2}
-                                value={approvedDraft.description}
-                                onChange={(e) => setApprovedDraft((current) => ({ ...current, description: e.target.value }))}
-                                className={tableInputClass()}
-                              />
-                            </div>
+                            <Input
+                              value={approvedDraft.test_id ?? ""}
+                              onChange={(e) => setApprovedDraft((current) => ({ ...current, test_id: e.target.value }))}
+                              placeholder="TC-0001"
+                              className="font-mono text-xs"
+                            />
+                          ) : (
+                            <span className="block truncate font-mono text-xs text-black/70" title={scenario.test_id ?? ""}>
+                              {scenario.test_id || "—"}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {isEditing ? (
+                            <select
+                              value={approvedDraft.sheet_name ?? "Unassigned"}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setApprovedDraft((current) => ({ ...current, sheet_name: value === "Unassigned" ? null : value }));
+                              }}
+                              className="h-9 w-full rounded-md border border-black/15 bg-white px-3 text-sm font-medium text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                            >
+                              <option value="Unassigned">Unassigned</option>
+                              {Array.from(
+                                new Set([...approvedSheetOptions, ...testDocumentSheets.map((sheet) => sheet.name)]),
+                              )
+                                .filter((sheet) => sheet !== "Unassigned")
+                                .map((sheet) => (
+                                  <option key={sheet} value={sheet}>
+                                    {sheet}
+                                  </option>
+                                ))}
+                            </select>
+                          ) : (
+                            <span className="block truncate rounded-full border border-black/10 bg-black/[0.03] px-2 py-1 text-xs font-semibold text-black/70" title={sheetName}>
+                              {sheetName}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {isEditing ? (
+                            <Input value={approvedDraft.title} onChange={(e) => setApprovedDraft((current) => ({ ...current, title: e.target.value }))} />
                           ) : (
                             <span className="block font-medium leading-6 text-black">{scenario.title}</span>
                           )}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
+                          {isEditing ? (
+                            <textarea
+                              rows={3}
+                              value={approvedDraft.pre_conditions ?? ""}
+                              onChange={(e) => setApprovedDraft((current) => ({ ...current, pre_conditions: e.target.value }))}
+                              className={tableInputClass()}
+                            />
+                          ) : (
+                            <span className="block whitespace-pre-line leading-6 text-black/70">{scenario.pre_conditions || "—"}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {isEditing ? (
+                            <textarea
+                              rows={3}
+                              value={approvedDraft.test_steps ?? ""}
+                              onChange={(e) => setApprovedDraft((current) => ({ ...current, test_steps: e.target.value }))}
+                              className={tableInputClass()}
+                            />
+                          ) : (
+                            <span className="block whitespace-pre-line leading-6 text-black/70">{scenario.test_steps || "—"}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {isEditing ? (
+                            <textarea
+                              rows={3}
+                              value={approvedDraft.expected_result ?? ""}
+                              onChange={(e) => setApprovedDraft((current) => ({ ...current, expected_result: e.target.value }))}
+                              className={tableInputClass()}
+                            />
+                          ) : (
+                            <span className="block whitespace-pre-line leading-6 text-black/70">{scenario.expected_result || "—"}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
                           <div className="flex flex-wrap gap-1.5">
                             {scenarioTags(scenario.source).map((tag) => (
                               <span key={tag} className="inline-flex rounded-full border border-[#2a63f5]/20 bg-[#2a63f5]/5 px-2 py-1 text-xs font-semibold text-[#2a63f5]">
@@ -910,7 +1220,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                             ))}
                           </div>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           <div className="grid gap-1.5">
                             <button
                               type="button"
@@ -933,7 +1243,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                             </span>
                           </div>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           <div className="flex justify-end gap-2">
                             {isEditing ? (
                               <>
@@ -979,45 +1289,8 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center justify-end gap-2">
-                            {recordingScenarioId === scenario.id ? (
-                              recordingSessionStatus === "none" || recordingSessionStatus === "pending" ? (
-                                <>
-                                  <span className="flex items-center gap-1.5 rounded-md bg-zinc-50 border border-zinc-200 px-3 py-1.5 text-xs font-semibold text-zinc-700">
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    Waiting for recorder...
-                                  </span>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => {
-                                      setRecordingScenarioId(null);
-                                      setRecordingSessionStatus("none");
-                                    }}
-                                  >
-                                    Cancel
-                                  </Button>
-                                </>
-                              ) : (
-                                <>
-                                  <span className="flex items-center gap-1.5 rounded-md bg-red-50 border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700">
-                                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                                    Recording…
-                                  </span>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="border-red-200 text-red-600 hover:bg-red-50 gap-1.5"
-                                    onClick={() => handleStopRecording(scenario)}
-                                    title="Stop tracking this recording"
-                                    aria-label="Stop recording"
-                                  >
-                                    <Square className="h-3.5 w-3.5" />
-                                    Stop
-                                  </Button>
-                                </>
-                              )
-                            ) : (
+                          <div className="flex flex-col items-end gap-2">
+                            <div className="flex items-center justify-end gap-2">
                               <Button
                                 size="sm"
                                 className="min-w-24"
@@ -1032,26 +1305,39 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                                 )}
                                 {launchingScenarioId === scenario.id ? "Sending…" : "Launch"}
                               </Button>
-                            )}
-                            <Button
-                              size="icon"
-                              variant="outline"
-                              onClick={() => toggleApprovedDescription(scenario.id)}
-                              aria-label={isDescriptionOpen ? `Collapse ${scenario.title}` : `Expand ${scenario.title}`}
-                              title={isDescriptionOpen ? "Collapse details" : "Expand details"}
-                            >
-                              {isDescriptionOpen ? (
-                                <ChevronUp className="h-4 w-4" />
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                onClick={() => toggleApprovedDescription(scenario.id)}
+                                aria-label={isDescriptionOpen ? `Collapse ${scenario.title}` : `Expand ${scenario.title}`}
+                                title={isDescriptionOpen ? "Collapse details" : "Expand details"}
+                              >
+                                {isDescriptionOpen ? (
+                                  <ChevronUp className="h-4 w-4" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4" />
+                                )}
+                              </Button>
+                            </div>
+                            {recordingScenarioId === scenario.id ? (
+                              recordingSessionStatus === "none" || recordingSessionStatus === "pending" ? (
+                                <span className="flex items-center gap-1.5 rounded-md bg-zinc-50 border border-zinc-200 px-3 py-1.5 text-xs font-semibold text-zinc-700">
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  Waiting for recorder...
+                                </span>
                               ) : (
-                                <ChevronDown className="h-4 w-4" />
-                              )}
-                            </Button>
+                                <span className="flex items-center gap-1.5 rounded-md bg-red-50 border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700">
+                                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
+                                  Recording…
+                                </span>
+                              )
+                            ) : null}
                           </div>
                         </td>
                       </tr>
                       {isDescriptionOpen ? (
                         <tr key={`${scenario.id}-details`} className="bg-[#2a63f5]/[0.03]">
-                          <td colSpan={6} className="px-4 pb-4 pt-0">
+                          <td colSpan={10} className="px-4 pb-4 pt-0">
                             <div className="grid gap-4 px-5 py-3 md:grid-cols-[1fr_240px]">
                               <div>
                                 <p className="text-xs font-semibold uppercase text-black/50">Description</p>
@@ -1087,7 +1373,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
           onClick={(event) => {
             if (event.target === event.currentTarget) {
               setIsAddingApproved(false);
-              setNewApprovedDraft({ title: "", description: "" });
+              setNewApprovedDraft({ title: "", description: "", test_id: "", sheet_name: null, pre_conditions: "", test_steps: "", expected_result: "" });
             }
           }}
         >
@@ -1102,7 +1388,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                 variant="outline"
                 onClick={() => {
                   setIsAddingApproved(false);
-                  setNewApprovedDraft({ title: "", description: "" });
+                  setNewApprovedDraft({ title: "", description: "", test_id: "", sheet_name: null, pre_conditions: "", test_steps: "", expected_result: "" });
                 }}
                 aria-label="Close add scenario dialog"
                 title="Close"
@@ -1126,16 +1412,68 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="new-scenario-description" className="text-sm font-medium text-black">
-                  Scenario Description
+                <label htmlFor="new-scenario-test-id" className="text-sm font-medium text-black">
+                  Test ID
+                </label>
+                <Input
+                  id="new-scenario-test-id"
+                  value={newApprovedDraft.test_id ?? ""}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, test_id: event.target.value }))}
+                  placeholder="e.g. TC-0001"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-sheet" className="text-sm font-medium text-black">
+                  Sheet Name
+                </label>
+                <Input
+                  id="new-scenario-sheet"
+                  value={newApprovedDraft.sheet_name ?? ""}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, sheet_name: event.target.value }))}
+                  placeholder="Which worksheet this scenario belongs to"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-pre-conditions" className="text-sm font-medium text-black">
+                  Pre-Conditions
                 </label>
                 <textarea
-                  id="new-scenario-description"
-                  rows={5}
-                  value={newApprovedDraft.description}
-                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, description: event.target.value }))}
+                  id="new-scenario-pre-conditions"
+                  rows={3}
+                  value={newApprovedDraft.pre_conditions ?? ""}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, pre_conditions: event.target.value }))}
                   className="flex w-full resize-none rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black placeholder:text-black/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
-                  placeholder="Describe the tester scenario"
+                  placeholder="Conditions that must be true before testing"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-test-steps" className="text-sm font-medium text-black">
+                  Test Steps
+                </label>
+                <textarea
+                  id="new-scenario-test-steps"
+                  rows={4}
+                  value={newApprovedDraft.test_steps ?? ""}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, test_steps: event.target.value }))}
+                  className="flex w-full resize-none rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black placeholder:text-black/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                  placeholder="Numbered steps to execute"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="new-scenario-expected-result" className="text-sm font-medium text-black">
+                  Expected Result
+                </label>
+                <textarea
+                  id="new-scenario-expected-result"
+                  rows={3}
+                  value={newApprovedDraft.expected_result ?? ""}
+                  onChange={(event) => setNewApprovedDraft((current) => ({ ...current, expected_result: event.target.value }))}
+                  className="flex w-full resize-none rounded-md border border-black/20 bg-white px-3 py-2 text-sm text-black placeholder:text-black/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2a63f5]"
+                  placeholder="Expected outcome after executing the steps"
                 />
               </div>
             </div>
@@ -1145,7 +1483,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
                 variant="outline"
                 onClick={() => {
                   setIsAddingApproved(false);
-                  setNewApprovedDraft({ title: "", description: "" });
+                  setNewApprovedDraft({ title: "", description: "", test_id: "", sheet_name: null, pre_conditions: "", test_steps: "", expected_result: "" });
                 }}
               >
                 <X className="h-4 w-4" />

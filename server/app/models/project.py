@@ -30,6 +30,7 @@ class FileType(str, enum.Enum):
     ASSUMPTION = "assumption"
     CREDENTIALS = "credentials"
     SWAGGER_DOCS = "swagger_docs"
+    TEST_DOCUMENT = "test_document"
 
 
 class Project(Base):
@@ -282,6 +283,11 @@ class HighLevelScenario(Base):
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    test_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    sheet_name: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    pre_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    test_steps: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", index=True)
     completed_by: Mapped[uuid.UUID | None] = mapped_column(

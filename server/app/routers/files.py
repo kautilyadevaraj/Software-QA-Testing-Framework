@@ -1,19 +1,20 @@
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, Form, Request, UploadFile, File as FastAPIFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, File as FastAPIFile, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
-from app.models.project import FileType
+from app.models.project import FileType, ProjectFile
 from app.models.user import User
 from app.schemas.project import ProjectFileResponse
 from app.services.file_service import delete_project_file, get_project_files, validate_and_save_upload
 from app.services.project_service import get_project_or_404
+from app.services.xlsx_service import parse_test_document_sheets
 from app.utils.rate_limiter import limiter
-from fastapi import HTTPException, status
 
 router = APIRouter(prefix="/projects", tags=["project-files"])
 settings = get_settings()
@@ -26,6 +27,7 @@ _CATEGORY_TO_FILETYPE: dict[str, FileType] = {
     "Assumptions": FileType.ASSUMPTION,
     "Credentials": FileType.CREDENTIALS,
     "SwaggerDocs": FileType.SWAGGER_DOCS,
+    "TestDocument": FileType.TEST_DOCUMENT,
 }
 
 
@@ -40,6 +42,39 @@ def list_documents(
     project = get_project_or_404(db, current_user.id, project_id)
     files = get_project_files(db, project)
     return {"items": [ProjectFileResponse.from_project_file(f) for f in files]}
+
+
+@router.get("/{project_id}/test-document-rows")
+@limiter.limit(settings.rate_limit_api)
+def read_test_document_rows(
+    request: Request,
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Parse the uploaded Test Document (xlsx) and return its scenario rows."""
+    project = get_project_or_404(db, current_user.id, project_id)
+
+    file = db.execute(
+        select(ProjectFile)
+        .where(
+            ProjectFile.project_id == project.id,
+            ProjectFile.file_type == FileType.TEST_DOCUMENT,
+        )
+        .order_by(ProjectFile.uploaded_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if file is None:
+        return {"items": [], "sheets": [], "file": None}
+
+    sheets = parse_test_document_sheets(file.absolute_path)
+
+    return {
+        "items": [row for sheet in sheets for row in sheet["items"]],
+        "sheets": sheets,
+        "file": ProjectFileResponse.from_project_file(file).model_dump(),
+    }
 
 
 @router.post("/{project_id}/documents")

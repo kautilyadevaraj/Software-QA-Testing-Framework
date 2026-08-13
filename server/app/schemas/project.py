@@ -39,6 +39,7 @@ class ProjectFileResponse(BaseModel):
             FileType.ASSUMPTION: "Assumptions",
             FileType.CREDENTIALS: "Credentials",
             FileType.SWAGGER_DOCS: "SwaggerDocs",
+            FileType.TEST_DOCUMENT: "TestDocument",
         }
         return cls(
             id=pf.id,

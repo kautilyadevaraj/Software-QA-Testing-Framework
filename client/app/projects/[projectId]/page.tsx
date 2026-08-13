@@ -111,7 +111,12 @@ function formatDate(value: string) {
 }
 
 function formatCategoryLabel(category: DocumentCategory) {
-  const baseLabel = category === "SwaggerDocs" ? "Swagger Docs" : category;
+  const baseLabel =
+    category === "SwaggerDocs"
+      ? "Swagger Docs"
+      : category === "TestDocument"
+        ? "Test Document"
+        : category;
   const isRequired = REQUIRED_DOCUMENT_CATEGORIES.includes(category);
   return `${baseLabel}${isRequired ? "*" : ""}`;
 }
@@ -139,9 +144,18 @@ function isSwaggerFile(file: File) {
   return isYamlByName || isJsonByName || isYamlByType || isJsonByType;
 }
 
+function isXlsxFile(file: File) {
+  const isXlsxByName = file.name.toLowerCase().endsWith(".xlsx");
+  const isXlsxByType =
+    file.type ===
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  return isXlsxByName || isXlsxByType;
+}
+
 function getAcceptedFormatLabel(category: DocumentCategory) {
   if (category === "SwaggerDocs") return "YAML or JSON";
   if (category === "Credentials") return "CSV";
+  if (category === "TestDocument") return "XLSX";
   return "PDF";
 }
 
@@ -638,7 +652,9 @@ export default function ProjectDetailsPage() {
           ? isSwaggerFile(file)
           : category === "Credentials"
             ? isCsvFile(file)
-            : isPdfFile(file);
+            : category === "TestDocument"
+              ? isXlsxFile(file)
+              : isPdfFile(file);
       if (!isAllowed) {
         toast.error(
           `${file.name} is not a valid ${getAcceptedFormatLabel(category)} file.`,
@@ -1471,8 +1487,9 @@ export default function ProjectDetailsPage() {
                     Uploaded Documents
                   </p>
                   <p className="text-xs text-black/60">
-                    Uploads are category-wise. BRD/FSD/WBS/Credentials/Assumptions
-                    accept PDF. Swagger Docs accept YAML or JSON. Max{" "}
+                    Uploads are category-wise. BRD/FSD/WBS accept PDF. Swagger
+                    Docs accept YAML or JSON. Credentials accept CSV. Test
+                    Document accepts XLSX. Max{" "}
                     {MAX_DOCUMENT_SIZE_MB}MB per file.
                   </p>
                   {!canIngestAndAddDocuments ? (
@@ -1523,7 +1540,9 @@ export default function ProjectDetailsPage() {
                                   ? ".yaml,.yml,.json,application/yaml,text/yaml,application/json"
                                   : category === "Credentials"
                                     ? ".csv,text/csv"
-                                    : "application/pdf,.pdf"
+                                    : category === "TestDocument"
+                                      ? ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                      : "application/pdf,.pdf"
                               }
                               multiple={
                                 !SINGLE_UPLOAD_CATEGORIES.includes(category)

@@ -274,7 +274,7 @@ export type DocumentResponse = {
 
   id: string;
 
-  category: "BRD" | "FSD" | "WBS" | "SwaggerDocs" | "Credentials" | "Assumptions";
+  category: "BRD" | "FSD" | "WBS" | "SwaggerDocs" | "Credentials" | "Assumptions" | "TestDocument";
 
   original_filename: string;
 
@@ -485,6 +485,16 @@ export type PreviewScenario = {
 
   source: ScenarioSource;
 
+  test_id?: string;
+
+  pre_conditions?: string;
+
+  test_steps?: string;
+
+  expected_result?: string;
+
+  sheet_name?: string | null;
+
 };
 
 
@@ -498,6 +508,16 @@ export type HighLevelScenario = {
   title: string;
 
   description: string;
+
+  test_id: string | null;
+
+  sheet_name: string | null;
+
+  pre_conditions: string | null;
+
+  test_steps: string | null;
+
+  expected_result: string | null;
 
   source: ScenarioSource;
 
@@ -776,6 +796,60 @@ export async function deleteProject(projectId: string) {
 export async function listProjectDocuments(projectId: string) {
 
   return request<DocumentListResponse>(`/projects/${projectId}/documents`, {
+
+    method: "GET",
+
+  });
+
+}
+
+
+
+export type TestDocumentRow = {
+
+  test_id: string;
+
+  test_scenario: string;
+
+  pre_conditions: string;
+
+  test_steps: string;
+
+  expected_result: string;
+
+  priority?: string;
+
+  test_type?: string;
+
+};
+
+
+
+export type TestDocumentSheet = {
+
+  name: string;
+
+  items: TestDocumentRow[];
+
+};
+
+
+
+export type TestDocumentRowsResponse = {
+
+  items: TestDocumentRow[];
+
+  sheets: TestDocumentSheet[];
+
+  file: DocumentResponse | null;
+
+};
+
+
+
+export async function fetchTestDocumentRows(projectId: string) {
+
+  return request<TestDocumentRowsResponse>(`/projects/${projectId}/test-document-rows`, {
 
     method: "GET",
 
@@ -1232,7 +1306,15 @@ export async function createHighLevelScenario(
 
   projectId: string,
 
-  payload: { title: string; description: string },
+  payload: {
+    title: string;
+    description: string;
+    test_id?: string | null;
+    sheet_name?: string | null;
+    pre_conditions?: string | null;
+    test_steps?: string | null;
+    expected_result?: string | null;
+  },
 
 ) {
 
@@ -1263,6 +1345,16 @@ export async function updateHighLevelScenario(
     status?: ScenarioStatus;
 
     current_user_id?: string;
+
+    test_id?: string | null;
+
+    sheet_name?: string | null;
+
+    pre_conditions?: string | null;
+
+    test_steps?: string | null;
+
+    expected_result?: string | null;
 
   },
 

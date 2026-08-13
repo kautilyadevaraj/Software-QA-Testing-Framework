@@ -93,6 +93,11 @@ def _scenario_response(
         project_id=row.project_id,
         title=row.title,
         description=row.description,
+        sheet_name=row.sheet_name,
+        test_id=row.test_id,
+        pre_conditions=row.pre_conditions,
+        test_steps=row.test_steps,
+        expected_result=row.expected_result,
         source=row.source,  # type: ignore[arg-type]
         status=row.status,  # type: ignore[arg-type]
         completed_by=row.completed_by,
@@ -233,6 +238,11 @@ def approve_scenarios(
             project_id=project_id,
             title=scenario.title,
             description=scenario.description,
+            sheet_name=scenario.sheet_name,
+            test_id=scenario.test_id,
+            pre_conditions=scenario.pre_conditions,
+            test_steps=scenario.test_steps,
+            expected_result=scenario.expected_result,
             source=scenario.source,
         )
         for scenario in payload.scenarios
@@ -288,6 +298,11 @@ def create_manual_scenario(
         project_id=project_id,
         title=payload.title,
         description=payload.description,
+        sheet_name=payload.sheet_name,
+        test_id=payload.test_id,
+        pre_conditions=payload.pre_conditions,
+        test_steps=payload.test_steps,
+        expected_result=payload.expected_result,
         source="manual",
     )
     db.add(scenario)
@@ -323,6 +338,16 @@ def update_scenario(
         scenario.title = payload.title
     if payload.description is not None:
         scenario.description = payload.description
+    if payload.sheet_name is not None:
+        scenario.sheet_name = payload.sheet_name
+    if payload.test_id is not None:
+        scenario.test_id = payload.test_id
+    if payload.pre_conditions is not None:
+        scenario.pre_conditions = payload.pre_conditions
+    if payload.test_steps is not None:
+        scenario.test_steps = payload.test_steps
+    if payload.expected_result is not None:
+        scenario.expected_result = payload.expected_result
     if payload.status is not None:
         scenario.status = payload.status
         if payload.status == "completed":
@@ -496,12 +521,12 @@ def get_recording_setup(
     token = str(project.recorder_token)
     script_url = f"{api_base}/api/v1/recorder/{project_id}/script"
     mac_cmd = (
-        f'pip3 install playwright httpx && python3 -m playwright install chromium && '
-        f'curl -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}" && python3 recorder.py'
+        f'pip3 install -q playwright httpx && python3 -m playwright install chromium && '
+        f'curl -sSf -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}" && python3 recorder.py'
     )
     win_cmd = (
-        f'pip install playwright httpx && python -m playwright install chromium && '
-        f'curl.exe -s -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}"; python recorder.py'
+        f'pip install -q playwright httpx && python -m playwright install chromium && '
+        f'curl.exe -sSf -o recorder.py -H "X-Recorder-Token: {token}" "{script_url}"; python recorder.py'
     )
     return RecordingSetupResponse(
         mac_setup_command=mac_cmd,

@@ -1,16 +1,16 @@
 import uuid
 from pathlib import Path
 from typing import Any
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from fastapi import HTTPException, UploadFile, status
 
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.project import FileType, Project, ProjectFile
+from app.models.project import FileType, HighLevelScenario, Project, ProjectFile
 
-_SINGLE_FILE_TYPES = {FileType.SWAGGER_DOCS, FileType.CREDENTIALS, FileType.ASSUMPTION}
+_SINGLE_FILE_TYPES = {FileType.SWAGGER_DOCS, FileType.CREDENTIALS, FileType.ASSUMPTION, FileType.TEST_DOCUMENT}
 
 _FILE_TYPE_LABELS: dict[FileType, str] = {
     FileType.BRD: "BRD",
@@ -19,6 +19,7 @@ _FILE_TYPE_LABELS: dict[FileType, str] = {
     FileType.ASSUMPTION: "Assumptions",
     FileType.CREDENTIALS: "Credentials",
     FileType.SWAGGER_DOCS: "Swagger Docs",
+    FileType.TEST_DOCUMENT: "Test Document",
 }
 
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -73,6 +74,12 @@ def validate_and_save_upload(db: Session, project: Project, file: UploadFile, fi
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Credentials must be CSV format."
+            )
+    elif file_type == FileType.TEST_DOCUMENT:
+        if ext != 'xlsx':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Test Document must be XLSX format."
             )
     else:
         if ext != 'pdf':
@@ -144,6 +151,13 @@ def delete_project_file(db: Session, project: Project, file_id: uuid.UUID) -> No
     file_path = Path(file.absolute_path)
     if file_path.exists() and file_path.is_file():
         file_path.unlink()
+
+    if file.file_type == FileType.TEST_DOCUMENT:
+        # The Test Document is the source for the approved scenarios. Removing it
+        # resets all high-level scenarios for the project (their recordings, steps
+        # and routes are removed via DB cascade).
+        project.active_launch_scenario_id = None
+        db.execute(delete(HighLevelScenario).where(HighLevelScenario.project_id == project.id))
 
     if file.file_type == FileType.CREDENTIALS:
         from app.services.credential_service import delete_profiles_for_credentials_file

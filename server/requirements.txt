@@ -20,8 +20,9 @@ pydantic-core==2.41.5
 pydantic-settings==2.10.1
 email-validator==2.2.0
 
-# HTTP client — used by jira_service.py and Qdrant client
+# HTTP client — used by jira_service.py, recorder.py and Qdrant client
 requests>=2.33.1
+httpx>=0.28.1
 idna==3.11
 dnspython==2.8.0
 

@@ -89,6 +89,13 @@ class TestCase(Base):
         nullable=True,
         index=True,
     )
+    # ── Source Test Document linkage (migration 0026) ─────────────────────────
+    # source_test_id:      the Test ID column value from the uploaded xlsx Test
+    #                      Document (e.g. "TC-001"). Keeps the generated test
+    #                      case traceable to the exact scenario row in the sheet.
+    # source_sheet_name:   the worksheet name the scenario row came from.
+    source_test_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    source_sheet_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     approval_status: Mapped[str] = mapped_column(
         VARCHAR(20), nullable=False, default="PENDING", index=True
     )

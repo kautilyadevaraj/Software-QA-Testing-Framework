@@ -125,6 +125,8 @@ def save_test_case(
     auth_mode: str = "authenticated",
     credential_id: str | None = None,
     credential_role: str | None = None,
+    source_test_id: str | None = None,
+    source_sheet_name: str | None = None,
 ) -> str:
     """Persist a test case to the database. Idempotent — skips if test_id already exists.
 
@@ -136,6 +138,10 @@ def save_test_case(
         tc_number:           Human-readable number e.g. 'TC-001' for RTM traceability.
         acceptance_criteria: List of verifiable pass conditions shown in TC document.
         assertion_evidence:  Automation-facing evidence for grounded assertions.
+        source_test_id:      Original Test ID column value from the uploaded xlsx
+                             Test Document — keeps the generated test case linked
+                             to the exact scenario row it was planned from.
+        source_sheet_name:   Worksheet name the scenario row came from.
     """
     with SessionLocal() as db:
         # Guard 1: identical test_id (normal idempotency)
@@ -180,6 +186,8 @@ def save_test_case(
             auth_mode=auth_mode,
             credential_id=uuid.UUID(credential_id) if credential_id else None,
             credential_role=credential_role,
+            source_test_id=source_test_id,
+            source_sheet_name=source_sheet_name,
         )
         db.add(tc)
         db.commit()
@@ -441,6 +449,8 @@ def get_test_cases_for_run(project_id: str, run_id: str) -> list[dict[str, Any]]
                 "target_page":         r.target_page,
                 "hls_id":              str(r.hls_id) if r.hls_id else "",
                 "scenario_title":      hls_map.get(str(r.hls_id), "") if r.hls_id else "",
+                "source_test_id":      r.source_test_id,
+                "source_sheet_name":   r.source_sheet_name,
                 "depends_on":          [str(d) for d in (r.depends_on or [])],
                 "approval_status":     r.approval_status or "PENDING",
                 "auth_mode":           r.auth_mode or "authenticated",
@@ -472,6 +482,8 @@ def get_test_case(test_id: str) -> dict[str, Any] | None:
             "tc_number":           tc.tc_number or "",
             "title":               tc.title,
             "hls_id":              str(tc.hls_id) if tc.hls_id else "",
+            "source_test_id":      tc.source_test_id,
+            "source_sheet_name":   tc.source_sheet_name,
             "acceptance_criteria": tc.acceptance_criteria or [],
             "assertion_evidence":  tc.assertion_evidence or [],
             "approval_status":     tc.approval_status or "PENDING",

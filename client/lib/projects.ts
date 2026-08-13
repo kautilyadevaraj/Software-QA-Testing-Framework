@@ -2,16 +2,16 @@ import type { DocumentResponse, ProjectResponse } from "@/lib/api";
 
 export type ProjectStatus = "Active" | "Draft" | "Blocked";
 
-export const DOCUMENT_CATEGORIES = ["BRD", "FSD", "WBS", "SwaggerDocs", "Credentials", "Assumptions"] as const;
+export const DOCUMENT_CATEGORIES = ["BRD", "FSD", "WBS", "SwaggerDocs", "Credentials", "Assumptions", "TestDocument"] as const;
 export type DocumentCategory = (typeof DOCUMENT_CATEGORIES)[number];
 
 /** These categories only allow ONE file at a time. Must delete existing before uploading a new one. */
-export const SINGLE_UPLOAD_CATEGORIES: DocumentCategory[] = ["SwaggerDocs", "Credentials", "Assumptions"];
+export const SINGLE_UPLOAD_CATEGORIES: DocumentCategory[] = ["SwaggerDocs", "Credentials", "Assumptions", "TestDocument"];
 
 /** These categories allow multiple files. */
 export const MULTI_UPLOAD_CATEGORIES: DocumentCategory[] = ["BRD", "FSD", "WBS"];
 
-export const REQUIRED_DOCUMENT_CATEGORIES: DocumentCategory[] = ["BRD", "SwaggerDocs", "Credentials"];
+export const REQUIRED_DOCUMENT_CATEGORIES: DocumentCategory[] = ["TestDocument", "SwaggerDocs", "Credentials"];
 
 export type ProjectDocumentRecord = {
   id: string;
@@ -31,6 +31,7 @@ export function createEmptyDocuments(): ProjectDocuments {
     SwaggerDocs: [],
     Credentials: [],
     Assumptions: [],
+    TestDocument: [],
   };
 }
 

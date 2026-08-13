@@ -50,7 +50,7 @@ def _is_retryable(exc: Exception) -> bool:
 
 
 def _provider_chain() -> list[str]:
-    allowed = {"anthropic", "groq"}
+    allowed = {"anthropic", "groq", "openrouter"}
     primary = (settings.llm_provider or "anthropic").lower().strip()
     raw_chain = (settings.llm_fallback_chain or "").lower().strip()
     chain = [provider.strip() for provider in raw_chain.split(",") if provider.strip()]
@@ -72,6 +72,7 @@ def _register_providers() -> None:
         return
     _PROVIDER_FUNCS["anthropic"] = _call_anthropic
     _PROVIDER_FUNCS["groq"] = _call_groq
+    _PROVIDER_FUNCS["openrouter"] = _call_openrouter
 
 
 def call_llm(prompt: str, max_tokens: int | None = None) -> str:
@@ -246,3 +247,36 @@ def _call_groq(prompt: str, max_tokens: int | None = None) -> str:
             last_exc = exc
 
     raise RuntimeError(f"All Groq API keys failed: {last_exc}")
+
+
+def _call_openrouter(prompt: str, max_tokens: int | None = None) -> str:
+    if not settings.openrouter_api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured. Add it to .env or remove 'openrouter' from LLM_FALLBACK_CHAIN")
+
+    tokens = max_tokens or settings.openrouter_max_tokens
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {settings.openrouter_api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": settings.openrouter_model,
+            "max_tokens": tokens,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=120,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"OpenRouter API failed status={response.status_code}: {response.text[:1000]}"
+        )
+
+    payload = response.json()
+    message = (payload.get("choices") or [{}])[0].get("message") or {}
+    content = (message.get("content") or "").strip() if isinstance(message, dict) else ""
+    if not content:
+        raise RuntimeError(f"OpenRouter API returned no text content: {payload}")
+    logger.debug("OpenRouter call success: model=%s tokens=%d", settings.openrouter_model, tokens)
+    return content

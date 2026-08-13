@@ -36,11 +36,21 @@ class PreviewScenarioRequest(BaseModel):
     title: str = Field(min_length=1)
     description: str = ""
     source: ScenarioSource
+    test_id: str | None = None
+    sheet_name: str | None = None
+    pre_conditions: str | None = None
+    test_steps: str | None = None
+    expected_result: str | None = None
 
     @field_validator("title", "description")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("test_id", "sheet_name", "pre_conditions", "test_steps", "expected_result")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return value.strip() if value else None
 
 
 class GenerateScenariosResponse(BaseModel):
@@ -79,11 +89,21 @@ class ApproveScenariosResponse(BaseModel):
 class ManualScenarioRequest(BaseModel):
     title: str = Field(min_length=1)
     description: str = ""
+    test_id: str | None = None
+    sheet_name: str | None = None
+    pre_conditions: str | None = None
+    test_steps: str | None = None
+    expected_result: str | None = None
 
     @field_validator("title", "description")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("test_id", "sheet_name", "pre_conditions", "test_steps", "expected_result")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return value.strip() if value else None
 
 
 class ScenarioUpdateRequest(BaseModel):
@@ -91,11 +111,21 @@ class ScenarioUpdateRequest(BaseModel):
     description: str | None = None
     status: ScenarioStatus | None = None
     current_user_id: uuid.UUID | None = None
+    test_id: str | None = None
+    sheet_name: str | None = None
+    pre_conditions: str | None = None
+    test_steps: str | None = None
+    expected_result: str | None = None
 
     @field_validator("title", "description")
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else value
+
+    @field_validator("test_id", "sheet_name", "pre_conditions", "test_steps", "expected_result")
+    @classmethod
+    def strip_optional_structured(cls, value: str | None) -> str | None:
+        return value.strip() if value else None
 
 
 class HighLevelScenarioResponse(BaseModel):
@@ -105,6 +135,11 @@ class HighLevelScenarioResponse(BaseModel):
     project_id: uuid.UUID
     title: str
     description: str
+    test_id: str | None = None
+    sheet_name: str | None = None
+    pre_conditions: str | None = None
+    test_steps: str | None = None
+    expected_result: str | None = None
     source: ScenarioSource
     status: ScenarioStatus
     completed_by: uuid.UUID | None

@@ -658,7 +658,7 @@ async def run_phase3_planning(
                 HighLevelScenario.status == "completed",
             )
         ).scalars().all()
-        htc_list = [(str(h.id), h.title, h.description) for h in htcs]
+        htc_list = [(str(h.id), h.title, h.description, h.test_id, h.sheet_name) for h in htcs]
         jira_config = db.execute(
             select(ProjectJiraConfig).where(ProjectJiraConfig.project_id == uuid.UUID(project_id))
         ).scalars().first()
@@ -677,7 +677,7 @@ async def run_phase3_planning(
     tc_sequence = 1  # global counter — never resets across HLS
 
     skipped: list[tuple[str, str]] = []
-    for idx, (hls_id, title, description) in enumerate(htc_list, 1):
+    for idx, (hls_id, title, description, source_test_id, source_sheet_name) in enumerate(htc_list, 1):
         logger.info("A3 planning HLS %d/%d: '%s'", idx, len(htc_list), title[:50])
         phase3_progress.set_stage(
             run_id, phase3_progress.STAGE_PLANNING_A3,
@@ -707,6 +707,7 @@ async def run_phase3_planning(
             plan,
             title, description, pages, project_id, hls_id,
             run_id, recorded_steps, tc_sequence,
+            source_test_id, source_sheet_name,
             label=f"A3-plan[{title[:30]}]",
         )
         if test_ids:

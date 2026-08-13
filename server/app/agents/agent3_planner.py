@@ -327,10 +327,36 @@ HLS Description: {htc_description}
 Available pages:
 {pages_list}
 {document_context_section}
-{recorded_steps_section}"""
+{recorded_steps_section}
+{source_test_id_section}"""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _format_source_test_id(
+    htc_title: str,
+    htc_description: str,
+    source_test_id: str | None,
+    source_sheet_name: str | None,
+) -> str:
+    """Render the source Test Document row identity for the A3 prompt.
+
+    Kept empty when no xlsx Test ID exists so classic generated scenarios and
+    agent-source scenarios behave exactly as before. When present, the model is
+    told the original test ID / sheet so the planned cases stay traceable.
+    """
+    if not source_test_id:
+        return ""
+    sheet = f" (worksheet: {source_sheet_name})" if source_sheet_name else ""
+    return (
+        "\nSource Test Document row:\n"
+        f"  Test ID: {source_test_id}{sheet}\n"
+        f"  Scenario title: {htc_title}\n"
+        f"  Scenario description: {htc_description}\n"
+        "The test cases you generate must remain linked to this Test ID in the "
+        "traceability report.\n"
+    )
+
 
 def _format_recorded_steps(recorded_steps: list[dict[str, Any]]) -> str:
     if not recorded_steps:
@@ -2633,6 +2659,8 @@ async def plan(
     run_id: str = "",
     recorded_steps: list[dict[str, Any]] | None = None,
     tc_sequence_start: int = 1,
+    source_test_id: str | None = None,
+    source_sheet_name: str | None = None,
 ) -> list[str]:
     """Decompose one HLS into test cases. Returns list of persisted test_id strings.
 
@@ -2641,6 +2669,10 @@ async def plan(
                            value so TC numbers are unique across the whole run.
                            e.g. first HLS starts at 1, second starts at
                            1 + len(first_hls_test_ids), etc.
+        source_test_id:    Test ID from the uploaded xlsx Test Document row that
+                           this HLS was created from. Stored on the generated
+                           test cases so they stay linked to the source sheet.
+        source_sheet_name: Worksheet name from the xlsx the scenario row lived in.
     """
     document_context_section = _format_planning_document_context(
         project_id,
@@ -2653,6 +2685,7 @@ async def plan(
         pages_list="\n".join(f"  - {p}" for p in pages) or "  (no pages discovered yet)",
         document_context_section=document_context_section,
         recorded_steps_section=_format_recorded_steps(recorded_steps or []),
+        source_test_id_section=_format_source_test_id(htc_title, htc_description, source_test_id, source_sheet_name),
     )
 
     items: list[dict[str, Any]] = []
@@ -2747,6 +2780,8 @@ async def plan(
                 hls_description=htc_description,
                 document_context=document_context_section,
             ),
+            source_test_id     = source_test_id,
+            source_sheet_name  = source_sheet_name,
         )
         assertion_evidence: list[dict[str, Any]] = []
         try:

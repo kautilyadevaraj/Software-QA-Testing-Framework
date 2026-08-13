@@ -242,6 +242,66 @@ class Recorder:
         self._shutdown_requested = False
         self._action_handler = None
 
+    def _clean_stale_browser_locks(self) -> None:
+        """Remove Chromium singleton lock/socket files left behind by a
+        previously killed or crashed browser instance.
+
+        Chromium writes SingletonLock/SingletonSocket/SingletonCookie into the
+        user-data-dir. If a prior run died without cleaning up (Ctrl+C kill,
+        crash, or OS teardown), the next launch sees a "live" instance, tries to
+        hand off to it, and then crashes with a SIGTRAP / 'Target page, context
+        or browser has been closed'. Removing the stale lock files when no live
+        browser owns the profile is safe and unblocks relaunch.
+        """
+        lock = BROWSER_DATA_DIR / "SingletonLock"
+        socket = BROWSER_DATA_DIR / "SingletonSocket"
+        cookie = BROWSER_DATA_DIR / "SingletonCookie"
+        for marker in (lock, socket, cookie):
+            try:
+                marker.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _quarantine_corrupt_profile(self) -> None:
+        """Move a corrupted user-data-dir aside so the next launch starts fresh.
+
+        A browser profile can be corrupted by force-kills / crashes (the Chrome
+        process dies with SIGTRAP on the next launch and Playwright reports
+        'Target page, context or browser has been closed'). Moving the broken
+        directory away preserves it for inspection while unblocking launches.
+        """
+        if not BROWSER_DATA_DIR.exists():
+            return
+        backup = BROWSER_DATA_DIR.parent / f"{BROWSER_DATA_DIR.name}.corrupt-{int(time.time())}"
+        try:
+            BROWSER_DATA_DIR.rename(backup)
+        except Exception:
+            pass
+        BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    async def _launch_browser(self, pw) -> BrowserContext:
+        """Launch the persistent context, recovering from a corrupt profile once.
+
+        First attempt uses the existing profile (preserving any saved login).
+        If the browser process crashes immediately (SIGTRAP / 'context has been
+        closed'), the profile is quarantined and a fresh one is used instead.
+        """
+        for attempt in (1, 2):
+            self._clean_stale_browser_locks()
+            try:
+                return await pw.chromium.launch_persistent_context(
+                    str(BROWSER_DATA_DIR),
+                    headless=False,
+                    args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    slow_mo=50,
+                )
+            except Exception:
+                if attempt == 2 or self._shutdown_requested:
+                    raise
+                print("  ⚠ Browser launch failed — quarantining corrupt profile and retrying...")
+                self._quarantine_corrupt_profile()
+        raise RuntimeError("browser launch failed")  # pragma: no cover
+
     # ── HTTP helpers ───────────────────────────────────────────────────────
 
     async def _get(self, path: str) -> dict:
@@ -774,12 +834,7 @@ class Recorder:
                     if self._shutdown_requested:
                         break
                     print("\n  Launching browser (persistent session)...")
-                    context = await pw.chromium.launch_persistent_context(
-                        str(BROWSER_DATA_DIR),
-                        headless=False,
-                        args=["--no-sandbox", "--disable-dev-shm-usage"],
-                        slow_mo=50,
-                    )
+                    context = await self._launch_browser(pw)
                     print("  ✓ Browser ready. Log in to the application if needed.")
                     print(f"    Session saved at: {BROWSER_DATA_DIR}")
                     await self._ensure_idle_project_page(context, idle_project_url)
