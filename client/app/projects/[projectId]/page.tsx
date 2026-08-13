@@ -1203,7 +1203,7 @@ export default function ProjectDetailsPage() {
             <CardHeader>
               <CardTitle className="text-black">QA Testing</CardTitle>
               <CardDescription>
-                Generate, review, and launch high-level test scenarios.
+                Review, and launch high-level test scenario.
               </CardDescription>
             </CardHeader>
             <CardContent>
