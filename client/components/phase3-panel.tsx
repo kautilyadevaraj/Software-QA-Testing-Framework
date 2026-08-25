@@ -420,11 +420,7 @@ export function Phase3Panel({ projectId }: Props) {
   const [runStatus, setRunStatus] = useState<Phase3RunStatus | null>(null);
   const [execState, setExecState] = useState<Phase3TestState[]>([]);
   const [approvingAll, setApprovingAll] = useState(false);
-  const [activeTab, setActiveTab] = useState<Phase3Tab>(() => {
-    if (typeof window === "undefined") return "testcases";
-    const stored = window.localStorage.getItem(phase3TabStorageKey);
-    return stored === "execution" || stored === "report" || stored === "testcases" ? stored : "testcases";
-  });
+  const [activeTab, setActiveTab] = useState<Phase3Tab>("testcases");
   const [tcFilter, setTcFilter] = useState<TestCaseFilter>("ALL");
   const [tcSearch, setTcSearch] = useState("");
 
@@ -439,10 +435,6 @@ export function Phase3Panel({ projectId }: Props) {
   const stopAll = () => {
     [pollRef, execPollRef, tcPollRef].forEach(r => { if (r.current) { clearInterval(r.current); r.current = null; } });
   };
-
-  useEffect(() => {
-    window.localStorage.setItem(phase3TabStorageKey, activeTab);
-  }, [activeTab, phase3TabStorageKey]);
 
   // Check whether at least one Phase 2 scenario is recorded/completed.
   const checkScenarios = useCallback(async () => {
@@ -513,7 +505,6 @@ export function Phase3Panel({ projectId }: Props) {
           }
           return resolved;
         });
-        setActiveTab(prev => (prev === "execution" ? prev : "testcases"));
         setPhase(prev => (prev === "review" ? prev : "review"));
       }
     } catch { /* 404 = no run yet */ }
@@ -549,7 +540,6 @@ export function Phase3Panel({ projectId }: Props) {
     setPlanRunId(runId);
     setTestCases([]);
     testCasesRef.current = [];
-    setActiveTab("testcases");
     setPhase("review");
     fetchTcDoc(runId);
   }
@@ -586,7 +576,6 @@ export function Phase3Panel({ projectId }: Props) {
     if (!runStatus) return;
     if (runStatus.run_type === "plan" && runStatus.status === "planned") {
       if (tcPollRef.current) { clearInterval(tcPollRef.current); tcPollRef.current = null; }
-      setActiveTab(prev => (prev === "execution" ? prev : "testcases"));
       setPhase("review");
       // planRunId may already be set from the fetchRunStatus effect above;
       // fall back to run_id from the status response.
@@ -599,7 +588,6 @@ export function Phase3Panel({ projectId }: Props) {
   // ── Step 1: Generate ────────────────────────────────────────────────────────
   async function handleGenerate() {
     setPhase("planning");
-    setActiveTab("testcases");
     setTestCases([]);
     try {
       const res = await planPhase3Run(projectId);
@@ -687,7 +675,6 @@ export function Phase3Panel({ projectId }: Props) {
     const allApproved = activeCases.length > 0 && activeCases.every(tc => tc.approval_status === "APPROVED");
     if (!allApproved) { toast.error("Approve or exclude all active test cases before executing"); return; }
     setPhase("executing");
-    setActiveTab("execution");
     setExecState([]);
     try {
       const res = await executePhase3Run(projectId, planRunId);

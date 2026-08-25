@@ -55,8 +55,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       NIM_API_KEY: ${NIM_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
-      LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-groq,gemini,openrouter,nim}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-anthropic}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-prod-use-32plus-chars}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       USER_EMAIL: ${USER_EMAIL:-}
@@ -99,8 +99,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       NIM_API_KEY: ${NIM_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
-      LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-groq,gemini,openrouter,nim}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-anthropic}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       PLAYWRIGHT_HEADED: ${PLAYWRIGHT_HEADED:-false}
       PLAYWRIGHT_SLOW_MO_MS: ${PLAYWRIGHT_SLOW_MO_MS:-0}

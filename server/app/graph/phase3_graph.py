@@ -730,7 +730,7 @@ async def run_phase3_planning(
     xray_metadata, xray_diag = await asyncio.to_thread(
         plan_xray_metadata_for_cases,
         project_id=project_id,
-        hls_items=[(title, description) for _, title, description in htc_list],
+        hls_items=[(title, description) for _, title, description, _, _ in htc_list],
         tc_rows=xray_export_rows,
     )
     xray_rows = await asyncio.to_thread(
