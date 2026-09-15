@@ -11,7 +11,7 @@ export const SINGLE_UPLOAD_CATEGORIES: DocumentCategory[] = ["SwaggerDocs", "Cre
 /** These categories allow multiple files. */
 export const MULTI_UPLOAD_CATEGORIES: DocumentCategory[] = ["BRD", "FSD", "WBS"];
 
-export const REQUIRED_DOCUMENT_CATEGORIES: DocumentCategory[] = ["TestDocument", "SwaggerDocs", "Credentials"];
+export const REQUIRED_DOCUMENT_CATEGORIES: DocumentCategory[] = ["TestDocument", "Credentials"];
 
 export type ProjectDocumentRecord = {
   id: string;

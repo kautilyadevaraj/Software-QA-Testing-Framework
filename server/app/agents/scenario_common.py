@@ -90,6 +90,10 @@ DEDUP_SYNONYMS = {
 class PreviewScenario(TypedDict):
     title: str
     description: str
+    test_id: str | None
+    pre_conditions: str | None
+    test_steps: str | None
+    expected_result: str | None
     source: ScenarioSource
 
 
@@ -148,7 +152,7 @@ HLS quality bar:
 Output contract:
 - Return only scenarios grounded in the provided input.
 - Return only a raw JSON array.
-- Each item must have exactly these keys: "title" and "description".
+- Each item must have exactly these keys: "title", "description", "test_id", "pre_conditions", "test_steps", "expected_result".
 """
 
 
@@ -349,6 +353,10 @@ def normalize_scenarios(items: list[dict[str, Any]], source: ScenarioSource | No
     for item in items:
         title = str(item.get("title") or "").strip()
         description = str(item.get("description") or "").strip()
+        test_id = str(item.get("test_id") or "").strip() or None
+        pre_conditions = str(item.get("pre_conditions") or "").strip() or None
+        test_steps = str(item.get("test_steps") or "").strip() or None
+        expected_result = str(item.get("expected_result") or "").strip() or None
         item_source = source or str(item.get("source") or "").strip()
         if not title or item_source not in {"agent_1", "agent_2", "manual"}:
             continue
@@ -356,6 +364,10 @@ def normalize_scenarios(items: list[dict[str, Any]], source: ScenarioSource | No
             {
                 "title": title,
                 "description": description,
+                "test_id": test_id,
+                "pre_conditions": pre_conditions,
+                "test_steps": test_steps,
+                "expected_result": expected_result,
                 "source": item_source,  # type: ignore[typeddict-item]
             }
         )

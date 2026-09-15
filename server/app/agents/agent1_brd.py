@@ -12,7 +12,7 @@ from app.agents.scenario_common import (
 
 logger = logging.getLogger(__name__)
 
-BUSINESS_CATEGORIES = ["brd", "wsp", "wbs", "fsd", "assumptions", "assumption"]
+BUSINESS_CATEGORIES = ["brd", "fsd", "wbs", "assumption"]
 
 BUSINESS_PROMPT = """You are Agent 1 in a QA scenario-generation graph.
 Your task is to study business-side documentation chunks and produce up to {max_scenarios}
@@ -22,7 +22,9 @@ high-level testing scenarios grounded only in those chunks.
 
 Source-specific focus:
 - Use BRD/FSD/WBS/assumption-style content to identify business goals, user journeys, roles, workflow stages, validations, decisions, constraints, exceptions, and acceptance expectations.
-- Convert documented business behavior into tester-executable HLS items.
+- Convert documented business behavior into tester-executable HLS items with: title, description, test_id (concise identifier), pre_conditions (what must be true before scenario runs), test_steps (main test actions flow), and expected_result (observable outcome the tester expects).
+- Do not create tiny UI steps, field-level validations, generic platform checks, or duplicate wording.
+- Output only a raw JSON array with each item having exactly these keys: "title", "description", "test_id", "pre_conditions", "test_steps", "expected_result".
 - Do not create tiny UI steps, field-level validations, generic platform checks, or duplicate wording.
 
 {access_mode_instruction}

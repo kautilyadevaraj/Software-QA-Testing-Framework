@@ -240,7 +240,7 @@ function TcAccordion({ tc, projectId, onUpdate, executionState, readOnly = false
   const credentialLabel = tc.credential_username
     ? `${tc.credential_role || "credential"}: ${tc.credential_username}`
     : tc.credential_role
-      ? `${tc.credential_role}: unbound`
+      ? `${tc.credential_role}`
       : tc.auth_mode === "login_flow" || tc.auth_mode === "authenticated"
         ? "credential unbound"
         : "";

@@ -287,17 +287,29 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   const [isLoadingSetup, setIsLoadingSetup] = useState(false);
   const [copiedSetup, setCopiedSetup] = useState(false);
 
+  const [previewSource, setPreviewSource] = useState<'test-document' | 'ai-generated' | null>(null);
+
   const loadApprovedScenarios = useCallback(async () => {
     setIsLoadingApproved(true);
     try {
       const response = await listHighLevelScenarios(projectId);
-      setApprovedScenarios(response.scenarios);
+      let filteredScenarios = response.scenarios;
+      if (previewSource === 'ai-generated') {
+        filteredScenarios = response.scenarios.filter(
+          (s) => s.source === 'agent_1' || s.source === 'agent_2'
+        );
+      } else if (previewSource === 'test-document') {
+        filteredScenarios = response.scenarios.filter(
+          (s) => !(s.source === 'agent_1' || s.source === 'agent_2')
+        );
+      }
+      setApprovedScenarios(filteredScenarios);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Unable to load scenarios.");
     } finally {
       setIsLoadingApproved(false);
     }
-  }, [projectId]);
+  }, [projectId, previewSource]);
 
   const approvedSheetOptions = Array.from(
     new Set(approvedScenarios.map((scenario) => scenario.sheet_name ?? "Unassigned")),
@@ -312,8 +324,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   // yet been approved. Approval is keyed to the uploaded file itself — not the
   // row content — so a newly uploaded document always shows its preview again,
   // even when its rows duplicate ones already approved from a previous upload.
-  const showScenarioPreview =
-    isLoadingXlsx || (currentDocumentFileId !== null && currentDocumentFileId !== approvedDocumentFileId);
+  const showScenarioPreview = true;
 
   useEffect(() => {
     if (approvedSheetFilter !== "all" && !approvedSheetOptions.includes(approvedSheetFilter)) {
@@ -332,11 +343,14 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
         setSelectedSheetName(response.sheets[0].name);
         setPreviewScenarios(response.sheets[0].items.map((row) => mapTestDocumentRow(row, response.sheets[0].name)));
         setTestDocumentName(response.file?.original_filename ?? null);
+        setPreviewSource("test-document");
       } else {
         setTestDocumentSheets([]);
         setSelectedSheetName("");
         setPreviewScenarios([]);
         setTestDocumentName(null);
+      setPreviewSource(null);
+        setPreviewSource(null);
       }
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Unable to read the test document.");
@@ -344,6 +358,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
       setSelectedSheetName("");
       setPreviewScenarios([]);
       setTestDocumentName(null);
+      setPreviewSource(null);
     } finally {
       setIsLoadingXlsx(false);
     }
@@ -502,7 +517,8 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
         }
       );
       
-      setPreviewScenarios((current) => [...current, ...response.scenarios]);
+      setPreviewScenarios(response.scenarios);
+      setPreviewSource("ai-generated");
       if (response.scenarios.length === 0) {
         toast.info(existingScenarios.length > 0 ? "No additional scenarios were found." : "No scenarios were generated from the ingested chunks.");
       } else {
@@ -885,10 +901,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
   return (
     <>
       <div className="space-y-6">
-      {/* High Level Scenarios Configuration + Generate — temporarily commented out.
-          The QA tab now reads scenarios from the uploaded xlsx test document instead.
-          Re-enable generation later by uncommenting the line below.
-          {generationSettingsCard} */}
+      {generationSettingsCard}
 
       {showScenarioPreview ? (
         <div className="overflow-hidden rounded-lg border border-black/10 bg-white">
@@ -900,7 +913,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {testDocumentSheets.length > 1 ? (
+              {previewSource === 'test-document' && testDocumentSheets.length > 1 ? (
                 <div className="flex items-center gap-2">
                   <label htmlFor="test-sheet-select" className="text-xs font-medium uppercase text-black/60">
                     Sheet
@@ -1059,7 +1072,7 @@ export function ScenarioQaPanel({ projectId, currentUserId }: ScenarioQaPanelPro
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {approvedSheetOptions.length > 0 ? (
+              {previewSource === 'test-document' && approvedSheetOptions.length > 0 ? (
                 <div className="flex items-center gap-2">
                   <label htmlFor="approved-sheet-select" className="text-xs font-medium uppercase text-black/60">
                     Sheet

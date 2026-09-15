@@ -22,8 +22,7 @@ Deduplication rules:
 - Do not significantly rewrite titles or descriptions beyond preserving one canonical existing version.
 - Do not remove distinct scenarios just because they belong to the same module; only merge when the actual tester intent overlaps.
 
-Return ONLY the deduplicated JSON array with the same shape:
-[{{ 'title': string, 'description': string, 'source': string }}].
+[{{ 'title': string, 'description': string, 'test_id': string | None, 'pre_conditions': string | None, 'test_steps': string | None, 'expected_result': string | None, 'source': string }}].
 No preamble, no explanation, no markdown backticks.
 
 Scenarios:

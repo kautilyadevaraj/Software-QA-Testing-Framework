@@ -18,7 +18,7 @@ from app.models.project import APIEndpoint
 
 logger = logging.getLogger(__name__)
 
-API_CATEGORIES = ["swagger", "openapi", "swagger_docs"]
+API_CATEGORIES = ["SwaggerDocs"]
 
 API_PROMPT = """You are Agent 2 in a QA scenario-generation graph.
 Your task is to study API documentation chunks and produce up to {max_scenarios}
@@ -28,11 +28,12 @@ high-level testing scenarios grounded only in those chunks.
 
 Source-specific focus:
 - Treat endpoints, paths, methods, summaries, request fields, response meanings, status codes, and auth requirements as evidence of product capabilities.
-- Infer user-facing workflows from those capabilities, then translate them into UI-interactable HLS scenarios.
+- Infer user-facing workflows from those capabilities, then translate them into UI-interactable HLS scenarios with: title, description, test_id (concise identifier), pre_conditions (what must be true before scenario runs), test_steps (main test actions flow), and expected_result (observable outcome the tester expects).
 - Group related endpoints into meaningful product flows when they describe one tester journey.
-- Endpoint actions that indicate create/update/delete/search/list/export/import/upload/download should become corresponding UI journeys only when the endpoint text supports that feature.
+- Endpoint actions that indicate create/update/delete/search/list/export/upload/download should become corresponding UI journeys only when the endpoint text supports that feature.
 - Do not output curl/API-call scenarios, raw payload checks, database checks, server-log checks, or implementation checks.
 - Do not assume any domain, resource, module, or feature unless the endpoint text says so.
+- Output only a raw JSON array with each item having exactly these keys: "title", "description", "test_id", "pre_conditions", "test_steps", "expected_result".
 
 {access_mode_instruction}
 {scenario_level_instruction}

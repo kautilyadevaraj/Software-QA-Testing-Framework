@@ -64,7 +64,7 @@ def resolve_credential_bindings_for_run(
     if not profiles:
         return []
 
-    default_profile = profiles[0] if len(profiles) == 1 else None
+    default_profile = profiles[0] if profiles else None
     tests = db.execute(
         select(TestCase).where(
             TestCase.project_id == project_id,

@@ -107,22 +107,7 @@ def check_execution_preflight(
                     ),
                 ))
 
-            if len(profiles) > 1:
-                ambiguous = [
-                    tc.tc_number or str(tc.test_id)
-                    for tc in auth_cases
-                    if not str(tc.credential_role or "").strip()
-                ]
-                if ambiguous:
-                    issues.append(PreflightIssue(
-                        code="ambiguous_credential_role",
-                        message=(
-                            "Multiple credential profiles are uploaded, but these credentialed "
-                            "test cases do not specify which role to use: "
-                            f"{', '.join(ambiguous[:10])}. Edit the testcase role or ensure A3 "
-                            "can infer it from the BRD/HLS."
-                        ),
-                    ))
+            
 
         profile = profiles[0] if profiles else None
         if profile and not (profile.endpoint or "").strip():
